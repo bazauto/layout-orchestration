@@ -1,0 +1,24 @@
+/* Global layout reset so the app always fits the viewport without phantom scrollbars */
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Suppress browser focus rings on toolbar/palette buttons.
+   They use explicit inline active states instead of focus-based styling. */
+button:focus,
+button:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}

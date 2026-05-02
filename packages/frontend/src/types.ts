@@ -47,8 +47,11 @@ export interface LocoRecord {
 // ─── Grid ─────────────────────────────────────────────────────────────────────
 
 export type TileType =
-  | 'straight-h'    // ─
-  | 'straight-v'    // │
+  | 'straight-h'    // ─ (also covers legacy straight-v via rotation)
+  | 'straight-v'    // │ (legacy – still renderable)
+  | 'straight-45'   // ╱ (diagonal / "Corner")
+  | 'curve'         // ╭ (quarter-circle, rotatable)
+  // Legacy named curves – kept for backward compat with saved grids
   | 'curve-ne'      // ╭
   | 'curve-nw'      // ╮
   | 'curve-se'      // ╰

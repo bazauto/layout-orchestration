@@ -10,7 +10,7 @@
  *   Scroll wheel       — zoom
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useGridEditor } from '../hooks/useGridEditor';
 import { TileType } from '../types';
 import { BlockRecord, PointRecord } from '../types';
@@ -27,18 +27,14 @@ const GRID_ROWS = 20;
 
 // ─── Tile palette ─────────────────────────────────────────────────────────────
 
-const PALETTE: { type: TileType; label: string; icon: string }[] = [
-  { type: 'straight-h',  label: 'Straight H',  icon: '─' },
-  { type: 'straight-v',  label: 'Straight V',  icon: '│' },
-  { type: 'curve-ne',    label: 'Curve NE',    icon: '╭' },
-  { type: 'curve-nw',    label: 'Curve NW',    icon: '╮' },
-  { type: 'curve-se',    label: 'Curve SE',    icon: '╰' },
-  { type: 'curve-sw',    label: 'Curve SW',    icon: '╯' },
-  { type: 'point-left',  label: 'Point L',     icon: '⊣' },
-  { type: 'point-right', label: 'Point R',     icon: '⊢' },
-  { type: 'crossing',    label: 'Crossing',    icon: '╋' },
-  { type: 'buffer',      label: 'Buffer',      icon: '■' },
-  { type: 'platform',    label: 'Platform',    icon: '▬' },
+const PALETTE: { type: TileType; label: string; icon: string; key: string }[] = [
+  { type: 'straight-h',  label: 'Straight', icon: '─', key: '1' },
+  { type: 'straight-45', label: 'Corner',   icon: '╱', key: '2' },
+  { type: 'point-left',  label: 'Point L',  icon: '⊣', key: '3' },
+  { type: 'point-right', label: 'Point R',  icon: '⊢', key: '4' },
+  { type: 'crossing',    label: 'Crossing', icon: '╋', key: '5' },
+  { type: 'buffer',      label: 'Buffer',   icon: '■', key: '6' },
+  { type: 'platform',    label: 'Platform', icon: '▬', key: '7' },
 ];
 
 const TRACK_COLOUR = '#89b4fa';
@@ -71,6 +67,15 @@ function TilePath({ type }: { type: TileType }) {
         {sleeperMarks([8, 16, 24, 32], true)}
         <line x1={H} y1={0} x2={H} y2={T} {...stroke} />
       </>;
+    case 'straight-45':
+      return (
+        // Midpoint-to-midpoint diagonal so adjacent tiles connect cleanly
+        <line x1={0} y1={H} x2={H} y2={0} {...stroke} />
+      );
+    case 'curve':
+      // Quarter-circle connecting left-centre → bottom-centre.
+      // Rotate 90° → bottom→right, 180° → right→top, 270° → top→left.
+      return <path d={`M 0 ${H} A ${H} ${H} 0 0 0 ${H} ${T}`} {...stroke} />;
     case 'curve-ne':
       return <path d={`M ${H} ${T} A ${H} ${H} 0 0 1 ${T} ${H}`} {...stroke} />;
     case 'curve-nw':
@@ -80,14 +85,17 @@ function TilePath({ type }: { type: TileType }) {
     case 'curve-sw':
       return <path d={`M ${H} ${0} A ${H} ${H} 0 0 1 ${0} ${H}`} {...stroke} />;
     case 'point-left':
+      // Through line left→right. Divergent forks at left-center up to top-center.
+      // Place a Corner@180° directly above to redirect to a parallel track.
       return <>
         <line x1={0} y1={H} x2={T} y2={H} {...stroke} />
-        <line x1={H} y1={H} x2={T} y2={0} {...{ ...stroke, strokeWidth: 3, stroke: '#cba6f7' }} />
+        <line x1={0} y1={H} x2={H} y2={0} {...{ ...stroke, strokeWidth: 3, stroke: '#cba6f7' }} />
       </>;
     case 'point-right':
+      // Divergent forks at left-center down to bottom-center.
       return <>
         <line x1={0} y1={H} x2={T} y2={H} {...stroke} />
-        <line x1={H} y1={H} x2={T} y2={T} {...{ ...stroke, strokeWidth: 3, stroke: '#cba6f7' }} />
+        <line x1={0} y1={H} x2={H} y2={T} {...{ ...stroke, strokeWidth: 3, stroke: '#cba6f7' }} />
       </>;
     case 'crossing':
       return <>
@@ -112,9 +120,10 @@ function TilePath({ type }: { type: TileType }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function GridEditor({ layoutId, blocks, points }: Props) {
-  const { grid, loading, error, placeTile, eraseTile, clearAll } = useGridEditor(layoutId);
+  const { grid, loading, error, placeTile, eraseTile } = useGridEditor(layoutId);
 
   const [selectedType, setSelectedType] = useState<TileType>('straight-h');
+  const [selectedRotation, setSelectedRotation] = useState(0);
   const [selectedBlockId, setSelectedBlockId] = useState<string>('');
   const [selectedPointId, setSelectedPointId] = useState<string>('');
 
@@ -122,6 +131,7 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [isPainting, setIsPainting] = useState(false);
+  const [hoverCell, setHoverCell] = useState<{ x: number; y: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const panStart = useRef<{ mx: number; my: number; ox: number; oy: number } | null>(null);
 
@@ -143,12 +153,21 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
         void eraseTile(x, y);
       } else {
         const meta: Record<string, unknown> = {};
+        meta.rotation = selectedRotation;
         if (selectedBlockId) meta.blockId = selectedBlockId;
         if (selectedPointId) meta.pointId = selectedPointId;
         void placeTile(x, y, selectedType, meta);
       }
     },
-    [svgToGrid, eraseTile, placeTile, selectedType, selectedBlockId, selectedPointId],
+    [
+      svgToGrid,
+      eraseTile,
+      placeTile,
+      selectedType,
+      selectedRotation,
+      selectedBlockId,
+      selectedPointId,
+    ],
   );
 
   const onMouseDown = (e: React.MouseEvent) => {
@@ -170,6 +189,14 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
       });
       return;
     }
+
+    const { x, y } = svgToGrid(e.clientX, e.clientY);
+    if (x >= 0 && y >= 0 && x < GRID_COLS && y < GRID_ROWS) {
+      setHoverCell({ x, y });
+    } else {
+      setHoverCell(null);
+    }
+
     if (!isPainting) return;
     handleTileAction(e.clientX, e.clientY, e.buttons === 2);
   };
@@ -188,6 +215,46 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     e.preventDefault();
   };
 
+  const rotateForward = useCallback(() => {
+    setSelectedRotation((r) => (r + 45) % 360);
+  }, []);
+
+  const rotateBackward = useCallback(() => {
+    setSelectedRotation((r) => (r - 45 + 360) % 360);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) {
+        return;
+      }
+
+      // 1..9 => palette selection by index
+      if (/^[1-9]$/.test(e.key)) {
+        const idx = parseInt(e.key, 10) - 1;
+        if (idx >= 0 && idx < PALETTE.length) {
+          setSelectedType(PALETTE[idx].type);
+          e.preventDefault();
+          return;
+        }
+      }
+
+      // R => rotate +45, Shift+R => rotate -45
+      if (e.key.toLowerCase() === 'r') {
+        if (e.shiftKey) {
+          rotateBackward();
+        } else {
+          rotateForward();
+        }
+        e.preventDefault();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [rotateBackward, rotateForward]);
+
   const gridW = GRID_COLS * TILE_SIZE;
   const gridH = GRID_ROWS * TILE_SIZE;
 
@@ -201,7 +268,8 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
           {PALETTE.map((p) => (
             <button
               key={p.type}
-              title={p.label}
+              title={`${p.label} [${p.key}]`}
+              tabIndex={-1}
               onClick={() => setSelectedType(p.type)}
               style={{
                 ...st.paletteBtn,
@@ -244,31 +312,43 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
           </select>
         </label>
 
+        <label style={st.toolLabel}>
+          Rotation
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <button
+              onClick={rotateBackward}
+              style={st.iconBtn}
+              title="Rotate -45°"
+            >↺</button>
+            <span style={st.rotationBadge}>{selectedRotation}°</span>
+            <button
+              onClick={rotateForward}
+              style={st.iconBtn}
+              title="Rotate +45°"
+            >↻</button>
+          </div>
+        </label>
+
         <div style={st.toolSep} />
 
         <button
           onClick={() => setZoom((z) => Math.min(z + 0.2, 3))}
           style={st.iconBtn}
+          tabIndex={-1}
           title="Zoom in"
         >＋</button>
         <button
           onClick={() => setZoom((z) => Math.max(z - 0.2, 0.3))}
           style={st.iconBtn}
+          tabIndex={-1}
           title="Zoom out"
         >－</button>
         <button
           onClick={() => { setZoom(1); setOffset({ x: 0, y: 0 }); }}
           style={st.iconBtn}
+          tabIndex={-1}
           title="Reset view"
         >⌂</button>
-
-        <div style={st.toolSep} />
-
-        <button
-          onClick={() => { if (confirm('Clear entire grid?')) void clearAll(); }}
-          style={st.dangerBtn}
-          title="Clear grid"
-        >Clear</button>
 
         {loading && <span style={st.status}>Saving…</span>}
         {error && <span style={st.statusErr}>{error}</span>}
@@ -282,7 +362,10 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
-          onMouseLeave={onMouseUp}
+          onMouseLeave={() => {
+            onMouseUp();
+            setHoverCell(null);
+          }}
           onWheel={onWheel}
           onContextMenu={onContextMenu}
         >
@@ -310,11 +393,14 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
             {Array.from(grid.values()).map((tile) => {
               const meta = (() => { try { return JSON.parse(tile.metadata); } catch { return {}; } })();
               const bName = meta.blockId ? blocks.find((b) => b.id === meta.blockId)?.name : null;
+              const rotation = typeof meta.rotation === 'number' ? meta.rotation : 0;
               return (
                 <g key={tile.id || `${tile.x},${tile.y}`}
                   transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}>
                   <rect width={T} height={T} fill="#1e1e2e" />
-                  <TilePath type={tile.tileType as TileType} />
+                  <g transform={`rotate(${rotation}, ${H}, ${H})`}>
+                    <TilePath type={tile.tileType as TileType} />
+                  </g>
                   {bName && (
                     <text x={T / 2} y={T - 4} textAnchor="middle"
                       fontSize={6} fill="#a6e3a1" fontFamily="monospace">
@@ -325,7 +411,34 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
               );
             })}
 
-            {/* Ghost tile under cursor (painted via CSS hover — handled below) */}
+            {/* Ghost preview tile under cursor */}
+            {hoverCell && (() => {
+              const previewMetaBlock = selectedBlockId
+                ? blocks.find((b) => b.id === selectedBlockId)?.name
+                : null;
+              const occupied = grid.has(`${hoverCell.x},${hoverCell.y}`);
+              return (
+                <g transform={`translate(${hoverCell.x * TILE_SIZE},${hoverCell.y * TILE_SIZE})`}>
+                  <rect
+                    width={T}
+                    height={T}
+                    fill={occupied ? '#f38ba822' : '#89b4fa22'}
+                    stroke={occupied ? '#f38ba8' : '#89b4fa'}
+                    strokeWidth={1}
+                    strokeDasharray="3 2"
+                  />
+                  <g opacity={0.45} transform={`rotate(${selectedRotation}, ${H}, ${H})`}>
+                    <TilePath type={selectedType} />
+                  </g>
+                  {previewMetaBlock && (
+                    <text x={T / 2} y={T - 4} textAnchor="middle"
+                      fontSize={6} fill="#a6e3a1" fontFamily="monospace" opacity={0.7}>
+                      {previewMetaBlock}
+                    </text>
+                  )}
+                </g>
+              );
+            })()}
           </g>
         </svg>
       </div>
@@ -333,7 +446,7 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
       {/* ── Legend ── */}
       <div style={st.legend}>
         <span style={{ color: '#6c7086', fontSize: 11 }}>
-          Left-drag: paint · Right-click: erase · Middle-drag: pan · Scroll: zoom
+          Left-drag: paint · Right-click: erase · Middle-drag: pan · Scroll: zoom · Rotation: 45° steps (R / Shift+R) · Tile select: 1–7
           · Grid: {GRID_COLS}×{GRID_ROWS} · {grid.size} tile{grid.size !== 1 ? 's' : ''}
         </span>
       </div>
@@ -347,15 +460,15 @@ const st = {
   wrapper:         { display: 'flex', flexDirection: 'column' as const, height: '100%', background: '#181825', border: '1px solid #313244', borderRadius: 6, overflow: 'hidden' },
   toolbar:         { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: '#1e1e2e', borderBottom: '1px solid #313244', flexWrap: 'wrap' as const },
   paletteGroup:    { display: 'flex', gap: 4, flexWrap: 'wrap' as const },
-  paletteBtn:      { background: '#313244', border: '1px solid #45475a', borderRadius: 4, padding: '3px 7px', cursor: 'pointer', display: 'flex', flexDirection: 'column' as const, alignItems: 'center', gap: 1, minWidth: 44 },
-  paletteBtnActive:{ background: '#45475a', borderColor: '#89b4fa', boxShadow: '0 0 0 1px #89b4fa' },
+  paletteBtn:      { background: '#313244', border: '1px solid #45475a', borderRadius: 4, padding: '3px 7px', cursor: 'pointer', display: 'flex', flexDirection: 'column' as const, alignItems: 'center', gap: 1, minWidth: 44, outline: 'none', boxShadow: 'none', height: 46 },
+  paletteBtnActive:{ background: '#2a2a3d', border: '1px solid #89b4fa' },
   paletteIcon:     { fontSize: 16, color: '#89b4fa', lineHeight: 1 },
   paletteLabel:    { fontSize: 9, color: '#6c7086', textTransform: 'uppercase' as const, letterSpacing: '0.3px' },
   toolSep:         { width: 1, height: 28, background: '#313244', margin: '0 4px', flexShrink: 0 },
   toolLabel:       { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#6c7086' },
   toolSelect:      { background: '#313244', color: '#cdd6f4', border: '1px solid #45475a', borderRadius: 4, padding: '3px 6px', fontSize: 12 },
-  iconBtn:         { background: '#313244', border: '1px solid #45475a', borderRadius: 4, color: '#cdd6f4', cursor: 'pointer', padding: '3px 9px', fontSize: 14 },
-  dangerBtn:       { background: 'none', border: '1px solid #f38ba8', borderRadius: 4, color: '#f38ba8', cursor: 'pointer', padding: '3px 10px', fontSize: 12 },
+  rotationBadge:   { background: '#313244', color: '#cdd6f4', border: '1px solid #45475a', borderRadius: 4, padding: '3px 7px', fontSize: 11, minWidth: 48, textAlign: 'center' as const },
+  iconBtn:         { background: '#313244', border: '1px solid #45475a', borderRadius: 4, color: '#cdd6f4', cursor: 'pointer', padding: '0 9px', fontSize: 14, minWidth: 34, height: 28, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' } as React.CSSProperties,
   status:          { fontSize: 12, color: '#f9e2af', marginLeft: 8 },
   statusErr:       { fontSize: 12, color: '#f38ba8', marginLeft: 8 },
   canvasWrap:      { flex: 1, overflow: 'hidden', minHeight: 0, position: 'relative' as const },

@@ -11,11 +11,13 @@
     "dev:backend": "npm run dev --workspace=packages/backend",
     "dev:frontend": "npm run dev --workspace=packages/frontend",
     "test": "npm run test --workspaces --if-present",
+    "test:e2e": "playwright test",
     "lint": "eslint packages/*/src/**/*.{ts,tsx} packages/*/tests/**/*.ts",
     "format": "prettier --write \"packages/*/src/**/*.{ts,tsx}\"",
     "prepare": "husky || true"
   },
   "devDependencies": {
+    "@playwright/test": "^1.54.2",
     "@eslint/js": "^9.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
