@@ -1,7 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { installMockWebSocket } from './helpers';
 
 test('track editor happy path: select tool, rotate, place tiles', async ({ page }) => {
   const placed: Array<{ x: number; y: number; tileType: string; metadata?: Record<string, unknown> }> = [];
+
+  await installMockWebSocket(page);
 
   await page.route('**://localhost:3000/api/layouts', async (route) => {
     await route.fulfill({
