@@ -27,7 +27,6 @@ async function main() {
       description: 'Auto-created on first run. Rename via the API.',
     });
     layouts = [defaultLayout];
-    // eslint-disable-next-line no-console
     console.log(`[Bootstrap] Created default layout: ${defaultLayout.id}`);
   }
   const activeLayoutId = process.env.LAYOUT_ID ?? layouts[0].id;
@@ -101,7 +100,6 @@ async function main() {
 
   // ── Graceful Shutdown ─────────────────────────────────────────────────────────
   const shutdown = async (signal: string) => {
-    // eslint-disable-next-line no-console
     console.log(`[Shutdown] Received ${signal}`);
     await server.close();
     await layoutService.stop();
@@ -113,7 +111,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error('[Fatal]', err);
   process.exit(1);
 });

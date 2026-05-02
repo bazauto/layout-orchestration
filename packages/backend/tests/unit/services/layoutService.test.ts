@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { LayoutService } from '../../../src/services/LayoutService';
 import { LayoutStateManager } from '../../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../../src/adapters/dcc/SimulatedDccAdapter';

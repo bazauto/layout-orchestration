@@ -18,7 +18,6 @@ import {
   PointState,
   RouteId,
   SystemMode,
-  SystemStatus,
 } from './types';
 
 export class LayoutStateManager {
