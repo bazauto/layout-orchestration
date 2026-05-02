@@ -41,6 +41,7 @@ function makeRepo(): ILayoutRepository {
     deleteSensor: vi.fn(),
     listGridTiles: vi.fn().mockResolvedValue([]),
     upsertGridTile: vi.fn(),
+    deleteTile: vi.fn().mockResolvedValue(undefined),
     clearGrid: vi.fn(),
   };
 }
