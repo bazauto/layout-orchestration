@@ -2,25 +2,37 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
-  pull_request:
     branches: [main]
+  # No `branches` filter: CI must run on every pull request, whatever its base.
+  # Filtering on [main] silently skipped stacked PRs (#14, #15), which merged
+  # with no PR-time checks at all.
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Supersede in-flight runs for the same PR; never cancel a run on main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Name is deliberately stable and matrix-free: it is the required status check
+  # in main's branch protection. A matrix would name the check
+  # `test-and-lint (24.x)`, so bumping the Node version would rename the context
+  # and silently stop gating merges.
   test-and-lint:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: [24.x]
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use Node.js ${{ matrix.node-version }}
+      - name: Use Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 24.x
           cache: 'npm'
 
       - name: Install dependencies
@@ -36,7 +48,7 @@ jobs:
         run: npm run build --workspace=packages/backend
 
       - name: Install Playwright browser
-        run: npx playwright install chromium
+        run: npx playwright install --with-deps chromium
 
       - name: Run e2e tests
         run: npm run test:e2e
