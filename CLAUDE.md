@@ -96,7 +96,12 @@ and quote real output — never claim passing tests you did not run.
 
 ## Conventions
 
-- TypeScript strict, ESM throughout, `.js` extensions on relative imports in backend.
+- TypeScript strict everywhere. Module systems differ per workspace — match the code you
+  are editing, do not normalise:
+  - **Backend** — CommonJS (`"module": "CommonJS"`, `"moduleResolution": "Node"`, no
+    `"type"` field). Relative imports carry **no extension**: `from './types'`. Adding
+    `.js` breaks `tsc`.
+  - **Frontend** — ESM (`"type": "module"`, `"module": "ESNext"`, bundler resolution).
 - Structured logging with Pino; always include `layoutId`, and `locoAddress` / `blockId` /
   `pointId` where relevant.
 - Prettier + ESLint run on pre-commit via Husky. Don't fight the formatter.
