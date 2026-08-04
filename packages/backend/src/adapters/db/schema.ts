@@ -2,10 +2,10 @@
  * Drizzle ORM schema for the Layout Orchestrator SQLite database.
  *
  * This schema covers the layout configuration (Phase 1/2 MVP).
- * Track topology (block_edges) is intentionally deferred to Phase 2.
+ * Track topology now lives in `block_edges` below.
  */
 
-import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 // ─── Layouts ──────────────────────────────────────────────────────────────────
 
@@ -71,6 +71,39 @@ export const sensors = sqliteTable('sensors', {
   mqttTopic: text('mqtt_topic').notNull(),
 });
 
+// ─── Block Edges (track graph) ────────────────────────────────────────────────
+
+/**
+ * Directed connection between two blocks. A bidirectional physical connection
+ * is two rows. Authored explicitly — deliberately independent of grid_tiles.
+ */
+export const blockEdges = sqliteTable(
+  'block_edges',
+  {
+    id: text('id').primaryKey(),
+    layoutId: text('layout_id').notNull().references(() => layouts.id, { onDelete: 'cascade' }),
+    fromBlockId: text('from_block_id').notNull().references(() => blocks.id, { onDelete: 'cascade' }),
+    /** Named end of from_block_id this edge leaves by. */
+    fromEnd: text('from_end').notNull(),
+    toBlockId: text('to_block_id').notNull().references(() => blocks.id, { onDelete: 'cascade' }),
+    /** Named end of to_block_id this edge arrives at. */
+    toEnd: text('to_end').notNull(),
+    /**
+     * JSON array of { pointId, requiredPosition }. All must hold for the edge
+     * to be traversable. '[]' = plain track. Not FK-enforced: a dangling
+     * pointId makes the edge permanently non-traversable, which fails closed.
+     */
+    pointConditions: text('point_conditions').notNull().default('[]'),
+    /** Physical length in mm. NULL = unmeasured; unsafe for automated braking. */
+    lengthMm: integer('length_mm'),
+  },
+  (table) => [
+    index('block_edges_layout_idx').on(table.layoutId),
+    index('block_edges_from_block_idx').on(table.fromBlockId),
+    index('block_edges_to_block_idx').on(table.toBlockId),
+  ],
+);
+
 // ─── Grid Tiles ───────────────────────────────────────────────────────────────
 
 export const gridTiles = sqliteTable('grid_tiles', {
@@ -99,3 +132,5 @@ export type Sensor = typeof sensors.$inferSelect;
 export type NewSensor = typeof sensors.$inferInsert;
 export type GridTile = typeof gridTiles.$inferSelect;
 export type NewGridTile = typeof gridTiles.$inferInsert;
+export type BlockEdgeRow = typeof blockEdges.$inferSelect;
+export type NewBlockEdgeRow = typeof blockEdges.$inferInsert;
