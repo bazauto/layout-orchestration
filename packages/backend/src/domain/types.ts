@@ -12,6 +12,15 @@ export type PointId = string;
 export type SensorId = string;
 export type RouteId = string;
 
+export type BlockEdgeId = string;
+/**
+ * A named physical opening of a block ('north', 'yard-3', ...).
+ * Labels are arbitrary but must be used consistently for a given block.
+ * A non-reversing movement must leave a block via an end different from
+ * the one it entered by.
+ */
+export type BlockEndLabel = string;
+
 /** DCC loco address (1–9999) */
 export type LocoAddress = number;
 
@@ -34,6 +43,41 @@ export type SystemMode = 'manual' | 'auto' | 'hybrid';
 
 /** Current operating status of the orchestrator. */
 export type SystemStatus = 'online' | 'safe-stop' | 'offline';
+
+// ─── Track Topology ───────────────────────────────────────────────────────────
+
+/**
+ * A point that must be at a specific position for an edge to be traversable.
+ * `requiredPosition` deliberately excludes 'unknown' — you cannot require
+ * uncertainty. An actual position of 'unknown' never satisfies a condition.
+ */
+export interface PointCondition {
+  pointId: PointId;
+  requiredPosition: 'normal' | 'reverse';
+}
+
+/**
+ * A directed connection from one block to another.
+ * A bidirectional physical connection is represented as two edges.
+ * Edge direction is geometric and unrelated to loco `Direction`.
+ */
+export interface BlockEdge {
+  id: BlockEdgeId;
+  layoutId: LayoutId;
+  fromBlockId: BlockId;
+  /** End of `fromBlockId` this edge leaves by. */
+  fromEnd: BlockEndLabel;
+  toBlockId: BlockId;
+  /** End of `toBlockId` this edge arrives at. */
+  toEnd: BlockEndLabel;
+  /**
+   * All conditions must hold for the edge to be traversable.
+   * Empty means plain track with no point gating.
+   */
+  pointConditions: PointCondition[];
+  /** Physical length in millimetres. `null` means unmeasured — treat as unsafe for automated braking. */
+  lengthMm: number | null;
+}
 
 // ─── Runtime State ────────────────────────────────────────────────────────────
 

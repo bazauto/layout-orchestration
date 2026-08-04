@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { PointCondition } from '../domain/types';
 
 export const sensorReadingSchema = z.object({
   state: z.enum(['occupied', 'clear']),
@@ -32,6 +33,23 @@ export const functionCommandSchema = z.object({
 export const setModeSchema = z.object({
   mode: z.enum(['manual', 'auto', 'hybrid']),
 });
+
+export const pointConditionSchema = z.object({
+  pointId: z.string().min(1),
+  requiredPosition: z.enum(['normal', 'reverse']),
+});
+
+export const pointConditionsSchema = z.array(pointConditionSchema);
+
+/**
+ * Parses the block_edges.point_conditions JSON column.
+ * THROWS on malformed JSON or a failed schema check. It must never degrade to
+ * an empty array: that would silently turn a point-gated edge into an
+ * unconditionally traversable one.
+ */
+export function parsePointConditions(json: string): PointCondition[] {
+  return pointConditionsSchema.parse(JSON.parse(json));
+}
 
 export const clientMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('THROTTLE_COMMAND'), payload: throttleCommandSchema }),
