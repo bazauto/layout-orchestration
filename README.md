@@ -180,8 +180,10 @@ The system follows a fail-safe posture:
 
 ## Known Limits
 
-Current topology editing is tile-based and does not yet build formal route graphs or reservations.
-Automation and route locking are not implemented yet.
+A formal track graph now exists — `block_edges` in the schema, with construction and
+traversal in `domain/graph.ts` — but nothing is wired to it yet: there is no repository
+read path, and topology editing in the UI is still tile-based, so edges cannot be
+authored. Reservations, automation, and route locking are not implemented.
 
 ## Next Milestones
 

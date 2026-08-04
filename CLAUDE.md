@@ -106,15 +106,33 @@ and quote real output — never claim passing tests you did not run.
   `pointId` where relevant.
 - Prettier + ESLint run on pre-commit via Husky. Don't fight the formatter.
 - Commit only when asked. Branch off `main` rather than committing to it directly.
+- **Documentation moves with the code that invalidates it**, in the same PR — never as a
+  follow-up. Before opening a PR, check whether it falsifies anything in **Current state**
+  below, `README.md` (Known Limits, Next Milestones), or `docs/`. `CLAUDE.md` is loaded
+  into every session, so a stale entry there actively misdirects the next one. Amending
+  `docs/mqtt-contract.md` is stricter still: it is binding, and the contract changes
+  *before* the code, not after.
 
 ## Current state (2026-08)
 
 Phases 0–2 complete: domain, adapters, persistence, REST, WebSocket, operator UI,
 config UI, track editor, CI.
 
-**Phase 3 is blocked on topology.** `block_edges` does not exist — blocks are a flat
-list and grid tiles carry no route semantics. `RouteId` and `lockedByRoute` are declared
-in `domain/types.ts` but nothing populates them. Route reservation, collision avoidance,
-and braking models all depend on that graph landing first.
+**Topology has landed; nothing is wired to it yet.** `block_edges` is in `schema.ts`
+with its migration, and `domain/graph.ts` builds and queries the track graph. But there
+is no read or write path: `ILayoutRepository` has no edge methods, nothing calls
+`buildTrackGraph`, and the Configure UI cannot author an edge (#2).
 
-Frontend has no unit tests (`vitest --passWithNoTests`).
+`lockBlock` / `lockPoint` in `domain/layoutState.ts` do populate `lockedByRoute`. Nothing
+calls them — there is no reservation engine to supply a `RouteId`, and the locking
+semantics are undecided (#3).
+
+Phase 3 is therefore gated on #2 (authoring and persistence for edges) and #3 (locking
+semantics), not on the graph itself. Route reservation (#4), per-loco braking (#6), and
+collision avoidance (#7) follow those.
+
+Three security findings against the topology commit are open and should land with #2:
+#10 (Safe-Stop on invalid topology rather than a bare throw), #11 (DB-level graph
+invariants), #12 (Zod over the whole `block_edges` row, not just `point_conditions`).
+
+Frontend has no unit tests (`vitest --passWithNoTests`) — #8.
