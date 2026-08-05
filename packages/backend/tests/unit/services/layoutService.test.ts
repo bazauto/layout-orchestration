@@ -4,6 +4,8 @@ import { LayoutStateManager } from '../../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../../src/adapters/mqtt/SimulatedMqttAdapter';
 import { ILayoutRepository } from '../../../src/ports/ILayoutRepository';
+import { BlockEdgeRowInvalidError } from '../../../src/services/validation';
+import { BlockEdge } from '../../../src/domain/types';
 
 // ── In-memory repository stub ─────────────────────────────────────────────────
 
@@ -20,6 +22,7 @@ function makeRepo(): ILayoutRepository {
     deleteLoco: vi.fn(),
     listBlocks: vi.fn().mockResolvedValue([{ id: 'b1', layoutId: 'test', name: 'Block 1' }]),
     createBlock: vi.fn(),
+    updateBlock: vi.fn(),
     deleteBlock: vi.fn(),
     listPoints: vi.fn().mockResolvedValue([
       { id: 'p1', layoutId: 'test', name: 'Point 1', dccAddress: 10, blockId: 'b1' },
@@ -43,6 +46,11 @@ function makeRepo(): ILayoutRepository {
     upsertGridTile: vi.fn(),
     deleteTile: vi.fn().mockResolvedValue(undefined),
     clearGrid: vi.fn(),
+    listBlockEdges: vi.fn().mockResolvedValue([]),
+    getBlockEdge: vi.fn().mockResolvedValue(null),
+    createBlockEdge: vi.fn(),
+    updateBlockEdge: vi.fn(),
+    deleteBlockEdge: vi.fn(),
   };
 }
 
@@ -193,6 +201,119 @@ describe('LayoutService — sensor-driven block state', () => {
 
     // Block should remain in its initial 'unknown' state
     expect(stateManager.getBlock('b1')?.occupancy).toBe('unknown');
+    await service.stop();
+  });
+});
+
+describe('LayoutService — topology', () => {
+  const selfLoopEdge: BlockEdge = {
+    id: 'e-loop',
+    layoutId: 'test',
+    fromBlockId: 'b1',
+    fromEnd: 'north',
+    toBlockId: 'b1',
+    toEnd: 'south',
+    pointConditions: [],
+    lengthMm: null,
+  };
+
+  it('resolves start(), enters safe-stop, and leaves the graph null when a self-loop edge exists at boot', async () => {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    vi.mocked(repo.listBlockEdges).mockResolvedValue([selfLoopEdge]);
+    const stateManager = new LayoutStateManager('test');
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, silentLogger);
+
+    await expect(service.start('test')).resolves.toBeUndefined();
+
+    expect(service.getSystemStatus().status).toBe('safe-stop');
+    expect(service.getSystemStatus().reason).toMatch(/self-loop/i);
+    expect(service.getTrackGraph()).toBeNull();
+
+    await service.stop();
+  });
+
+  it('does not clear safe-stop on an MQTT reconnect while the topology is still invalid (regression guard for #10)', async () => {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    vi.mocked(repo.listBlockEdges).mockResolvedValue([selfLoopEdge]);
+    const stateManager = new LayoutStateManager('test');
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, silentLogger);
+
+    await service.start('test');
+    expect(service.getSystemStatus().status).toBe('safe-stop');
+
+    // Simulate the MQTT broker dropping and reconnecting — connection health
+    // recovers, but nothing has fixed the topology.
+    await mqtt.disconnect();
+    await new Promise((r) => setImmediate(r));
+    await mqtt.connect();
+    await new Promise((r) => setImmediate(r));
+
+    expect(service.getSystemStatus().status).toBe('safe-stop');
+    expect(service.getSystemStatus().reason).toMatch(/self-loop/i);
+
+    await service.stop();
+  });
+
+  it('enters safe-stop without crashing when the repository throws BlockEdgeRowInvalidError', async () => {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    vi.mocked(repo.listBlockEdges).mockRejectedValue(
+      new BlockEdgeRowInvalidError('e1', []),
+    );
+    const stateManager = new LayoutStateManager('test');
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, silentLogger);
+
+    await expect(service.start('test')).resolves.toBeUndefined();
+    expect(service.getSystemStatus().status).toBe('safe-stop');
+    expect(service.getTrackGraph()).toBeNull();
+
+    await service.stop();
+  });
+
+  it('lets a generic repository error propagate — start() rejects, proving the catch in loadTopology is narrow', async () => {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    vi.mocked(repo.listBlockEdges).mockRejectedValue(new Error('DB exploded'));
+    const stateManager = new LayoutStateManager('test');
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, silentLogger);
+
+    await expect(service.start('test')).rejects.toThrow('DB exploded');
+  });
+
+  it('builds the track graph and stays online when the topology is valid', async () => {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    vi.mocked(repo.listBlocks).mockResolvedValue([
+      { id: 'b1', layoutId: 'test', name: 'Block 1' },
+      { id: 'b2', layoutId: 'test', name: 'Block 2' },
+    ]);
+    vi.mocked(repo.listBlockEdges).mockResolvedValue([
+      {
+        id: 'e1',
+        layoutId: 'test',
+        fromBlockId: 'b1',
+        fromEnd: 'east',
+        toBlockId: 'b2',
+        toEnd: 'west',
+        pointConditions: [],
+        lengthMm: null,
+      },
+    ]);
+    const stateManager = new LayoutStateManager('test');
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, silentLogger);
+
+    await service.start('test');
+
+    expect(service.getSystemStatus().status).toBe('online');
+    expect(service.getTrackGraph()?.edges.size).toBe(1);
+
     await service.stop();
   });
 });

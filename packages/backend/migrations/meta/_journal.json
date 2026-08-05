@@ -15,6 +15,13 @@
       "when": 1785863341471,
       "tag": "0001_block_edges",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785869241812,
+      "tag": "0002_bitter_jane_foster",
+      "breakpoints": true
     }
   ]
 }

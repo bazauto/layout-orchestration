@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   evaluateSafeStop,
+  evaluateSystemSafeStop,
   canIssueAutoCommand,
   canIssueManualCommand,
   isBlockEffectivelyOccupied,
@@ -30,6 +31,43 @@ describe('evaluateSafeStop', () => {
   it('triggers safe-stop when both connections are down', () => {
     const result = evaluateSafeStop({ mqttConnected: false, dccConnected: false });
     expect(result.shouldStop).toBe(true);
+  });
+});
+
+describe('evaluateSystemSafeStop', () => {
+  it('returns no safe-stop when connections and topology are both healthy', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+    });
+    expect(result.shouldStop).toBe(false);
+    expect(result.reason).toBeNull();
+  });
+
+  it('stops with the topology reason when connections are healthy but topology is invalid', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: false,
+      topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toBe(
+      'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
+    );
+  });
+
+  it('lets a connection failure reason win over an invalid topology', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: false,
+      dccConnected: true,
+      topologyValid: false,
+      topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/MQTT/i);
   });
 });
 

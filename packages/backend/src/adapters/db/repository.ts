@@ -8,7 +8,7 @@
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { randomUUID } from 'crypto';
@@ -21,6 +21,8 @@ import {
   SensorRecord,
   GridTileRecord,
 } from '../../ports/ILayoutRepository';
+import { BlockEdge } from '../../domain/types';
+import { parseBlockEdgeRow } from '../../services/validation';
 import {
   layouts,
   locos,
@@ -28,6 +30,7 @@ import {
   points,
   sensors,
   gridTiles,
+  blockEdges,
 } from './schema';
 
 export class DrizzleRepository implements ILayoutRepository {
@@ -122,8 +125,24 @@ export class DrizzleRepository implements ILayoutRepository {
     return rows[0];
   }
 
-  async deleteBlock(id: string): Promise<void> {
-    this.db.delete(blocks).where(eq(blocks.id, id)).run();
+  async deleteBlock(layoutId: string, id: string): Promise<void> {
+    // Explicit, atomic edge cleanup — see the doc comment on
+    // ILayoutRepository#deleteBlock. Not belt-and-braces: this is what keeps
+    // topology correct without relying on FK cascade enforcement being on.
+    //
+    // Every statement is scoped by layoutId as well as id, so a mismatched
+    // layout deletes nothing rather than deleting another layout's block.
+    this.db.transaction((tx) => {
+      tx.delete(blockEdges)
+        .where(
+          and(
+            eq(blockEdges.layoutId, layoutId),
+            or(eq(blockEdges.fromBlockId, id), eq(blockEdges.toBlockId, id)),
+          ),
+        )
+        .run();
+      tx.delete(blocks).where(and(eq(blocks.layoutId, layoutId), eq(blocks.id, id))).run();
+    });
   }
 
   // ─── Points ─────────────────────────────────────────────────────────────────
@@ -149,8 +168,8 @@ export class DrizzleRepository implements ILayoutRepository {
     return rows[0];
   }
 
-  async deletePoint(id: string): Promise<void> {
-    this.db.delete(points).where(eq(points.id, id)).run();
+  async deletePoint(layoutId: string, id: string): Promise<void> {
+    this.db.delete(points).where(and(eq(points.layoutId, layoutId), eq(points.id, id))).run();
   }
 
   // ─── Sensors ────────────────────────────────────────────────────────────────
@@ -216,6 +235,60 @@ export class DrizzleRepository implements ILayoutRepository {
 
   async clearGrid(layoutId: string): Promise<void> {
     this.db.delete(gridTiles).where(eq(gridTiles.layoutId, layoutId)).run();
+  }
+
+  // ─── Block Edges ────────────────────────────────────────────────────────────
+
+  async listBlockEdges(layoutId: string): Promise<BlockEdge[]> {
+    const rows = this.db.select().from(blockEdges).where(eq(blockEdges.layoutId, layoutId)).all();
+    return rows.map(parseBlockEdgeRow);
+  }
+
+  async getBlockEdge(id: string): Promise<BlockEdge | null> {
+    const rows = this.db.select().from(blockEdges).where(eq(blockEdges.id, id)).all();
+    return rows.length > 0 ? parseBlockEdgeRow(rows[0]) : null;
+  }
+
+  async createBlockEdge(data: Omit<BlockEdge, 'id'>): Promise<BlockEdge> {
+    const id = randomUUID();
+    this.db
+      .insert(blockEdges)
+      .values({
+        id,
+        layoutId: data.layoutId,
+        fromBlockId: data.fromBlockId,
+        fromEnd: data.fromEnd,
+        toBlockId: data.toBlockId,
+        toEnd: data.toEnd,
+        pointConditions: JSON.stringify(data.pointConditions),
+        lengthMm: data.lengthMm,
+      })
+      .run();
+    const created = await this.getBlockEdge(id);
+    if (!created) throw new Error(`Block edge ${id} not found after create`);
+    return created;
+  }
+
+  async updateBlockEdge(
+    id: string,
+    data: Partial<Omit<BlockEdge, 'id' | 'layoutId'>>,
+  ): Promise<BlockEdge> {
+    const { pointConditions, ...rest } = data;
+    this.db
+      .update(blockEdges)
+      .set({
+        ...rest,
+        ...(pointConditions !== undefined ? { pointConditions: JSON.stringify(pointConditions) } : {}),
+      })
+      .where(eq(blockEdges.id, id))
+      .run();
+    const updated = await this.getBlockEdge(id);
+    if (!updated) throw new Error(`Block edge ${id} not found after update`);
+    return updated;
+  }
+
+  async deleteBlockEdge(id: string): Promise<void> {
+    this.db.delete(blockEdges).where(eq(blockEdges.id, id)).run();
   }
 }
 

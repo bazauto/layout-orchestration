@@ -16,6 +16,17 @@ export interface ConnectionHealth {
 }
 
 /**
+ * Connection health plus topology health. `topologyValid` is required, not
+ * optional-defaulting-to-true — an unset field must never be read as safe,
+ * per the fail-safe rule. `topologyReason` carries the Safe-Stop reason
+ * (from `describeViolations`) when `topologyValid` is false.
+ */
+export interface SystemHealth extends ConnectionHealth {
+  topologyValid: boolean;
+  topologyReason: string | null;
+}
+
+/**
  * Determines whether a Safe-Stop should be triggered based on connection health.
  * Safe-Stop is triggered if either the MQTT broker or DCC controller is disconnected.
  */
@@ -28,6 +39,27 @@ export function evaluateSafeStop(health: ConnectionHealth): {
   }
   if (!health.dccConnected) {
     return { shouldStop: true, reason: 'DCC controller disconnected' };
+  }
+  return { shouldStop: false, reason: null };
+}
+
+/**
+ * Determines whether a Safe-Stop should be triggered based on connection
+ * health AND topology health. Check order is MQTT, then DCC, then topology —
+ * a connection failure reason always wins over a topology reason, so an
+ * operator investigating a Safe-Stop sees the more actionable, more urgent
+ * cause first.
+ */
+export function evaluateSystemSafeStop(health: SystemHealth): {
+  shouldStop: boolean;
+  reason: string | null;
+} {
+  const connectionResult = evaluateSafeStop(health);
+  if (connectionResult.shouldStop) {
+    return connectionResult;
+  }
+  if (!health.topologyValid) {
+    return { shouldStop: true, reason: health.topologyReason };
   }
   return { shouldStop: false, reason: null };
 }

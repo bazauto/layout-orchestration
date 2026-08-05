@@ -12,6 +12,7 @@ import { SimulatedMqttAdapter } from './adapters/mqtt/SimulatedMqttAdapter';
 import { MqttAdapter } from './adapters/mqtt/MqttAdapter';
 import { DrizzleRepository } from './adapters/db/repository';
 import { LayoutService } from './services/LayoutService';
+import { TopologyService } from './services/TopologyService';
 import { buildServer } from './transport/http/server';
 import { IDccController } from './ports/IDccController';
 import { IMqttAdapter } from './ports/IMqttAdapter';
@@ -93,9 +94,14 @@ async function main() {
   // ── Service & Server ──────────────────────────────────────────────────────────
   const stateManager = new LayoutStateManager(activeLayoutId);
   const layoutService = new LayoutService(dcc, mqtt, repo, stateManager, adapterLogger);
+  const topologyService = new TopologyService(
+    repo,
+    () => layoutService.reloadTopology(),
+    adapterLogger,
+  );
   await layoutService.start(activeLayoutId);
 
-  const server = await buildServer(layoutService, repo, config.log.level);
+  const server = await buildServer(layoutService, repo, config.log.level, topologyService);
   await server.listen({ port: config.http.port, host: config.http.host });
 
   // ── Graceful Shutdown ─────────────────────────────────────────────────────────

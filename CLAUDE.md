@@ -118,21 +118,39 @@ and quote real output — never claim passing tests you did not run.
 Phases 0–2 complete: domain, adapters, persistence, REST, WebSocket, operator UI,
 config UI, track editor, CI.
 
-**Topology has landed; nothing is wired to it yet.** `block_edges` is in `schema.ts`
-with its migration, and `domain/graph.ts` builds and queries the track graph. But there
-is no read or write path: `ILayoutRepository` has no edge methods, nothing calls
-`buildTrackGraph`, and the Configure UI cannot author an edge (#2).
+**Topology's backend half has landed (PR A of two); authoring has not (PR B).**
+`block_edges` now has a full backend path: `ILayoutRepository` has edge CRUD methods
+(`DrizzleRepository`, every read going through `parseBlockEdgeRow` — full-row Zod
+validation, not just `point_conditions`); DB-level invariants (no self-loop, a positive
+`length_mm` or `NULL`, non-blank ends, and a unique index on the full connection tuple —
+deliberately *not* on `(from_block_id, from_end)`, see `docs/topology.md`) landed in
+`migrations/0002_bitter_jane_foster.sql`; a `TopologyService` write path
+(`src/services/TopologyService.ts`) validates every create/update against the rest of the
+layout before persisting; and `LayoutService.reloadTopology()` runs on startup and after
+every edge mutation, applying Safe-Stop on a fatal violation (`domain/topology.ts`,
+`services/topologyLoader.ts`). REST: `GET|POST /api/layouts/:layoutId/edges`,
+`PUT|DELETE .../edges/:id`, `GET .../topology`, `POST .../topology/revalidate`; block and
+point deletes now delegate to `TopologyService` so a block delete cannot leave a dangling
+edge and a point delete is refused while an edge still references it.
+
+**There is still no Configure UI for edges.** An edge can only be created via the API
+today — #2 stays open for the authoring surface (PR B).
 
 `lockBlock` / `lockPoint` in `domain/layoutState.ts` do populate `lockedByRoute`. Nothing
 calls them — there is no reservation engine to supply a `RouteId`, and the locking
 semantics are undecided (#3).
 
-Phase 3 is therefore gated on #2 (authoring and persistence for edges) and #3 (locking
-semantics), not on the graph itself. Route reservation (#4), per-loco braking (#6), and
-collision avoidance (#7) follow those.
+Phase 3 is therefore gated on #2 (the authoring surface) and #3 (locking semantics), not
+on the graph or its persistence, both of which are now done. Route reservation (#4),
+per-loco braking (#6), and collision avoidance (#7) follow those. Note for #4: edge writes
+are not yet refused while a route is reserved — see the deferred note in
+`docs/topology.md`.
 
-Three security findings against the topology commit are open and should land with #2:
-#10 (Safe-Stop on invalid topology rather than a bare throw), #11 (DB-level graph
-invariants), #12 (Zod over the whole `block_edges` row, not just `point_conditions`).
+The three security findings against the original topology commit — #10 (Safe-Stop on
+invalid topology rather than a bare throw), #11 (DB-level graph invariants), #12 (Zod
+over the whole `block_edges` row) — have landed with this work.
+
+`packages/backend/tests/scenario/` now exists and has content (topology Safe-Stop and
+recovery paths); it was empty before.
 
 Frontend has no unit tests (`vitest --passWithNoTests`) — #8.

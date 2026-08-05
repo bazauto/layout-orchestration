@@ -29,16 +29,18 @@ import {
 import { LayoutStateManager } from '../domain/layoutState';
 import {
   canIssueManualCommand,
-  ConnectionHealth,
-  evaluateSafeStop,
+  evaluateSystemSafeStop,
   isBlockEffectivelyOccupied,
   isValidLocoAddress,
   isValidSpeed,
+  SystemHealth,
 } from '../domain/safety';
+import { TrackGraph } from '../domain/graph';
 import { IDccController } from '../ports/IDccController';
 import { IMqttAdapter } from '../ports/IMqttAdapter';
 import { ILayoutRepository } from '../ports/ILayoutRepository';
 import { sensorReadingSchema } from './validation';
+import { loadTopology, TopologyLoadResult } from './topologyLoader';
 
 export interface LayoutServiceLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -49,7 +51,13 @@ export interface LayoutServiceLogger {
 export class LayoutService extends EventEmitter {
   private layoutId: LayoutId | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private health: ConnectionHealth = { mqttConnected: false, dccConnected: false };
+  private health: SystemHealth = {
+    mqttConnected: false,
+    dccConnected: false,
+    topologyValid: true,
+    topologyReason: null,
+  };
+  private graph: TrackGraph | null = null;
 
   constructor(
     private readonly dcc: IDccController,
@@ -74,13 +82,20 @@ export class LayoutService extends EventEmitter {
     await this.mqtt.connect();
     await this.dcc.connect();
 
-    // Load layout config and register blocks/points in state
+    // Go online before loading topology: reloadTopology (called from
+    // initializeLayoutState below) applies Safe-Stop via the same path as a
+    // connection failure, which is a no-op while systemStatus is 'offline'.
+    // An invalid topology at boot must land on 'safe-stop', not silently be
+    // skipped and then overwritten once this method returns.
+    this.stateManager.setOnline();
+
+    // Load layout config and register blocks/points in state, then validate
+    // and build the track graph.
     await this.initializeLayoutState(layoutId);
 
     // Subscribe to sensor topics
     await this.subscribeSensors(layoutId);
 
-    this.stateManager.setOnline();
     this.publishSystemStatus();
     this.startHeartbeat();
 
@@ -211,6 +226,45 @@ export class LayoutService extends EventEmitter {
     return this.stateManager.getState();
   }
 
+  getTrackGraph(): TrackGraph | null {
+    return this.graph;
+  }
+
+  /**
+   * Reloads and re-validates the track topology for the running layout,
+   * applying Safe-Stop if it is invalid. Called on startup (after blocks and
+   * points are registered) and again after any edge mutation via
+   * `TopologyService`'s `onTopologyChanged` callback.
+   *
+   * Never throws for a topology data problem — `loadTopology` already turns
+   * a fatal violation set or an invalid `block_edges` row into a result
+   * object rather than an exception. A non-topology error (e.g. the
+   * repository itself failing) is not caught here and propagates to the
+   * caller, per the narrow-catch rule in `loadTopology`.
+   */
+  async reloadTopology(): Promise<TopologyLoadResult> {
+    if (!this.layoutId) {
+      throw new Error('[LayoutService] reloadTopology called before start()');
+    }
+    const layoutId = this.layoutId;
+
+    const result = await loadTopology(this.repo, layoutId);
+
+    this.graph = result.graph;
+    this.health = { ...this.health, topologyValid: !result.fatal, topologyReason: result.reason };
+
+    if (result.fatal) {
+      this.log.error('[LayoutService] Topology invalid', {
+        layoutId,
+        violations: result.violations,
+      });
+    }
+
+    this.evaluateAndApplySafeStop();
+
+    return result;
+  }
+
   // ─── Private: Initialisation ──────────────────────────────────────────────────
 
   private async initializeLayoutState(layoutId: LayoutId): Promise<void> {
@@ -230,6 +284,8 @@ export class LayoutService extends EventEmitter {
       blocks: dbBlocks.length,
       points: dbPoints.length,
     });
+
+    await this.reloadTopology();
   }
 
   private async subscribeSensors(layoutId: LayoutId): Promise<void> {
@@ -291,7 +347,7 @@ export class LayoutService extends EventEmitter {
     const state = this.stateManager.getState();
     if (state.systemStatus === 'offline') return;
 
-    const { shouldStop, reason } = evaluateSafeStop(this.health);
+    const { shouldStop, reason } = evaluateSystemSafeStop(this.health);
 
     if (shouldStop && state.systemStatus !== 'safe-stop') {
       this.log.warn('[LayoutService] Entering Safe-Stop', { reason });

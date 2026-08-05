@@ -16,7 +16,9 @@ import {
   PointCondition,
   PointId,
   PointPosition,
+  TopologyViolation,
 } from './types';
+import { TopologyInvalidError } from './topology';
 
 // ─── Graph Construction ────────────────────────────────────────────────────────
 
@@ -29,25 +31,34 @@ export interface TrackGraph {
 
 /**
  * Builds a `TrackGraph` from a flat list of edges.
- * Throws on layoutId mismatch, duplicate edge id, or self-loop — these are
- * data integrity errors, not runtime conditions to be handled gracefully.
+ * Throws `TopologyInvalidError` on layoutId mismatch, duplicate edge id, or
+ * self-loop — these are data integrity errors, not runtime conditions to be
+ * handled gracefully. This throw is a typed backstop, not the primary
+ * validation path: load-path callers (`services/topologyLoader.ts`) run
+ * `validateTopology` first and only call this once no fatal violation
+ * remains, so in practice this constructor-time check should never fire
+ * outside of tests exercising it directly.
  */
 export function buildTrackGraph(layoutId: LayoutId, edges: readonly BlockEdge[]): TrackGraph {
   const edgeMap = new Map<BlockEdgeId, BlockEdge>();
   const outgoing = new Map<BlockId, BlockEdge[]>();
   const incoming = new Map<BlockId, BlockEdge[]>();
+  const violations: TopologyViolation[] = [];
 
   for (const edge of edges) {
     if (edge.layoutId !== layoutId) {
-      throw new Error(
-        `Edge ${edge.id} belongs to layout ${edge.layoutId}, not ${layoutId}`,
-      );
+      violations.push({
+        kind: 'layout-mismatch',
+        edgeId: edge.id,
+        expectedLayoutId: layoutId,
+        actualLayoutId: edge.layoutId,
+      });
     }
     if (edgeMap.has(edge.id)) {
-      throw new Error(`Duplicate edge id: ${edge.id}`);
+      violations.push({ kind: 'duplicate-edge-id', edgeId: edge.id });
     }
     if (edge.fromBlockId === edge.toBlockId) {
-      throw new Error(`Edge ${edge.id} is a self-loop on block ${edge.fromBlockId}`);
+      violations.push({ kind: 'self-loop', edgeId: edge.id, blockId: edge.fromBlockId });
     }
 
     edgeMap.set(edge.id, edge);
@@ -59,6 +70,10 @@ export function buildTrackGraph(layoutId: LayoutId, edges: readonly BlockEdge[])
     const to = incoming.get(edge.toBlockId) ?? [];
     to.push(edge);
     incoming.set(edge.toBlockId, to);
+  }
+
+  if (violations.length > 0) {
+    throw new TopologyInvalidError(violations);
   }
 
   return { layoutId, edges: edgeMap, outgoing, incoming };
