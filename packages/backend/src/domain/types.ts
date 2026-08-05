@@ -79,6 +79,25 @@ export interface BlockEdge {
   lengthMm: number | null;
 }
 
+/**
+ * A specific way in which a set of `BlockEdge`s fails to describe a coherent
+ * track graph. `validateTopology`/`validateEdgeAgainstLayout` in `./topology`
+ * return these; `isFatalViolation` in the same module decides whether a given
+ * kind blocks graph construction or is merely degraded (see `unknown-point`).
+ */
+export type TopologyViolation =
+  | {
+      kind: 'layout-mismatch';
+      edgeId: BlockEdgeId;
+      expectedLayoutId: LayoutId;
+      actualLayoutId: LayoutId;
+    }
+  | { kind: 'duplicate-edge-id'; edgeId: BlockEdgeId }
+  | { kind: 'self-loop'; edgeId: BlockEdgeId; blockId: BlockId }
+  | { kind: 'unknown-block'; edgeId: BlockEdgeId; blockId: BlockId }
+  | { kind: 'unknown-point'; edgeId: BlockEdgeId; pointId: PointId }
+  | { kind: 'duplicate-connection'; edgeId: BlockEdgeId; conflictingEdgeId: BlockEdgeId };
+
 // ─── Runtime State ────────────────────────────────────────────────────────────
 
 export interface BlockState {

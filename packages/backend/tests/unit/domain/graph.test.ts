@@ -10,6 +10,7 @@ import {
   reachableBlocks,
 } from '../../../src/domain/graph';
 import { BlockEdge, PointPosition } from '../../../src/domain/types';
+import { TopologyInvalidError } from '../../../src/domain/topology';
 
 const layoutId = 'layout-1';
 
@@ -129,6 +130,20 @@ describe('buildTrackGraph', () => {
   it('throws on self-loop', () => {
     const loop: BlockEdge = { ...e1, id: 'loop', toBlockId: e1.fromBlockId };
     expect(() => buildTrackGraph(layoutId, [loop])).toThrow(/loop/);
+  });
+
+  it('throws a TopologyInvalidError carrying the violations', () => {
+    const loop: BlockEdge = { ...e1, id: 'loop', toBlockId: e1.fromBlockId };
+    expect(() => buildTrackGraph(layoutId, [loop])).toThrow(TopologyInvalidError);
+    try {
+      buildTrackGraph(layoutId, [loop]);
+      expect.unreachable();
+    } catch (err) {
+      expect(err).toBeInstanceOf(TopologyInvalidError);
+      expect((err as TopologyInvalidError).violations).toEqual([
+        { kind: 'self-loop', edgeId: 'loop', blockId: 'approach' },
+      ]);
+    }
   });
 });
 

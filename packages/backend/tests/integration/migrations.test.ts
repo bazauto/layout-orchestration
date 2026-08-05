@@ -93,4 +93,94 @@ describe('migrations', () => {
     expect(toBlockFk?.table).toBe('blocks');
     expect(toBlockFk?.on_delete).toBe('CASCADE');
   });
+
+  // ── DB-level topology invariants (block_edges CHECK/UNIQUE constraints) ──────
+  //
+  // These insert directly against the raw better-sqlite3 handle so they exercise
+  // the constraints themselves, independent of any application-layer validation.
+
+  describe('block_edges invariants', () => {
+    let edgeCounter = 0;
+
+    // block_edges has FK references to layouts/blocks (better-sqlite3 enables
+    // foreign_keys enforcement by default, independent of the deferred #18
+    // pragma work on DrizzleRepository itself), so a fixed pool of parent
+    // rows is created up front for these constraint-only inserts to reference.
+    beforeAll(() => {
+      sqlite
+        .prepare('INSERT INTO layouts (id, name, created_at) VALUES (?, ?, ?)')
+        .run('layout-1', 'Test Layout', Date.now());
+      const insertBlock = sqlite.prepare('INSERT INTO blocks (id, layout_id, name) VALUES (?, ?, ?)');
+      for (const blockId of [
+        'block-a',
+        'block-b',
+        'same-block',
+        'throat',
+        'platform-1',
+        'platform-2',
+        'x',
+        'y',
+      ]) {
+        insertBlock.run(blockId, 'layout-1', blockId);
+      }
+    });
+
+    function insertEdge(overrides: {
+      fromBlockId?: string;
+      fromEnd?: string;
+      toBlockId?: string;
+      toEnd?: string;
+      lengthMm?: number | null;
+    }): void {
+      edgeCounter += 1;
+      const row = {
+        id: `edge-${edgeCounter}`,
+        layoutId: 'layout-1',
+        fromBlockId: overrides.fromBlockId ?? 'block-a',
+        fromEnd: overrides.fromEnd ?? 'east',
+        toBlockId: overrides.toBlockId ?? 'block-b',
+        toEnd: overrides.toEnd ?? 'west',
+        lengthMm: overrides.lengthMm === undefined ? null : overrides.lengthMm,
+      };
+      sqlite
+        .prepare(
+          `INSERT INTO block_edges (id, layout_id, from_block_id, from_end, to_block_id, to_end, length_mm)
+           VALUES (@id, @layoutId, @fromBlockId, @fromEnd, @toBlockId, @toEnd, @lengthMm)`,
+        )
+        .run(row);
+    }
+
+    it('rejects a self-loop', () => {
+      expect(() => insertEdge({ fromBlockId: 'same-block', toBlockId: 'same-block' })).toThrow();
+    });
+
+    it('rejects length_mm of 0 and -5, but allows NULL', () => {
+      expect(() => insertEdge({ lengthMm: 0 })).toThrow();
+      expect(() => insertEdge({ lengthMm: -5 })).toThrow();
+      expect(() => insertEdge({ lengthMm: null })).not.toThrow();
+    });
+
+    it('rejects a blank from_end', () => {
+      expect(() => insertEdge({ fromEnd: '   ' })).toThrow();
+    });
+
+    it('allows two edges from the SAME (from_block_id, from_end) to DIFFERENT blocks — the design decision this table encodes', () => {
+      // A turnout's throw side (throat/east) fans out to two different
+      // platforms depending on point position. Both edges are valid; the
+      // point_conditions column (not a DB constraint) discriminates them.
+      expect(() =>
+        insertEdge({ fromBlockId: 'throat', fromEnd: 'east', toBlockId: 'platform-1' }),
+      ).not.toThrow();
+      expect(() =>
+        insertEdge({ fromBlockId: 'throat', fromEnd: 'east', toBlockId: 'platform-2' }),
+      ).not.toThrow();
+    });
+
+    it('rejects a duplicate full connection tuple', () => {
+      insertEdge({ fromBlockId: 'x', fromEnd: 'east', toBlockId: 'y', toEnd: 'west' });
+      expect(() =>
+        insertEdge({ fromBlockId: 'x', fromEnd: 'east', toBlockId: 'y', toEnd: 'west' }),
+      ).toThrow();
+    });
+  });
 });

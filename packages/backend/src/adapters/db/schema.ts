@@ -5,7 +5,8 @@
  * Track topology now lives in `block_edges` below.
  */
 
-import { index, integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { check, index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 
 // ─── Layouts ──────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,12 @@ export const sensors = sqliteTable('sensors', {
 /**
  * Directed connection between two blocks. A bidirectional physical connection
  * is two rows. Authored explicitly — deliberately independent of grid_tiles.
+ *
+ * `(from_block_id, from_end)` is deliberately NOT unique: a turnout, three-way
+ * point, or slip gives a single block-end several outgoing edges, one per
+ * point setting, discriminated at runtime by `point_conditions`. What IS
+ * unique is the full connection tuple below — two edges may not describe the
+ * exact same physical connection twice.
  */
 export const blockEdges = sqliteTable(
   'block_edges',
@@ -101,6 +108,22 @@ export const blockEdges = sqliteTable(
     index('block_edges_layout_idx').on(table.layoutId),
     index('block_edges_from_block_idx').on(table.fromBlockId),
     index('block_edges_to_block_idx').on(table.toBlockId),
+    uniqueIndex('block_edges_connection_unq').on(
+      table.layoutId,
+      table.fromBlockId,
+      table.fromEnd,
+      table.toBlockId,
+      table.toEnd,
+    ),
+    check('block_edges_not_self_loop', sql`${table.fromBlockId} <> ${table.toBlockId}`),
+    check(
+      'block_edges_length_positive',
+      sql`${table.lengthMm} IS NULL OR ${table.lengthMm} > 0`,
+    ),
+    check(
+      'block_edges_ends_non_empty',
+      sql`length(trim(${table.fromEnd})) > 0 AND length(trim(${table.toEnd})) > 0`,
+    ),
   ],
 );
 

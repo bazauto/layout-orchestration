@@ -9,10 +9,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildServer } from '../../src/transport/http/server';
 import { LayoutService } from '../../src/services/LayoutService';
+import { TopologyService } from '../../src/services/TopologyService';
 import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
 import { ILayoutRepository } from '../../src/ports/ILayoutRepository';
+
+const silentTopologyLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────────
 
@@ -62,6 +65,12 @@ function makeRepo(): ILayoutRepository {
     upsertGridTile: vi.fn().mockResolvedValue(TILE),
     deleteTile:    vi.fn().mockResolvedValue(undefined),
     clearGrid:     vi.fn().mockResolvedValue(undefined),
+
+    listBlockEdges: vi.fn().mockResolvedValue([]),
+    getBlockEdge:   vi.fn().mockResolvedValue(null),
+    createBlockEdge: vi.fn(),
+    updateBlockEdge: vi.fn(),
+    deleteBlockEdge: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -70,8 +79,15 @@ async function buildTestServer(repo: ILayoutRepository) {
   const mqtt = new SimulatedMqttAdapter();
   const state = new LayoutStateManager('layout-1');
   const service = new LayoutService(dcc, mqtt, repo, state, silentLogger);
-  // Don't call service.start() — we only need the HTTP layer here.
-  return buildServer(service, repo, 'silent');
+  // service.start() is never called here — these tests exercise the HTTP
+  // layer only — so onTopologyChanged is a no-op rather than
+  // service.reloadTopology(), which requires a started service.
+  const topologyService = new TopologyService(
+    repo,
+    () => Promise.resolve(),
+    silentTopologyLogger,
+  );
+  return buildServer(service, repo, 'silent', topologyService);
 }
 
 // ─── /health ─────────────────────────────────────────────────────────────────
@@ -171,10 +187,11 @@ describe('Block routes', () => {
     expect(repo.updateBlock).toHaveBeenCalledWith('b1', { name: 'Renamed' });
   });
 
-  it('DELETE /api/layouts/:layoutId/blocks/:id returns 204', async () => {
+  it('DELETE /api/layouts/:layoutId/blocks/:id deletes the block and its edges, returning 200 with removedEdges', async () => {
     const res = await app.inject({ method: 'DELETE', url: '/api/layouts/layout-1/blocks/b1' });
-    expect(res.statusCode).toBe(204);
-    expect(repo.deleteBlock).toHaveBeenCalledWith('b1');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ removedEdges: 0 });
+    expect(repo.deleteBlock).toHaveBeenCalledWith('layout-1', 'b1');
   });
 });
 

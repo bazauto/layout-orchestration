@@ -5,6 +5,8 @@
  * Implementation: DrizzleRepository (SQLite via Drizzle ORM).
  */
 
+import { BlockEdge } from '../domain/types';
+
 export interface LayoutRecord {
   id: string;
   name: string;
@@ -82,13 +84,25 @@ export interface ILayoutRepository {
   listBlocks(layoutId: string): Promise<BlockRecord[]>;
   createBlock(data: Omit<BlockRecord, 'id'>): Promise<BlockRecord>;
   updateBlock(id: string, data: Partial<Omit<BlockRecord, 'id' | 'layoutId'>>): Promise<BlockRecord>;
-  deleteBlock(id: string): Promise<void>;
+  /**
+   * Deletes a block. Implementations MUST also delete every `block_edges`
+   * row that references this block as either `fromBlockId` or `toBlockId`,
+   * atomically with the block delete — a dangling edge left behind by a
+   * non-atomic delete is exactly the kind of corrupt topology that forces a
+   * Safe-Stop on the next load.
+   *
+   * Scoped by `layoutId`: implementations MUST NOT delete a block belonging to
+   * a different layout, even when the id is valid. The id alone is not
+   * authority to delete.
+   */
+  deleteBlock(layoutId: string, id: string): Promise<void>;
 
   // Points
   listPoints(layoutId: string): Promise<PointRecord[]>;
   createPoint(data: Omit<PointRecord, 'id'>): Promise<PointRecord>;
   updatePoint(id: string, data: Partial<Omit<PointRecord, 'id' | 'layoutId'>>): Promise<PointRecord>;
-  deletePoint(id: string): Promise<void>;
+  /** Scoped by `layoutId` for the same reason as {@link deleteBlock}. */
+  deletePoint(layoutId: string, id: string): Promise<void>;
 
   // Sensors
   listSensors(layoutId: string): Promise<SensorRecord[]>;
@@ -101,4 +115,11 @@ export interface ILayoutRepository {
   upsertGridTile(data: Omit<GridTileRecord, 'id'>): Promise<GridTileRecord>;
   deleteTile(id: string): Promise<void>;
   clearGrid(layoutId: string): Promise<void>;
+
+  // Block Edges
+  listBlockEdges(layoutId: string): Promise<BlockEdge[]>;
+  getBlockEdge(id: string): Promise<BlockEdge | null>;
+  createBlockEdge(data: Omit<BlockEdge, 'id'>): Promise<BlockEdge>;
+  updateBlockEdge(id: string, data: Partial<Omit<BlockEdge, 'id' | 'layoutId'>>): Promise<BlockEdge>;
+  deleteBlockEdge(id: string): Promise<void>;
 }

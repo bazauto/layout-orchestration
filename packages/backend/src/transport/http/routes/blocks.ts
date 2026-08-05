@@ -1,9 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
+import { RecordNotFoundError, TopologyService } from '../../../services/TopologyService';
 
 export async function blockRoutes(
   fastify: FastifyInstance,
   repo: ILayoutRepository,
+  topologyService: TopologyService,
 ): Promise<void> {
   fastify.get<{ Params: { layoutId: string } }>(
     '/api/layouts/:layoutId/blocks',
@@ -31,11 +33,23 @@ export async function blockRoutes(
     return reply.status(200).send(updated);
   });
 
+  // Deletes the block and every edge that references it, atomically — see
+  // TopologyService#deleteBlockWithEdges and ILayoutRepository#deleteBlock.
   fastify.delete<{ Params: { layoutId: string; id: string } }>(
     '/api/layouts/:layoutId/blocks/:id',
     async (req, reply) => {
-      await repo.deleteBlock(req.params.id);
-      return reply.status(204).send();
+      try {
+        const result = await topologyService.deleteBlockWithEdges(
+          req.params.layoutId,
+          req.params.id,
+        );
+        return reply.status(200).send(result);
+      } catch (err) {
+        if (err instanceof RecordNotFoundError) {
+          return reply.status(404).send({ error: err.message });
+        }
+        throw err;
+      }
     },
   );
 }
