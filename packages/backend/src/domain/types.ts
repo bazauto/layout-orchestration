@@ -12,6 +12,9 @@ export type PointId = string;
 export type SensorId = string;
 export type RouteId = string;
 
+export type UserId = string;
+export type SessionId = string;
+
 export type BlockEdgeId = string;
 /**
  * A named physical opening of a block ('north', 'yard-3', ...).
@@ -43,6 +46,9 @@ export type SystemMode = 'manual' | 'auto' | 'hybrid';
 
 /** Current operating status of the orchestrator. */
 export type SystemStatus = 'online' | 'safe-stop' | 'offline';
+
+/** Operator account role. 'admin' may edit topology and config; 'operator' may drive. */
+export type Role = 'admin' | 'operator';
 
 // ─── Track Topology ───────────────────────────────────────────────────────────
 

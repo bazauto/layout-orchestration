@@ -127,6 +127,64 @@ export const blockEdges = sqliteTable(
   ],
 );
 
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+/**
+ * Local operator accounts (see docs/auth.md once the auth PR lands in full).
+ *
+ * `passwordHash` is nullable rather than required: today there is exactly one
+ * credential type (argon2id password), but the schema must not foreclose
+ * adding WebAuthn credentials later. A future WebAuthn credential belongs in
+ * its own `webauthn_credentials` table keyed on `user_id`, not as a column
+ * here — a NULL `passwordHash` is what makes a WebAuthn-only account (no
+ * password at all) representable without a fake placeholder hash.
+ */
+export const users = sqliteTable(
+  'users',
+  {
+    id: text('id').primaryKey(),
+    username: text('username').notNull(),
+    /** argon2id encoded hash (algorithm, params, salt, and digest all embedded). NULL = no password credential set. */
+    passwordHash: text('password_hash'),
+    /** 'admin' may edit topology and config; 'operator' may drive. */
+    role: text('role').notNull().default('operator'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('users_username_unq').on(table.username),
+    check('users_role_valid', sql`${table.role} IN ('admin', 'operator')`),
+    check('users_username_non_empty', sql`length(trim(${table.username})) > 0`),
+  ],
+);
+
+// ─── Sessions ─────────────────────────────────────────────────────────────────
+
+/**
+ * Server-side session store — opaque tokens, not JWTs, so a backend restart
+ * never invalidates a live session. Sliding expiry (30 days), refreshed on
+ * every validated use by `AuthService`.
+ *
+ * `tokenHash` stores a SHA-256 digest of the session token, never the token
+ * itself — the same posture as password hashing: a DB read (backup, dump,
+ * accidental log line) must not directly yield a usable session.
+ */
+export const sessions = sqliteTable(
+  'sessions',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    /** SHA-256 hex digest of the opaque session token. */
+    tokenHash: text('token_hash').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    /** Sliding expiry — refreshed on every validated use. */
+    expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('sessions_token_hash_unq').on(table.tokenHash),
+    index('sessions_user_idx').on(table.userId),
+  ],
+);
+
 // ─── Grid Tiles ───────────────────────────────────────────────────────────────
 
 export const gridTiles = sqliteTable('grid_tiles', {
@@ -157,3 +215,7 @@ export type GridTile = typeof gridTiles.$inferSelect;
 export type NewGridTile = typeof gridTiles.$inferInsert;
 export type BlockEdgeRow = typeof blockEdges.$inferSelect;
 export type NewBlockEdgeRow = typeof blockEdges.$inferInsert;
+export type UserRow = typeof users.$inferSelect;
+export type NewUserRow = typeof users.$inferInsert;
+export type SessionRow = typeof sessions.$inferSelect;
+export type NewSessionRow = typeof sessions.$inferInsert;

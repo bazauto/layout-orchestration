@@ -16,8 +16,11 @@
     "db:seed": "tsx scripts/seed.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^10.0.0",
+    "@fastify/rate-limit": "^11.2.0",
     "@fastify/websocket": "^11.0.0",
+    "@node-rs/argon2": "^2.0.2",
     "better-sqlite3": "^11.0.0",
     "dotenv": "^16.0.0",
     "drizzle-orm": "^0.45.2",
