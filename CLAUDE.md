@@ -65,6 +65,7 @@ npm run test:e2e           # Playwright
 npm run db:generate --workspace=packages/backend   # after any schema.ts change
 npm run db:migrate --workspace=packages/backend
 npm run db:seed --workspace=packages/backend
+npm run bootstrap-admin --workspace=packages/backend -- <username> <password>  # create/reset an admin account
 ```
 
 Migrations are applied automatically on backend startup from `MIGRATIONS_PATH`.
@@ -154,3 +155,30 @@ over the whole `block_edges` row) — have landed with this work.
 recovery paths); it was empty before.
 
 Frontend has no unit tests (`vitest --passWithNoTests`) — #8.
+
+**Local authentication has landed.** `users`/`sessions` tables
+(`migrations/0003_cooing_blur.sql`); pure argon2id hashing and session-token
+logic in `domain/auth.ts`; `IAuthRepository`/`DrizzleAuthRepository`
+(`parseUserRow`/`parseSessionRow` full-row Zod, matching `parseBlockEdgeRow`);
+`AuthService` (login/logout/session validation, 30-day sliding refresh).
+`DrizzleRepository` and `DrizzleAuthRepository` now share one SQLite
+connection via `adapters/db/connection.ts#openDatabase` rather than each
+opening and migrating their own. A single Fastify `onRequest` hook
+(`transport/http/auth/hook.ts`), registered before any route, rejects an
+unauthenticated request with 401 — this also covers the `/ws` upgrade, since
+`@fastify/websocket` dispatches it through the same hook pipeline before
+switching protocols; no separate check lives in the WebSocket transport code,
+and auth is still enforced only at that edge, never mid-connection on a live
+socket. `POST /api/auth/login` (rate-limited), `POST /api/auth/logout`,
+`GET /api/auth/me`; every topology/config write route carries a
+`requireAdmin` preHandler (`operator` may read and drive, only `admin` may
+edit topology or config); `POST /api/emergency-stop` is the one deliberately
+unauthenticated control path. CORS is an explicit env-driven allowlist
+(`CORS_ALLOWED_ORIGINS`) plus `credentials: true`, replacing `origin: true`.
+`services/bootstrapAdmin.ts` creates a single admin account from
+`INITIAL_ADMIN_PASSWORD` on an empty `users` table and refuses to start
+otherwise; `scripts/bootstrap-admin.ts` is the CLI password-reset path.
+Frontend: `LoginScreen`, `useAuth`, and `api.ts` (`credentials: 'include'` +
+centralised 401 handling) gate the rest of the UI behind a session. Full
+scheme and the pre-TLS threat model are in `docs/auth.md` — read it before
+touching anything under `transport/http/auth/` or `services/AuthService.ts`.

@@ -16,6 +16,9 @@ Implemented:
 - SQLite persistence via Drizzle ORM with auto-migrate on startup
 - REST API for layouts, locos, blocks, points, sensors, and grid tiles
 - WebSocket state streaming to the frontend
+- Local username/password authentication with role-based access (`admin` /
+  `operator`) — see `docs/auth.md` for the scheme and its threat model
+- Frontend login screen; the rest of the UI requires an authenticated session
 - Frontend operate screen for throttle, points, and live state
 - Frontend configuration screen for blocks, sensors, points, and locos
 - Track editor with tile palette, rotation, keyboard shortcuts, hover ghost preview, and persistence
@@ -69,6 +72,13 @@ Important mode flags:
 - `USE_SIMULATOR=false` + `DCC_SIMULATOR=false` → full hardware mode, real MQTT broker + DCC serial controller
 
 Default local development is typically best in hybrid mode.
+
+`INITIAL_ADMIN_PASSWORD` is required the first time the backend starts against
+an empty database — it bootstraps a single `admin` account and the backend
+refuses to start without it. See `docs/auth.md` for the full scheme
+(sessions, roles, CORS, and the pre-TLS threat model) and
+`npm run bootstrap-admin --workspace=packages/backend` for resetting a
+forgotten password later.
 
 ## Running Locally
 
@@ -130,8 +140,11 @@ npm run test:e2e
 Current automated coverage includes:
 - backend domain unit tests
 - backend service tests
-- backend HTTP route integration tests
-- Playwright tests for editor happy path, erase flow, keyboard shortcuts, and no-scrollbar viewport regression
+- backend HTTP route integration tests, including authenticated/unauthenticated
+  and role-enforcement paths (logging in for real via Fastify `inject()`, not
+  a bypass) and a real end-to-end authenticated WebSocket upgrade
+- Playwright tests for editor happy path, erase flow, keyboard shortcuts,
+  no-scrollbar viewport regression, and the login screen
 
 ## Frontend Features
 
@@ -184,6 +197,14 @@ A formal track graph now exists — `block_edges` in the schema, with constructi
 traversal in `domain/graph.ts` — but nothing is wired to it yet: there is no repository
 read path, and topology editing in the UI is still tile-based, so edges cannot be
 authored. Reservations, automation, and route locking are not implemented.
+
+Authentication is local-only and, until TLS is added, only defends against a stray
+device, a curious guest, or a rogue web page — not an attacker who already has a
+foothold on the LAN, since both the login password and the session cookie are
+sniffable over plain HTTP. See `docs/auth.md` for the full threat model and what
+changes once TLS lands. `EMERGENCY_STOP` is deliberately reachable without
+authentication (`POST /api/emergency-stop`); every other control and config
+endpoint requires a session.
 
 ## Next Milestones
 
