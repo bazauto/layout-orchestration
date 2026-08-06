@@ -243,6 +243,18 @@ export function parseSessionRow(row: unknown): SessionRecord {
   return parsed.data;
 }
 
+/**
+ * Write schema for `POST /api/auth/login`. `.strict()` so an unexpected
+ * field (e.g. a client accidentally posting `role`) is a 400, not silently
+ * ignored.
+ */
+export const loginSchema = z
+  .object({
+    username: z.string().min(1),
+    password: z.string().min(1),
+  })
+  .strict();
+
 export const clientMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('THROTTLE_COMMAND'), payload: throttleCommandSchema }),
   z.object({ type: z.literal('POINT_COMMAND'), payload: pointCommandSchema }),

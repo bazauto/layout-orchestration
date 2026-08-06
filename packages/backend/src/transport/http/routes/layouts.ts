@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
+import { requireAdmin } from '../auth/hook';
 
 export async function layoutRoutes(
   fastify: FastifyInstance,
@@ -15,8 +16,10 @@ export async function layoutRoutes(
     return layout;
   });
 
+  // 'operator' may drive; only 'admin' may create/delete a layout.
   fastify.post<{ Body: { name: string; description?: string } }>(
     '/api/layouts',
+    { preHandler: requireAdmin },
     async (req, reply) => {
       const layout = await repo.createLayout({
         name: req.body.name,
@@ -26,8 +29,12 @@ export async function layoutRoutes(
     },
   );
 
-  fastify.delete<{ Params: { id: string } }>('/api/layouts/:id', async (req, reply) => {
-    await repo.deleteLayout(req.params.id);
-    return reply.status(204).send();
-  });
+  fastify.delete<{ Params: { id: string } }>(
+    '/api/layouts/:id',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      await repo.deleteLayout(req.params.id);
+      return reply.status(204).send();
+    },
+  );
 }

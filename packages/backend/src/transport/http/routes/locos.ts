@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
+import { requireAdmin } from '../auth/hook';
 
 export async function locoRoutes(
   fastify: FastifyInstance,
@@ -12,6 +13,9 @@ export async function locoRoutes(
     },
   );
 
+  // Roster config (editing which locos exist) is admin-only. Driving an
+  // existing loco (THROTTLE_COMMAND/FUNCTION_COMMAND over WebSocket) is not
+  // gated by role — 'operator' may drive.
   fastify.post<{
     Params: { layoutId: string };
     Body: {
@@ -21,7 +25,7 @@ export async function locoRoutes(
       maxSpeed?: number;
       brakingFactor?: number;
     };
-  }>('/api/layouts/:layoutId/locos', async (req, reply) => {
+  }>('/api/layouts/:layoutId/locos', { preHandler: requireAdmin }, async (req, reply) => {
     const loco = await repo.createLoco({
       layoutId: req.params.layoutId,
       name: req.body.name,
@@ -36,13 +40,18 @@ export async function locoRoutes(
   fastify.put<{
     Params: { layoutId: string; id: string };
     Body: { name?: string; address?: number; type?: string; maxSpeed?: number; brakingFactor?: number };
-  }>('/api/layouts/:layoutId/locos/:id', async (req, reply) => {
-    const updated = await repo.updateLoco(req.params.id, req.body);
-    return reply.status(200).send(updated);
-  });
+  }>(
+    '/api/layouts/:layoutId/locos/:id',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const updated = await repo.updateLoco(req.params.id, req.body);
+      return reply.status(200).send(updated);
+    },
+  );
 
   fastify.delete<{ Params: { layoutId: string; id: string } }>(
     '/api/layouts/:layoutId/locos/:id',
+    { preHandler: requireAdmin },
     async (req, reply) => {
       await repo.deleteLoco(req.params.id);
       return reply.status(204).send();

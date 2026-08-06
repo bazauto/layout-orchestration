@@ -10,15 +10,22 @@ import { LayoutStateManager } from './domain/layoutState';
 import { SimulatedDccAdapter } from './adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from './adapters/mqtt/SimulatedMqttAdapter';
 import { MqttAdapter } from './adapters/mqtt/MqttAdapter';
+import { openDatabase } from './adapters/db/connection';
 import { DrizzleRepository } from './adapters/db/repository';
+import { DrizzleAuthRepository } from './adapters/db/authRepository';
 import { LayoutService } from './services/LayoutService';
 import { TopologyService } from './services/TopologyService';
+import { AuthService } from './services/AuthService';
 import { buildServer } from './transport/http/server';
 import { IDccController } from './ports/IDccController';
 import { IMqttAdapter } from './ports/IMqttAdapter';
 
 async function main() {
-  const repo = new DrizzleRepository(config.database.path, config.database.migrationsFolder);
+  // One connection, shared between both repositories — see
+  // adapters/db/connection.ts for why.
+  const db = openDatabase(config.database.path, config.database.migrationsFolder);
+  const repo = new DrizzleRepository(db);
+  const authRepo = new DrizzleAuthRepository(db);
 
   // ── Ensure at least a default layout exists ──────────────────────────────────
   let layouts = await repo.listLayouts();
@@ -99,9 +106,14 @@ async function main() {
     () => layoutService.reloadTopology(),
     adapterLogger,
   );
+  const authService = new AuthService(authRepo, adapterLogger);
   await layoutService.start(activeLayoutId);
 
-  const server = await buildServer(layoutService, repo, config.log.level, topologyService);
+  const server = await buildServer(layoutService, repo, config.log.level, topologyService, authService, {
+    cookieName: config.auth.cookieName,
+    cookieSecure: config.auth.cookieSecure,
+    corsAllowedOrigins: config.cors.allowedOrigins,
+  });
   await server.listen({ port: config.http.port, host: config.http.host });
 
   // ── Graceful Shutdown ─────────────────────────────────────────────────────────

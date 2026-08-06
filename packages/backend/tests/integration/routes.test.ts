@@ -14,6 +14,12 @@ import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
 import { ILayoutRepository } from '../../src/ports/ILayoutRepository';
+import {
+  authenticateAsAdmin,
+  authenticateAsOperator,
+  makeTestAuthService,
+  TEST_AUTH_CONFIG,
+} from './testAuthHelpers';
 
 const silentTopologyLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -74,7 +80,17 @@ function makeRepo(): ILayoutRepository {
   };
 }
 
-async function buildTestServer(repo: ILayoutRepository) {
+/**
+ * Builds a test server and, unless `skipLogin` is set, logs it in as the
+ * seeded admin account so every existing `app.inject(...)` call site below
+ * — none of which were written with auth in mind — keeps working unchanged
+ * (see testAuthHelpers.ts#authenticateAsAdmin). Tests that need to exercise
+ * the unauthenticated or operator-role path opt out explicitly.
+ */
+async function buildTestServer(
+  repo: ILayoutRepository,
+  options: { skipLogin?: boolean } = {},
+) {
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
   const state = new LayoutStateManager('layout-1');
@@ -87,7 +103,19 @@ async function buildTestServer(repo: ILayoutRepository) {
     () => Promise.resolve(),
     silentTopologyLogger,
   );
-  return buildServer(service, repo, 'silent', topologyService);
+  const authService = await makeTestAuthService();
+  const app = await buildServer(
+    service,
+    repo,
+    'silent',
+    topologyService,
+    authService,
+    TEST_AUTH_CONFIG,
+  );
+  if (!options.skipLogin) {
+    await authenticateAsAdmin(app);
+  }
+  return app;
 }
 
 // ─── /health ─────────────────────────────────────────────────────────────────
@@ -277,5 +305,192 @@ describe('Grid routes', () => {
     const res = await app.inject({ method: 'DELETE', url: '/api/layouts/layout-1/grid' });
     expect(res.statusCode).toBe(204);
     expect(repo.clearGrid).toHaveBeenCalledWith('layout-1');
+  });
+});
+
+// ─── Authentication ─────────────────────────────────────────────────────────
+//
+// Logs in for real via Fastify inject() rather than any test-only bypass —
+// see testAuthHelpers.ts and the "No AUTH_ENABLED flag" decision in the
+// issue #20 plan.
+
+describe('Authentication', () => {
+  let repo: ReturnType<typeof makeRepo>;
+  let app: Awaited<ReturnType<typeof buildTestServer>>;
+
+  beforeEach(async () => {
+    repo = makeRepo();
+    // skipLogin: these tests manage their own session state.
+    app = await buildTestServer(repo, { skipLogin: true });
+  });
+
+  it('an unauthenticated GET to a config endpoint is rejected with 401', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/layouts' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('an unauthenticated POST to a config endpoint is rejected with 401', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts',
+      payload: { name: 'New Layout' },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(repo.createLayout).not.toHaveBeenCalled();
+  });
+
+  it('GET /health requires no authentication', async () => {
+    const res = await app.inject({ method: 'GET', url: '/health' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('POST /api/emergency-stop requires no authentication', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/emergency-stop' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('login with the wrong password is rejected with 401 and sets no cookie', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'test-admin', password: 'wrong-password' },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('login with an unknown username is rejected with the same 401 as a wrong password', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'nobody', password: 'anything' },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('a malformed login payload is rejected with 400, not 401', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'test-admin' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('login with the correct password sets a cookie and returns the username/role', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'test-admin', password: 'correct-horse-battery-staple' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ username: 'test-admin', role: 'admin' });
+    const setCookie = res.headers['set-cookie'];
+    const raw = Array.isArray(setCookie) ? setCookie[0] : setCookie;
+    expect(raw).toContain('HttpOnly');
+    expect(raw).toContain('SameSite=Lax');
+    // COOKIE_SECURE is false in TEST_AUTH_CONFIG — pre-TLS, Secure would
+    // make the browser silently refuse to send the cookie at all.
+    expect(raw).not.toContain('Secure');
+  });
+
+  it('a session cookie from login authenticates a subsequent request', async () => {
+    const loginRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'test-admin', password: 'correct-horse-battery-staple' },
+    });
+    const setCookie = loginRes.headers['set-cookie'];
+    const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)!.split(';')[0];
+
+    const res = await app.inject({ method: 'GET', url: '/api/layouts', headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('GET /api/auth/me returns the logged-in user', async () => {
+    await authenticateAsAdmin(app);
+    const res = await app.inject({ method: 'GET', url: '/api/auth/me' });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ username: 'test-admin', role: 'admin' });
+  });
+
+  it('logout clears the session — a subsequent request with the same cookie is rejected', async () => {
+    const loginRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'test-admin', password: 'correct-horse-battery-staple' },
+    });
+    const setCookie = loginRes.headers['set-cookie'];
+    const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)!.split(';')[0];
+
+    const logoutRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/logout',
+      headers: { cookie },
+    });
+    expect(logoutRes.statusCode).toBe(204);
+
+    const res = await app.inject({ method: 'GET', url: '/api/layouts', headers: { cookie } });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('logout is not in the auth-hook exemption list, so an unauthenticated call is rejected with 401 like any other route', async () => {
+    // Only /health, POST /api/auth/login, and POST /api/emergency-stop are
+    // exempt (see transport/http/auth/hook.ts) — logout is not among them.
+    // AuthService.logout() is itself idempotent for an unknown/expired
+    // token, but the request never reaches it without a valid session; a
+    // stale cookie is instead cleared by the hook's own 401 path.
+    const res = await app.inject({ method: 'POST', url: '/api/auth/logout' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('an operator may read a config endpoint', async () => {
+    await authenticateAsOperator(app);
+    const res = await app.inject({ method: 'GET', url: '/api/layouts' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('an operator writing a config endpoint (creating a block) is refused with 403', async () => {
+    await authenticateAsOperator(app);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts/layout-1/blocks',
+      payload: { name: 'Sneaky Block' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(repo.createBlock).not.toHaveBeenCalled();
+  });
+
+  it('an admin may write a config endpoint (creating a block)', async () => {
+    await authenticateAsAdmin(app);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts/layout-1/blocks',
+      payload: { name: 'Platform 3' },
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('a session cookie from admin login carries the admin role, not a hardcoded default', async () => {
+    await authenticateAsAdmin(app);
+    const res = await app.inject({ method: 'GET', url: '/api/auth/me' });
+    expect(JSON.parse(res.body).role).toBe('admin');
+  });
+
+  it('rate-limits the login route after 5 attempts within the window', async () => {
+    for (let i = 0; i < 5; i++) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        payload: { username: 'test-admin', password: 'wrong-password' },
+      });
+      expect(res.statusCode).toBe(401);
+    }
+    const sixth = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'test-admin', password: 'wrong-password' },
+    });
+    expect(sixth.statusCode).toBe(429);
   });
 });

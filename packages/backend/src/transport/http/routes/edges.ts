@@ -5,6 +5,7 @@ import {
   EdgeNotFoundError,
 } from '../../../services/TopologyService';
 import { edgeCreateSchema, edgeUpdateSchema } from '../../../services/validation';
+import { requireAdmin } from '../auth/hook';
 
 export async function edgeRoutes(
   fastify: FastifyInstance,
@@ -17,8 +18,10 @@ export async function edgeRoutes(
     },
   );
 
+  // Topology config — admin-only. 'operator' writing an edge is refused.
   fastify.post<{ Params: { layoutId: string }; Body: unknown }>(
     '/api/layouts/:layoutId/edges',
+    { preHandler: requireAdmin },
     async (req, reply) => {
       const parsed = edgeCreateSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -41,6 +44,7 @@ export async function edgeRoutes(
 
   fastify.put<{ Params: { layoutId: string; id: string }; Body: unknown }>(
     '/api/layouts/:layoutId/edges/:id',
+    { preHandler: requireAdmin },
     async (req, reply) => {
       const parsed = edgeUpdateSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -70,6 +74,7 @@ export async function edgeRoutes(
 
   fastify.delete<{ Params: { layoutId: string; id: string } }>(
     '/api/layouts/:layoutId/edges/:id',
+    { preHandler: requireAdmin },
     async (req, reply) => {
       try {
         await topologyService.deleteEdge(req.params.layoutId, req.params.id);

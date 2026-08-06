@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
+import { requireAdmin } from '../auth/hook';
 
 export async function sensorRoutes(
   fastify: FastifyInstance,
@@ -12,6 +13,7 @@ export async function sensorRoutes(
     },
   );
 
+  // Config — admin-only.
   fastify.post<{
     Params: { layoutId: string };
     Body: {
@@ -20,7 +22,7 @@ export async function sensorRoutes(
       blockId?: string;
       mqttTopic: string;
     };
-  }>('/api/layouts/:layoutId/sensors', async (req, reply) => {
+  }>('/api/layouts/:layoutId/sensors', { preHandler: requireAdmin }, async (req, reply) => {
     const sensor = await repo.createSensor({
       layoutId: req.params.layoutId,
       name: req.body.name,
@@ -34,13 +36,18 @@ export async function sensorRoutes(
   fastify.put<{
     Params: { layoutId: string; id: string };
     Body: { name?: string; type?: 'block_detection' | 'ir_position'; blockId?: string | null; mqttTopic?: string };
-  }>('/api/layouts/:layoutId/sensors/:id', async (req, reply) => {
-    const updated = await repo.updateSensor(req.params.id, req.body);
-    return reply.status(200).send(updated);
-  });
+  }>(
+    '/api/layouts/:layoutId/sensors/:id',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const updated = await repo.updateSensor(req.params.id, req.body);
+      return reply.status(200).send(updated);
+    },
+  );
 
   fastify.delete<{ Params: { layoutId: string; id: string } }>(
     '/api/layouts/:layoutId/sensors/:id',
+    { preHandler: requireAdmin },
     async (req, reply) => {
       await repo.deleteSensor(req.params.id);
       return reply.status(204).send();
