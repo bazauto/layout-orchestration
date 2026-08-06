@@ -133,15 +133,15 @@ every edge mutation, applying Safe-Stop on a fatal violation (`domain/topology.t
 point deletes now delegate to `TopologyService` so a block delete cannot leave a dangling
 edge and a point delete is refused while an edge still references it.
 
-**There is still no Configure UI for edges.** An edge can only be created via the API
-today — #2 stays open for the authoring surface (PR B).
+**The Configure UI has an Edges tab.** Edges are authored explicitly from the Configure
+screen — not derived from grid tiles, which stays deferred (see `docs/topology.md`).
 
 `lockBlock` / `lockPoint` in `domain/layoutState.ts` do populate `lockedByRoute`. Nothing
 calls them — there is no reservation engine to supply a `RouteId`, and the locking
 semantics are undecided (#3).
 
-Phase 3 is therefore gated on #2 (the authoring surface) and #3 (locking semantics), not
-on the graph or its persistence, both of which are now done. Route reservation (#4),
+Phase 3 is therefore gated on #3 (locking semantics) alone. The graph, its persistence,
+and its authoring surface are all done. Route reservation (#4),
 per-loco braking (#6), and collision avoidance (#7) follow those. Note for #4: edge writes
 are not yet refused while a route is reserved — see the deferred note in
 `docs/topology.md`.
