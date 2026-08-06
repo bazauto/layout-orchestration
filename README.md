@@ -191,7 +191,10 @@ authoring it. What remains: there is no route reservation engine, no automation,
 route locking (`RouteId`/`lockedByRoute` are declared but nothing populates them).
 Edges are authored explicitly through the Edges tab rather than derived from grid
 tiles — track-editor tiles and the topology graph are two independent representations
-today.
+today. Each layout is capped at 2,000 `block_edges` — a deliberate admission-control
+limit on `POST .../edges` (not a physical layout constraint; Westgate Hollow is ~40
+edges), enforced only on create and only in `TopologyService`, not the database or the
+load path — see `docs/topology.md`.
 
 ## Next Milestones
 
