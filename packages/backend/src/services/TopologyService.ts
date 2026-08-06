@@ -10,7 +10,7 @@
  * running layout.
  */
 
-import { validateEdgeAgainstLayout } from '../domain/topology';
+import { MAX_EDGES_PER_LAYOUT, validateEdgeAgainstLayout, validateTopology } from '../domain/topology';
 import { BlockEdge, BlockEdgeId, LayoutId, PointId, TopologyViolation } from '../domain/types';
 import { ILayoutRepository } from '../ports/ILayoutRepository';
 
@@ -34,6 +34,24 @@ export class TopologyRejectedError extends Error {
     super(message ?? `Topology rejected: ${violations.length} violation(s)`);
     this.name = 'TopologyRejectedError';
     this.violations = violations;
+  }
+}
+
+/**
+ * Thrown when a create would push a layout's edge count past
+ * `MAX_EDGES_PER_LAYOUT`. This is admission control, not a topology
+ * violation — the candidate edge itself may be perfectly valid — so it is a
+ * distinct type from `TopologyRejectedError` rather than a fabricated
+ * violation. See `docs/topology.md` for why the cap is service-level only.
+ */
+export class EdgeLimitExceededError extends Error {
+  constructor(
+    readonly layoutId: LayoutId,
+    readonly limit: number,
+    readonly current: number,
+  ) {
+    super(`Layout ${layoutId} already has ${current} edges (limit ${limit})`);
+    this.name = 'EdgeLimitExceededError';
   }
 }
 
@@ -77,14 +95,34 @@ export class TopologyService {
   async getStatus(layoutId: LayoutId): Promise<TopologyStatus> {
     const edges = await this.repo.listBlockEdges(layoutId);
     const context = await this.buildContext(layoutId);
-    const violations = edges.flatMap((edge) =>
-      validateEdgeAgainstLayout(edge, layoutId, context, edges),
-    );
+    // Delegates to the same O(n) full-pass validator the load path uses
+    // (validateTopology), rather than open-coding a flatMap over
+    // validateEdgeAgainstLayout. That open-coded version was both O(n^2) and
+    // silently missed duplicate-edge-id (validateTopology's seenIds check),
+    // which let this read endpoint report valid on a graph the load path
+    // would Safe-Stop on — see docs/topology.md (#21).
+    const violations = validateTopology(layoutId, edges, context);
     return { valid: violations.length === 0, violations, edgeCount: edges.length };
   }
 
   async createEdge(layoutId: LayoutId, data: EdgeCreateData): Promise<BlockEdge> {
     const existingEdges = await this.repo.listBlockEdges(layoutId);
+
+    // Admission control, not a topology invariant (see docs/topology.md).
+    // Checked here because createEdge already fetched existingEdges for
+    // the duplicate-connection check below, so this is free — no extra
+    // query. The await between this count and the repo.createBlockEdge
+    // call below permits a small overshoot under concurrent requests; that
+    // is acceptable for a policy cap and is not worth adding locking for.
+    if (existingEdges.length >= MAX_EDGES_PER_LAYOUT) {
+      this.log.warn('[TopologyService] Rejected edge create — layout at edge cap', {
+        layoutId,
+        limit: MAX_EDGES_PER_LAYOUT,
+        current: existingEdges.length,
+      });
+      throw new EdgeLimitExceededError(layoutId, MAX_EDGES_PER_LAYOUT, existingEdges.length);
+    }
+
     const context = await this.buildContext(layoutId);
 
     // A synthetic id (never persisted) lets validateEdgeAgainstLayout's
