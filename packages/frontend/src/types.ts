@@ -44,6 +44,44 @@ export interface LocoRecord {
   brakingFactor: number;
 }
 
+// ─── Topology (mirrors backend domain/types.ts) ───────────────────────────────
+
+export interface PointCondition {
+  pointId: string;
+  requiredPosition: 'normal' | 'reverse';
+}
+
+export interface BlockEdgeRecord {
+  id: string;
+  layoutId: string;
+  fromBlockId: string;
+  fromEnd: string;
+  toBlockId: string;
+  toEnd: string;
+  pointConditions: PointCondition[];
+  lengthMm: number | null;
+}
+
+/** Mirrors the `TopologyViolation` union in `domain/topology.ts` exactly. */
+export type TopologyViolation =
+  | {
+      kind: 'layout-mismatch';
+      edgeId: string;
+      expectedLayoutId: string;
+      actualLayoutId: string;
+    }
+  | { kind: 'duplicate-edge-id'; edgeId: string }
+  | { kind: 'self-loop'; edgeId: string; blockId: string }
+  | { kind: 'unknown-block'; edgeId: string; blockId: string }
+  | { kind: 'unknown-point'; edgeId: string; pointId: string }
+  | { kind: 'duplicate-connection'; edgeId: string; conflictingEdgeId: string };
+
+export interface TopologyStatus {
+  valid: boolean;
+  violations: TopologyViolation[];
+  edgeCount: number;
+}
+
 // ─── Grid ─────────────────────────────────────────────────────────────────────
 
 export type TileType =
