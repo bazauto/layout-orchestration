@@ -107,6 +107,131 @@ should never be able to *create* an edge with a dangling point reference
 through the API, even though the system tolerates one it finds already
 sitting in the database.
 
+## Validation cost, the edge cap, and why the full pass stays
+
+`domain/topology.ts` re-runs `validateTopology` over the *entire* edge list on
+every load (`LayoutService.reloadTopology`, on startup and after every write)
+rather than caching a verdict or revalidating incrementally. That was an
+O(n^2) pass until #21, because `duplicate-connection` detection was an
+`Array#find` scan per edge. Both halves of that — "full pass, every time" and
+"O(n)" — are deliberate, not merely convenient, and worth recording so a
+future change doesn't undo either by accident.
+
+### Why a full pass, not incremental revalidation or a cache
+
+Not every violation kind is local to the one edge that triggers it:
+
+| Kind | Local to one edge? | Non-local effect |
+|---|---|---|
+| `layout-mismatch` | yes | none |
+| `self-loop` | yes | none |
+| `unknown-block` | no | a block delete invalidates other edges' verdicts |
+| `unknown-point` | no | a point delete invalidates other edges' verdicts |
+| `duplicate-connection` | **no** | inserting X makes both X *and* pre-existing Y violate; deleting one of a duplicate pair *heals* the other |
+| `duplicate-edge-id` | no | set-level property |
+
+Only two of six are genuinely local. `duplicate-connection` healing on delete
+is the reason incremental revalidation with a cached verdict is rejected: an
+operation that *removes* a violation (deleting one of a duplicate pair) would
+have to invalidate a cached "layout is invalid" result — exactly the
+direction an incremental scheme tends to get wrong. Getting it wrong
+stale-invalid means a Safe-Stop that never clears; getting it wrong
+stale-valid means running trains on a graph nobody has actually checked.
+Either failure is worse than the cost of a full O(n) pass, so the pass stays
+full and unconditional.
+
+A cached *edge list* (as opposed to a cached verdict) is rejected for the same
+underlying reason: it's a second source of truth about track geometry, and
+its failure mode is a graph built from edges that no longer exist.
+
+### The two-slot duplicate-connection index
+
+`buildEdgeIndex` builds a `Map` from a `^@`-joined connection tuple
+(`fromBlockId^@fromEnd^@toBlockId^@toEnd`) to the first and second edge ids
+seen for that tuple. `^@` rather than `:` because block ids are UUIDs today
+but `fromEnd`/`toEnd` are free text matching `/^[a-z0-9][a-z0-9_-]*$/` — a
+separator that cannot appear in either field removes any ambiguity between,
+say, `a` + `^@b` and `a^@` + `b`.
+
+Two slots are enough. The pre-#21 check was `existingEdges.find(o => o.id !==
+edge.id && sameTuple)` — the *first* edge in list order whose id isn't the one
+being checked. If a bucket's first id isn't that edge's, that's the answer; if
+it is, the second slot is; a third or later edge sharing the tuple was never
+the answer under the old semantics either. So the two-slot index reproduces
+`find`'s result exactly, including for three-or-more-way duplicates — proven
+in `tests/unit/domain/topology.test.ts` and by construction in
+`domain/topology.ts`'s comments, not just asserted.
+
+`validateEdgeAgainstLayout`'s fourth parameter accepts either the raw edge
+array or a prebuilt `EdgeIndex`, discriminated by `Array.isArray` (true for a
+plain array and for a `Proxy` over one, so the complexity benchmark below can
+wrap the array transparently). `validateTopology` builds the index once
+before its loop, making the full pass O(n); a single-edge check
+(`TopologyService.createEdge`/`updateEdge`) still passes the raw array, which
+costs one O(n) index build for one O(n) check — the same cost it paid before
+#21.
+
+### The edge cap: admission control, not an invariant
+
+`domain/topology.ts` exports `MAX_EDGES_PER_LAYOUT = 2000`. It exists because
+making the full pass O(n) doesn't bound `n` — `POST
+/api/layouts/:layoutId/edges` has no auth (#20) and no rate limit, so nothing
+stops it being called far more than a physical layout could ever need. The
+seeded Westgate Hollow layout is ~40 edges; a large club-scale layout (~200
+blocks) is on the order of 1,200. 2,000 is roughly 50x that, chosen so the
+*bounded* worst case stays defensible even if a future change reintroduces a
+quadratic path somewhere: 2,000^2 comparisons is tens of milliseconds — bad,
+but finite and detectable, not an indefinite event-loop stall.
+
+The cap is enforced by `TopologyService.createEdge` only, checked against the
+`existingEdges` list that call already fetches for duplicate-connection
+checking — no extra query. It is **not** enforced elsewhere:
+
+- Not `updateEdge` or any delete — they don't grow the count.
+- **Not the load path.** `loadTopology`/`reloadTopology` must still load a
+  layout that somehow exceeds the cap — data written outside the API, or a
+  cap lowered later — or the system Safe-Stops on a *policy* limit with no
+  way for an operator to delete their way back under it. Deleting requires a
+  loaded graph.
+- **Not the database.** #11 put graph invariants at the DB level as well as
+  the domain level, but the cap isn't an invariant — exceeding it is policy,
+  not corruption. The only SQLite mechanism for a row-count cap is a trigger
+  running `SELECT COUNT(*)` per insert, which makes every insert O(n) at the
+  storage layer to defend against an O(n) cost at the domain layer, and it
+  would need a hand-written migration against the "generate, don't
+  hand-write" rule. Service-level only, deliberately — don't "complete" this
+  with a DB constraint later.
+
+A cap breach is a distinct `EdgeLimitExceededError` (`limit`/`current`), not a
+fabricated `TopologyViolation` — the candidate edge may be perfectly valid,
+it's the layout's edge count that refuses it. It maps to HTTP 409, not 422:
+the payload is well-formed, it's the resource's state that refuses the write.
+
+### Debouncing `onTopologyChanged` is rejected
+
+`TopologyService` calls `onTopologyChanged` (→
+`LayoutService.reloadTopology()`) after every successful write, synchronously
+in the request path, with no coalescing. Three reasons this stays as-is:
+
+1. Any debounce window is a window in which an invalid graph is treated as
+   valid — the exact failure this validation exists to prevent.
+2. `reloadTopology` is the defence-in-depth re-check after a write that
+   already validated itself before persisting; delaying it delays the
+   Safe-Stop that's the point of having it.
+3. Once the pass is O(n) at a capped n, a reload costs microseconds (see
+   below) — there's nothing expensive left to debounce.
+
+### Measured ceiling
+
+`tests/integration/topology-scale.test.ts` loads a layout at
+`MAX_EDGES_PER_LAYOUT` (2,000 edges) end to end through `loadTopology` and
+asserts it completes in well under 500ms; measured at time of writing, about
+11ms on ordinary dev hardware. That's a catastrophic-regression smoke check,
+not the complexity proof — `tests/unit/domain/topologyComplexity.test.ts`
+is, via a deterministic proxy-counted operation count rather than wall-clock
+timing, since a wall-clock ratio on CI is flaky and proves nothing about
+complexity on its own.
+
 ## Safe-Stop on invalid topology
 
 - **Trigger:** `LayoutService.reloadTopology()` calls `loadTopology`, which
