@@ -48,6 +48,14 @@ function makeTestAuthRepo(): IAuthRepository {
       users.set(created.id, created);
       return created;
     },
+    updateUserPassword: async (id, passwordHash) => {
+      const existing = users.get(id);
+      if (!existing) throw new Error(`Test user ${id} not found`);
+      const updated = { ...existing, passwordHash };
+      users.set(id, updated);
+      return updated;
+    },
+    hasAnyUsers: async () => users.size > 0,
     createSession: async (data) => {
       const created: SessionRecord = {
         id: `test-session-${nextSessionId++}`,

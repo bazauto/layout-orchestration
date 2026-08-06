@@ -87,6 +87,30 @@ describe('DrizzleAuthRepository', () => {
     expect(fetched?.passwordHash).toBeNull();
   });
 
+  it('updateUserPassword replaces the hash without changing anything else', async () => {
+    const created = await repo.createUser({ username: 'ivan', passwordHash: 'old-hash', role: 'operator' });
+    const updated = await repo.updateUserPassword(created.id, 'new-hash');
+    expect(updated.passwordHash).toBe('new-hash');
+    expect(updated.username).toBe('ivan');
+    expect(updated.role).toBe('operator');
+  });
+
+  it('hasAnyUsers reflects table state', async () => {
+    const tempDir2 = mkdtempSync(join(tmpdir(), 'layout-orchestrator-repo-auth-empty-'));
+    const emptyDbPath = join(tempDir2, `${randomUUID()}.db`);
+    const emptyRepo = new DrizzleAuthRepository(openDatabase(emptyDbPath, MIGRATIONS_FOLDER));
+
+    await expect(emptyRepo.hasAnyUsers()).resolves.toBe(false);
+    await emptyRepo.createUser({ username: 'first-user', passwordHash: 'x', role: 'admin' });
+    await expect(emptyRepo.hasAnyUsers()).resolves.toBe(true);
+
+    try {
+      rmSync(tempDir2, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
   it('round-trips create → getByTokenHash → updateSessionExpiry → delete', async () => {
     const user = await repo.createUser({ username: 'erin', passwordHash: 'x', role: 'operator' });
     // Rounded to the second: `expiresAt`/`createdAt` use Drizzle's 'timestamp'

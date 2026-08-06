@@ -31,6 +31,15 @@ function makeRepo(initialUsers: UserRecord[] = []): IAuthRepository {
       usersByName.set(created.username, created);
       return created;
     }),
+    updateUserPassword: vi.fn(async (id: string, passwordHash: string) => {
+      const existing = users.get(id);
+      if (!existing) throw new Error(`User ${id} not found`);
+      const updated = { ...existing, passwordHash };
+      users.set(id, updated);
+      usersByName.set(updated.username, updated);
+      return updated;
+    }),
+    hasAnyUsers: vi.fn(async () => users.size > 0),
     createSession: vi.fn(async (data) => {
       const created: SessionRecord = { id: `s-${sessions.size + 1}`, createdAt: new Date(), ...data };
       sessions.set(created.id, created);

@@ -30,6 +30,16 @@ export interface IAuthRepository {
   getUserByUsername(username: string): Promise<UserRecord | null>;
   getUserById(id: UserId): Promise<UserRecord | null>;
   createUser(data: Omit<UserRecord, 'id' | 'createdAt'>): Promise<UserRecord>;
+  /** Resets an existing user's password hash. Used by the bootstrap/reset CLI (scripts/bootstrap-admin.ts). */
+  updateUserPassword(id: UserId, passwordHash: string): Promise<UserRecord>;
+  /**
+   * Whether the `users` table has at least one row. Used for first-run
+   * bootstrap (services/bootstrapAdmin.ts) to decide whether to auto-create
+   * an admin account — checked against the whole table, not a specific
+   * username, so an operator who has since renamed or removed the default
+   * admin is never silently overridden on the next restart.
+   */
+  hasAnyUsers(): Promise<boolean>;
 
   createSession(data: Omit<SessionRecord, 'id' | 'createdAt'>): Promise<SessionRecord>;
   getSessionByTokenHash(tokenHash: string): Promise<SessionRecord | null>;

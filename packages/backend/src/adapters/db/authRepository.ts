@@ -54,6 +54,18 @@ export class DrizzleAuthRepository implements IAuthRepository {
     return created;
   }
 
+  async updateUserPassword(id: UserId, passwordHash: string): Promise<UserRecord> {
+    this.db.update(users).set({ passwordHash }).where(eq(users.id, id)).run();
+    const updated = await this.getUserById(id);
+    if (!updated) throw new Error(`User ${id} not found after password update`);
+    return updated;
+  }
+
+  async hasAnyUsers(): Promise<boolean> {
+    const rows = this.db.select({ id: users.id }).from(users).limit(1).all();
+    return rows.length > 0;
+  }
+
   // ─── Sessions ───────────────────────────────────────────────────────────────
 
   async createSession(data: Omit<SessionRecord, 'id' | 'createdAt'>): Promise<SessionRecord> {
