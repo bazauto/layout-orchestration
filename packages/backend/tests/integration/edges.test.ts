@@ -21,6 +21,7 @@ import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter'
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
 import { ILayoutRepository, BlockRecord, PointRecord } from '../../src/ports/ILayoutRepository';
 import { BlockEdge } from '../../src/domain/types';
+import { MAX_EDGES_PER_LAYOUT } from '../../src/domain/topology';
 
 const silentLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -257,6 +258,37 @@ describe('Edge routes', () => {
       url: `/api/layouts/${LAYOUT_ID}/edges/does-not-exist`,
     });
     expect(res.statusCode).toBe(404);
+  });
+
+  it('POST at the edge cap returns 409 with limit/current, and a rejected create does not partially apply', async () => {
+    // Filled through the repo fake directly, not one HTTP POST per edge — a
+    // capped bulk insert through the API would itself be O(N^2) and would
+    // dominate the test runtime for no benefit (see the Step 6 plan note).
+    for (let i = 0; i < MAX_EDGES_PER_LAYOUT; i++) {
+      await repo.createBlockEdge({
+        layoutId: LAYOUT_ID,
+        fromBlockId: 'b1',
+        fromEnd: `east-${i}`,
+        toBlockId: 'b2',
+        toEnd: `west-${i}`,
+        pointConditions: [],
+        lengthMm: null,
+      });
+    }
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/edges`,
+      payload: { fromBlockId: 'b1', fromEnd: 'north', toBlockId: 'b2', toEnd: 'south' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.limit).toBe(MAX_EDGES_PER_LAYOUT);
+    expect(body.current).toBe(MAX_EDGES_PER_LAYOUT);
+
+    const listRes = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
+    expect(JSON.parse(listRes.body)).toHaveLength(MAX_EDGES_PER_LAYOUT);
   });
 });
 
