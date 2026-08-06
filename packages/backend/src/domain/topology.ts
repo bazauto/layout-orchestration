@@ -75,6 +75,18 @@ export function buildEdgeIndex(edges: readonly BlockEdge[]): EdgeIndex {
   return { byConnection };
 }
 
+/**
+ * `Array.isArray`'s built-in type predicate is `arg is any[]`, which doesn't
+ * narrow a `readonly BlockEdge[] | EdgeIndex` union cleanly on the negative
+ * branch — a `ReadonlyArray` isn't assignable to `any[]`, so TS can't
+ * conclude it was excluded there. Declaring the predicate explicitly (still
+ * implemented via `Array.isArray`, per D3) sidesteps that: TS trusts the
+ * annotation instead of re-deriving it.
+ */
+function isEdgeIndex(existingEdges: readonly BlockEdge[] | EdgeIndex): existingEdges is EdgeIndex {
+  return !Array.isArray(existingEdges);
+}
+
 /** Looks up the id that `edge` conflicts with in `index`, if any, using the
  * first/second-slot equivalence documented on `EdgeIndex`. */
 function findConflictingEdgeId(edge: BlockEdge, index: EdgeIndex): BlockEdgeId | undefined {
@@ -100,7 +112,7 @@ export function validateEdgeAgainstLayout(
   existingEdges: readonly BlockEdge[] | EdgeIndex,
 ): TopologyViolation[] {
   const violations: TopologyViolation[] = [];
-  const index = Array.isArray(existingEdges) ? buildEdgeIndex(existingEdges) : existingEdges;
+  const index = isEdgeIndex(existingEdges) ? existingEdges : buildEdgeIndex(existingEdges);
 
   if (edge.layoutId !== layoutId) {
     violations.push({
