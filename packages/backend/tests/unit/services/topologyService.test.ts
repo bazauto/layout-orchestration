@@ -4,7 +4,9 @@ import {
   TopologyRejectedError,
   EdgeNotFoundError,
   RecordNotFoundError,
+  EdgeLimitExceededError,
 } from '../../../src/services/TopologyService';
+import { MAX_EDGES_PER_LAYOUT } from '../../../src/domain/topology';
 import { BlockEdge } from '../../../src/domain/types';
 import { ILayoutRepository } from '../../../src/ports/ILayoutRepository';
 
@@ -66,6 +68,35 @@ function makeRepo(overrides: Partial<ILayoutRepository> = {}): ILayoutRepository
     ...overrides,
   };
 }
+
+describe('TopologyService — getStatus', () => {
+  it('returns valid: true and the edge count for a healthy edge set', async () => {
+    const edges = [
+      edge({ id: 'e1', fromBlockId: 'b1', toBlockId: 'b2' }),
+      edge({ id: 'e2', fromBlockId: 'b2', toBlockId: 'b3' }),
+    ];
+    const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue(edges) });
+    const service = new TopologyService(repo, vi.fn(), silentLogger);
+
+    const status = await service.getStatus(LAYOUT);
+
+    expect(status).toEqual({ valid: true, violations: [], edgeCount: 2 });
+  });
+
+  it('reports duplicate-edge-id for two edges sharing an id (the D8 divergence: the old flatMap open-coding missed this)', async () => {
+    const edges = [
+      edge({ id: 'dup', fromBlockId: 'b1', toBlockId: 'b2' }),
+      edge({ id: 'dup', fromBlockId: 'b2', toBlockId: 'b3' }),
+    ];
+    const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue(edges) });
+    const service = new TopologyService(repo, vi.fn(), silentLogger);
+
+    const status = await service.getStatus(LAYOUT);
+
+    expect(status.valid).toBe(false);
+    expect(status.violations).toContainEqual({ kind: 'duplicate-edge-id', edgeId: 'dup' });
+  });
+});
 
 describe('TopologyService — createEdge', () => {
   it('rejects an edge whose fromBlockId belongs to another layout (unknown-block in this layout)', async () => {
@@ -184,6 +215,51 @@ describe('TopologyService — createEdge', () => {
     ).rejects.toThrow(TopologyRejectedError);
 
     expect(onTopologyChanged).toHaveBeenCalledTimes(0);
+  });
+
+  it('rejects a create at the edge cap with EdgeLimitExceededError, and never persists or notifies (a cap that rejects after persisting is worse than no cap)', async () => {
+    const atCap = Array.from({ length: MAX_EDGES_PER_LAYOUT }, (_, i) =>
+      edge({ id: `e${i}`, fromBlockId: 'b1', toBlockId: 'b2', fromEnd: `east-${i}`, toEnd: `west-${i}` }),
+    );
+    const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue(atCap) });
+    const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+
+    await expect(
+      service.createEdge(LAYOUT, {
+        fromBlockId: 'b1',
+        fromEnd: 'north',
+        toBlockId: 'b2',
+        toEnd: 'south',
+        pointConditions: [],
+        lengthMm: null,
+      }),
+    ).rejects.toThrow(EdgeLimitExceededError);
+
+    expect(repo.createBlockEdge).not.toHaveBeenCalled();
+    expect(onTopologyChanged).not.toHaveBeenCalled();
+  });
+
+  it('allows a create one below the cap (the off-by-one-prone boundary)', async () => {
+    const belowCap = Array.from({ length: MAX_EDGES_PER_LAYOUT - 1 }, (_, i) =>
+      edge({ id: `e${i}`, fromBlockId: 'b1', toBlockId: 'b2', fromEnd: `east-${i}`, toEnd: `west-${i}` }),
+    );
+    const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue(belowCap) });
+    const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+
+    const created = await service.createEdge(LAYOUT, {
+      fromBlockId: 'b1',
+      fromEnd: 'north',
+      toBlockId: 'b2',
+      toEnd: 'south',
+      pointConditions: [],
+      lengthMm: null,
+    });
+
+    expect(created.id).toBe('new-edge');
+    expect(repo.createBlockEdge).toHaveBeenCalledTimes(1);
+    expect(onTopologyChanged).toHaveBeenCalledTimes(1);
   });
 });
 
