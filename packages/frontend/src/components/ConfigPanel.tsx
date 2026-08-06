@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useLayoutConfig } from '../hooks/useLayoutConfig';
 import { BlockRecord, PointRecord, SensorRecord } from '../types';
+import { EdgesTab } from './EdgesTab';
 
 type Ops = ReturnType<typeof useLayoutConfig>;
 
@@ -8,7 +9,7 @@ interface Props {
   layoutId: string | null;
 }
 
-type Tab = 'blocks' | 'sensors' | 'points' | 'locos';
+type Tab = 'blocks' | 'sensors' | 'points' | 'locos' | 'edges';
 
 export function ConfigPanel({ layoutId }: Props) {
   const [tab, setTab] = useState<Tab>('blocks');
@@ -24,7 +25,7 @@ export function ConfigPanel({ layoutId }: Props) {
         <h2 style={s.heading}>Configuration</h2>
         {error && <span style={s.error}>{error}</span>}
         <div style={s.tabs}>
-          {(['blocks', 'sensors', 'points', 'locos'] as Tab[]).map((t) => (
+          {(['blocks', 'sensors', 'points', 'locos', 'edges'] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -41,6 +42,7 @@ export function ConfigPanel({ layoutId }: Props) {
       {tab === 'sensors' && <SensorsTab sensors={config.sensors} blocks={config.blocks} ops={ops} layoutId={layoutId} />}
       {tab === 'points'  && <PointsTab  points={config.points} blocks={config.blocks} ops={ops} />}
       {tab === 'locos'   && <LocosTab   locos={config.locos} ops={ops} />}
+      {tab === 'edges'   && <EdgesTab   edges={config.edges} topology={config.topology} blocks={config.blocks} points={config.points} ops={ops} />}
     </section>
   );
 }
@@ -89,10 +91,21 @@ function EditableCell({
 
 function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
   const [name, setName] = useState('');
+  const [deleteFeedback, setDeleteFeedback] = useState<{ text: string; ok: boolean } | null>(null);
   const submit = async () => {
     if (!name.trim()) return;
     await ops.createBlock(name.trim());
     setName('');
+  };
+  // A block delete now cascades to its edges — the response carries the
+  // count, and can also 404. Both are surfaced rather than silently dropped.
+  const handleDelete = async (id: string) => {
+    const result = await ops.deleteBlock(id);
+    setDeleteFeedback(
+      result.ok
+        ? { text: `Removed block and ${result.removedEdges} edge(s)`, ok: true }
+        : { text: result.message ?? 'Delete failed', ok: false },
+    );
   };
   return (
     <div style={s.tabBody}>
@@ -102,6 +115,9 @@ function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
           placeholder="Block name" style={s.input} />
         <button onClick={submit} style={s.addBtn}>Add</button>
       </div>
+      {deleteFeedback && (
+        <p style={deleteFeedback.ok ? s.topicPreview : s.error}>{deleteFeedback.text}</p>
+      )}
       <table style={s.table}>
         <thead><tr>
           <th style={s.th}>Name</th><th style={s.th}>ID</th><th style={s.th} />
@@ -113,7 +129,7 @@ function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
                 <EditableCell value={b.name} onSave={(v) => ops.updateBlock(b.id, v)} />
               </td>
               <td style={s.tdMono}>{b.id.slice(0, 8)}…</td>
-              <td style={s.td}><button onClick={() => ops.deleteBlock(b.id)} style={s.delBtn}>×</button></td>
+              <td style={s.td}><button onClick={() => handleDelete(b.id)} style={s.delBtn}>×</button></td>
             </tr>
           ))}
         </tbody>
@@ -206,12 +222,20 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
   const [name, setName] = useState('');
   const [addr, setAddr] = useState('');
   const [blockId, setBlockId] = useState('');
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const submit = async () => {
     const dcc = parseInt(addr, 10);
     if (!name.trim() || isNaN(dcc)) return;
     await ops.createPoint(name.trim(), dcc, blockId || null);
     setName(''); setAddr(''); setBlockId('');
+  };
+
+  // A point delete can now be refused (422) while an edge's pointConditions
+  // still reference it, and can 404 — both are surfaced instead of swallowed.
+  const handleDelete = async (id: string) => {
+    const result = await ops.deletePoint(id);
+    setDeleteError(result.ok ? null : (result.message ?? 'Delete failed'));
   };
 
   return (
@@ -226,6 +250,7 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
         </select>
         <button onClick={submit} style={s.addBtn}>Add</button>
       </div>
+      {deleteError && <p style={s.error}>{deleteError}</p>}
       <table style={s.table}>
         <thead><tr>
           {['Name', 'DCC Addr', 'Block', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
@@ -252,7 +277,7 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
                   {blocks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
               </td>
-              <td style={s.td}><button onClick={() => ops.deletePoint(p.id)} style={s.delBtn}>×</button></td>
+              <td style={s.td}><button onClick={() => handleDelete(p.id)} style={s.delBtn}>×</button></td>
             </tr>
           ))}
         </tbody>

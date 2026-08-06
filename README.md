@@ -14,15 +14,16 @@ Implemented:
 - Backend domain safety and state logic
 - MQTT and DCC adapter abstraction with simulator support
 - SQLite persistence via Drizzle ORM with auto-migrate on startup
-- REST API for layouts, locos, blocks, points, sensors, and grid tiles
+- REST API for layouts, locos, blocks, points, sensors, grid tiles, and block edges (track topology)
+- Topology validation with Safe-Stop on an invalid graph, and operator recovery via edge authoring
 - WebSocket state streaming to the frontend
 - Local username/password authentication with role-based access (`admin` /
   `operator`) — see `docs/auth.md` for the scheme and its threat model
 - Frontend login screen; the rest of the UI requires an authenticated session
 - Frontend operate screen for throttle, points, and live state
-- Frontend configuration screen for blocks, sensors, points, and locos
+- Frontend configuration screen for blocks, sensors, points, locos, and edges
 - Track editor with tile palette, rotation, keyboard shortcuts, hover ghost preview, and persistence
-- Backend unit/integration tests and Playwright frontend end-to-end tests
+- Backend unit/integration/scenario tests and Playwright frontend end-to-end tests
 - GitHub Actions CI
 
 Planned next:
@@ -143,8 +144,9 @@ Current automated coverage includes:
 - backend HTTP route integration tests, including authenticated/unauthenticated
   and role-enforcement paths (logging in for real via Fastify `inject()`, not
   a bypass) and a real end-to-end authenticated WebSocket upgrade
+- backend scenario tests (`packages/backend/tests/scenario/`) covering topology Safe-Stop and recovery paths
 - Playwright tests for editor happy path, erase flow, keyboard shortcuts,
-  no-scrollbar viewport regression, and the login screen
+  no-scrollbar viewport regression, edge authoring, and the login screen
 
 ## Frontend Features
 
@@ -156,8 +158,11 @@ Current automated coverage includes:
 - Live block and point state display
 
 ### Configure
-- CRUD for blocks, sensors, points, and locos
+- CRUD for blocks, sensors, points, locos, and edges
 - Inline editing
+- Edge authoring: from/to block and end labels, optional point conditions, length, and an
+  "also create reverse edge" shortcut; a violation banner surfaces invalid topology and
+  rejected writes without discarding the operator's input
 
 ### Track Editor
 - Tile-based sparse grid persisted to backend
@@ -193,10 +198,13 @@ The system follows a fail-safe posture:
 
 ## Known Limits
 
-A formal track graph now exists — `block_edges` in the schema, with construction and
-traversal in `domain/graph.ts` — but nothing is wired to it yet: there is no repository
-read path, and topology editing in the UI is still tile-based, so edges cannot be
-authored. Reservations, automation, and route locking are not implemented.
+A formal track graph exists — `block_edges` in the schema, with construction and
+traversal in `domain/graph.ts`, a full REST CRUD surface, and a Configure UI tab for
+authoring it. What remains: there is no route reservation engine, no automation, and no
+route locking (`RouteId`/`lockedByRoute` are declared but nothing populates them).
+Edges are authored explicitly through the Edges tab rather than derived from grid
+tiles — track-editor tiles and the topology graph are two independent representations
+today.
 
 Authentication is local-only and, until TLS is added, only defends against a stray
 device, a curious guest, or a rogue web page — not an attacker who already has a
@@ -210,5 +218,5 @@ endpoint requires a session.
 
 1. Route reservation engine
 2. Automation engine / schedules
-3. Richer topology semantics from grid tiles
+3. Link grid tiles to the topology graph, so tile placement can derive edges
 4. Hardware validation and operator workflows
