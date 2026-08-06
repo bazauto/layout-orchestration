@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { installMockWebSocket } from './helpers';
+import { installMockAuth, installMockWebSocket } from './helpers';
 
 const PALETTE = [
   { key: '1', label: /straight/i },
@@ -13,6 +13,7 @@ const PALETTE = [
 
 test('keyboard shortcuts 1–7 cycle through all palette items', async ({ page }) => {
   await installMockWebSocket(page);
+  await installMockAuth(page);
 
   await page.route('**://localhost:3000/api/layouts', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'layout-1', name: 'Test' }]) }),
@@ -45,6 +46,7 @@ test('keyboard shortcuts 1–7 cycle through all palette items', async ({ page }
 
 test('R rotates forward 45° per press and Shift+R rotates backward', async ({ page }) => {
   await installMockWebSocket(page);
+  await installMockAuth(page);
 
   await page.route('**://localhost:3000/api/layouts', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'layout-1', name: 'Test' }]) }),

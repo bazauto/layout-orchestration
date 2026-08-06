@@ -1,6 +1,24 @@
 import type { Page } from '@playwright/test';
 
 /**
+ * Mocks GET /api/auth/me as an already-authenticated admin session, so
+ * specs that exercise the operate/configure/track-editor UI (not the login
+ * flow itself) can skip straight past LoginScreen — matching this suite's
+ * existing "no real backend process" approach (see installMockWebSocket
+ * below). tests/e2e/auth.spec.ts covers the actual login/logout UI, with
+ * its own mocked /api/auth/login and /api/auth/logout responses.
+ */
+export async function installMockAuth(page: Page) {
+  await page.route('**://localhost:3000/api/auth/me', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ username: 'e2e-admin', role: 'admin' }),
+    }),
+  );
+}
+
+/**
  * Install a fake WebSocket before the app loads so frontend logic sees a
  * connected backend without needing a real backend process in e2e tests.
  */
