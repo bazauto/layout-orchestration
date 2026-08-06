@@ -9,6 +9,9 @@ export type Direction = 'fwd' | 'rev' | 'stop';
 export type SystemStatus = 'online' | 'safe-stop' | 'offline';
 export type SystemMode = 'manual' | 'auto' | 'hybrid';
 
+/** Operator account role. 'admin' may edit topology and config; 'operator' may drive. */
+export type Role = 'admin' | 'operator';
+
 // ─── REST / config types (mirror backend records) ────────────────────────────
 
 export interface BlockRecord {
