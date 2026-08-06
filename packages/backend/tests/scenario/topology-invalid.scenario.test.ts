@@ -134,6 +134,102 @@ describe('scenario: invalid topology triggers Safe-Stop', () => {
     await h.service.stop();
   });
 
+  it('safe-stops on a duplicate connection at scale, and heals to online once one of the pair is deleted (#21 — the index-based detector must not miss what the old scan caught)', async () => {
+    const EDGE_COUNT = 150;
+    const h = createScenarioHarness();
+    const blocks = Array.from({ length: EDGE_COUNT + 1 }, (_, i) => ({
+      id: `b${i}`,
+      layoutId: LAYOUT_ID,
+      name: `Block ${i}`,
+    }));
+    h.repo._setBlocks(blocks);
+
+    for (let i = 0; i < EDGE_COUNT; i++) {
+      await h.repo.createBlockEdge({
+        layoutId: LAYOUT_ID,
+        fromBlockId: `b${i}`,
+        fromEnd: 'east',
+        toBlockId: `b${i + 1}`,
+        toEnd: 'west',
+        pointConditions: [],
+        lengthMm: null,
+      });
+    }
+    // Duplicates the very first edge's connection tuple (b0 east -> b1 west).
+    const duplicateEdge = await h.repo.createBlockEdge({
+      layoutId: LAYOUT_ID,
+      fromBlockId: 'b0',
+      fromEnd: 'east',
+      toBlockId: 'b1',
+      toEnd: 'west',
+      pointConditions: [],
+      lengthMm: null,
+    });
+
+    await h.start();
+
+    expect(h.service.getSystemStatus().status).toBe('safe-stop');
+    expect(h.service.getSystemStatus().reason).toMatch(/duplicates the connection/i);
+    expect(h.service.getTrackGraph()).toBeNull();
+
+    // Healing case from D1: deleting one of the duplicate pair must clear
+    // Safe-Stop without disturbing the other 150 edges — an incrementally
+    // cached "invalid" verdict is exactly what gets this wrong.
+    await h.topologyService.deleteEdge(LAYOUT_ID, duplicateEdge.id);
+
+    expect(h.service.getSystemStatus().status).toBe('online');
+    expect(h.service.getSystemStatus().reason).toBeNull();
+    const graph = h.service.getTrackGraph();
+    expect(graph).not.toBeNull();
+    expect(graph?.edges.size).toBe(EDGE_COUNT);
+
+    await h.service.stop();
+  });
+
+  it('stays online at scale when edges share three of four connection-tuple fields (a key-collision bug would show as a spurious Safe-Stop on a valid layout)', async () => {
+    const EDGE_COUNT = 150;
+    const h = createScenarioHarness();
+    const blocks = Array.from({ length: EDGE_COUNT + 1 }, (_, i) => ({
+      id: `b${i}`,
+      layoutId: LAYOUT_ID,
+      name: `Block ${i}`,
+    }));
+    h.repo._setBlocks(blocks);
+
+    for (let i = 0; i < EDGE_COUNT; i++) {
+      await h.repo.createBlockEdge({
+        layoutId: LAYOUT_ID,
+        fromBlockId: `b${i}`,
+        fromEnd: 'east',
+        toBlockId: `b${i + 1}`,
+        toEnd: 'west',
+        pointConditions: [],
+        lengthMm: null,
+      });
+    }
+    // Matches the first edge's fromBlockId/fromEnd/toBlockId exactly, but a
+    // different toEnd — a genuinely different connection, not a duplicate.
+    await h.repo.createBlockEdge({
+      layoutId: LAYOUT_ID,
+      fromBlockId: 'b0',
+      fromEnd: 'east',
+      toBlockId: 'b1',
+      toEnd: 'north',
+      pointConditions: [],
+      lengthMm: null,
+    });
+
+    await h.start();
+
+    expect(h.service.getSystemStatus().status).toBe('online');
+    expect(h.service.getSystemStatus().reason).toBeNull();
+    const graph = h.service.getTrackGraph();
+    expect(graph).not.toBeNull();
+    expect(graph?.edges.size).toBe(EDGE_COUNT + 1);
+
+    await h.service.stop();
+  });
+
   it('safe-stops with the row-schema reason, without crashing, when a row has an un-normalised from_end', async () => {
     const h = createScenarioHarness();
     h.repo._setBlocks([
