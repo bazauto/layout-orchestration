@@ -6,8 +6,16 @@
  * "TODO: place upgrade context as options" comment in index.js) — so the
  * global onRequest auth hook (transport/http/auth/hook.ts) runs on a WS
  * upgrade exactly as it would on any other route. A rejected upgrade never
- * reaches "101 Switching Protocols"; `injectWS()` surfaces that as a
- * rejected promise carrying the HTTP status code.
+ * reaches "101 Switching Protocols".
+ *
+ * Note for anyone tempted to write the negative case with `injectWS()`:
+ * measured behaviour is that an unauthenticated `injectWS('/ws')` **never
+ * settles** — the promise neither resolves nor rejects, so the test simply
+ * times out. It does not surface the 401 as a rejection. That is why the
+ * rejection cases below use a plain `inject()` GET, which asserts the same
+ * property (the hook rejects before any protocol switch) and actually
+ * terminates. The authenticated case is still proven with a real
+ * `injectWS()` handshake, since that one does resolve.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
