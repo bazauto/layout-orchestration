@@ -127,6 +127,93 @@ export const blockEdges = sqliteTable(
   ],
 );
 
+// ─── Route Reservations (see docs/route-locking.md) ───────────────────────────
+
+/**
+ * The authoritative record of a granted route (D1, D3). `path` is the
+ * ordered `RoutePathStep[]` as JSON — read back and Zod-validated the same
+ * way `block_edges.point_conditions` is (`parseReservationRow`), never
+ * trusted as-is. `confirmed_index` is the last path index the train has
+ * been confirmed in; `reason` carries the Safe-Stop/restart-recovery/cancel
+ * reason and is NULL only while `active`.
+ */
+export const routeReservations = sqliteTable(
+  'route_reservations',
+  {
+    id: text('id').primaryKey(),
+    layoutId: text('layout_id').notNull().references(() => layouts.id, { onDelete: 'cascade' }),
+    locoAddress: integer('loco_address').notNull(),
+    authority: text('authority').notNull(),
+    status: text('status').notNull(),
+    path: text('path').notNull(),
+    confirmedIndex: integer('confirmed_index').notNull(),
+    reason: text('reason'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => [
+    index('route_reservations_layout_idx').on(table.layoutId),
+    index('route_reservations_layout_status_idx').on(table.layoutId, table.status),
+    check(
+      'route_reservations_status_valid',
+      sql`${table.status} IN ('active', 'suspended', 'released', 'cancelled')`,
+    ),
+    check('route_reservations_authority_valid', sql`${table.authority} IN ('manual', 'auto')`),
+    check(
+      'route_reservations_loco_address_range',
+      sql`${table.locoAddress} BETWEEN 1 AND 9999`,
+    ),
+    check('route_reservations_confirmed_index_non_negative', sql`${table.confirmedIndex} >= 0`),
+    // D2 (one route per loco) and D13 (at most one active/suspended
+    // reservation per loco per layout) enforced at the DB level, not just
+    // the domain — a domain-layer bug must not be able to double-book a
+    // loco across two reservations, matching #11's posture on block_edges.
+    // Partial: only rows still holding (active/suspended) are constrained,
+    // so a released/cancelled history for the same loco is unrestricted.
+    uniqueIndex('route_reservations_one_per_loco_unq')
+      .on(table.layoutId, table.locoAddress)
+      .where(sql`${table.status} IN ('active', 'suspended')`),
+  ],
+);
+
+/**
+ * One exclusive hold (block, point, or edge) belonging to a `route_reservations`
+ * row (D1, D2). `released` marks a hold spent rather than deleting it — an
+ * audit trail of what a route held, and the partial unique index below still
+ * excludes it from the "currently held" exclusivity check once true.
+ */
+export const routeHolds = sqliteTable(
+  'route_holds',
+  {
+    id: text('id').primaryKey(),
+    routeId: text('route_id')
+      .notNull()
+      .references(() => routeReservations.id, { onDelete: 'cascade' }),
+    layoutId: text('layout_id').notNull().references(() => layouts.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    targetId: text('target_id').notNull(),
+    requiredPosition: text('required_position'),
+    releaseAfterIndex: integer('release_after_index').notNull(),
+    released: integer('released', { mode: 'boolean' }).notNull().default(false),
+  },
+  (table) => [
+    index('route_holds_route_idx').on(table.routeId),
+    check('route_holds_kind_valid', sql`${table.kind} IN ('block', 'point', 'edge')`),
+    check(
+      'route_holds_required_position_valid',
+      sql`${table.requiredPosition} IS NULL OR ${table.requiredPosition} IN ('normal', 'reverse')`,
+    ),
+    // D2's exclusivity, at the DB level: no two currently-held (released = 0)
+    // rows may target the same (layout, kind, target) — the same block or
+    // point cannot be held by two routes at once, regardless of what the
+    // domain layer computed. Deliberately not unique on `route_id` as well —
+    // that would defeat the point of the constraint.
+    uniqueIndex('route_holds_exclusive_unq')
+      .on(table.layoutId, table.kind, table.targetId)
+      .where(sql`${table.released} = 0`),
+  ],
+);
+
 // ─── Users ────────────────────────────────────────────────────────────────────
 
 /**
@@ -219,3 +306,7 @@ export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
 export type SessionRow = typeof sessions.$inferSelect;
 export type NewSessionRow = typeof sessions.$inferInsert;
+export type RouteReservationRow = typeof routeReservations.$inferSelect;
+export type NewRouteReservationRow = typeof routeReservations.$inferInsert;
+export type RouteHoldRow = typeof routeHolds.$inferSelect;
+export type NewRouteHoldRow = typeof routeHolds.$inferInsert;
