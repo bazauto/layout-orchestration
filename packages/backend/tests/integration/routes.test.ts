@@ -223,6 +223,60 @@ describe('Block routes', () => {
   });
 });
 
+// ─── Points ──────────────────────────────────────────────────────────────────
+
+describe('Point routes', () => {
+  let repo: ReturnType<typeof makeRepo>;
+  let app: Awaited<ReturnType<typeof buildTestServer>>;
+
+  beforeEach(async () => {
+    repo = makeRepo();
+    app = await buildTestServer(repo);
+  });
+
+  it('PUT /api/layouts/:layoutId/points/:id updates a point', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/layouts/layout-1/points/pt1',
+      payload: { name: 'Renamed Point' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(repo.listPoints).toHaveBeenCalledWith('layout-1');
+    expect(repo.updatePoint).toHaveBeenCalledWith('pt1', { name: 'Renamed Point' });
+  });
+
+  it('PUT /api/layouts/:layoutId/points/:id returns 404 for an unknown point id', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/layouts/layout-1/points/does-not-exist',
+      payload: { name: 'Renamed Point' },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(repo.updatePoint).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/layouts/:layoutId/points/:id returns 400 for a malformed body (unknown field)', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/layouts/layout-1/points/pt1',
+      // .strict() — `id` is path/server-owned, never a client-supplied field.
+      payload: { name: 'Renamed Point', id: 'sneaky' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repo.updatePoint).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/layouts/:layoutId/points/:id returns 400 for a wrong-typed field', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/layouts/layout-1/points/pt1',
+      payload: { dccAddress: 'not-a-number' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repo.updatePoint).not.toHaveBeenCalled();
+  });
+});
+
 // ─── Sensors ─────────────────────────────────────────────────────────────────
 
 describe('Sensor routes', () => {
@@ -459,6 +513,37 @@ describe('Authentication', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(repo.createBlock).not.toHaveBeenCalled();
+  });
+
+  it('an unauthenticated PUT to a point is rejected with 401', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/layouts/layout-1/points/pt1',
+      payload: { name: 'Sneaky Point' },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(repo.updatePoint).not.toHaveBeenCalled();
+  });
+
+  it('an operator updating a point is refused with 403', async () => {
+    await authenticateAsOperator(app);
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/layouts/layout-1/points/pt1',
+      payload: { name: 'Sneaky Point' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(repo.updatePoint).not.toHaveBeenCalled();
+  });
+
+  it('an admin may update a point', async () => {
+    await authenticateAsAdmin(app);
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/layouts/layout-1/points/pt1',
+      payload: { name: 'Renamed Point' },
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it('an admin may write a config endpoint (creating a block)', async () => {
