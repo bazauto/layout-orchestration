@@ -6,6 +6,7 @@ import {
   describeViolations,
   TopologyInvalidError,
   TopologyContext,
+  buildEdgeIndex,
 } from '../../../src/domain/topology';
 import { BlockEdge, TopologyViolation } from '../../../src/domain/types';
 
@@ -90,6 +91,45 @@ describe('validateEdgeAgainstLayout', () => {
   it('returns [] for a fully valid edge', () => {
     const e = edge({});
     expect(validateEdgeAgainstLayout(e, layoutId, context, [e])).toEqual([]);
+  });
+
+  it('does not flag an edge matching in three of four tuple fields as a duplicate (no false Safe-Stop from a key collision)', () => {
+    const e1 = edge({ id: 'e1', fromBlockId: 'a', fromEnd: 'east', toBlockId: 'b', toEnd: 'west' });
+    // Same fromBlockId/fromEnd/toBlockId, but a different toEnd — not the same connection.
+    const e2 = edge({ id: 'e2', fromBlockId: 'a', fromEnd: 'east', toBlockId: 'b', toEnd: 'north' });
+    const violations = validateEdgeAgainstLayout(e1, layoutId, context, [e1, e2]);
+    expect(violations.filter((v) => v.kind === 'duplicate-connection')).toEqual([]);
+  });
+
+  it('reports the same conflictingEdgeId as the old Array#find scan for a three-way duplicate (e1->e2, e2->e1, e3->e1)', () => {
+    const e1 = edge({ id: 'e1' });
+    const e2 = edge({ id: 'e2' });
+    const e3 = edge({ id: 'e3' });
+    const all = [e1, e2, e3];
+
+    expect(
+      validateEdgeAgainstLayout(e1, layoutId, context, all).find((v) => v.kind === 'duplicate-connection'),
+    ).toEqual({ kind: 'duplicate-connection', edgeId: 'e1', conflictingEdgeId: 'e2' });
+    expect(
+      validateEdgeAgainstLayout(e2, layoutId, context, all).find((v) => v.kind === 'duplicate-connection'),
+    ).toEqual({ kind: 'duplicate-connection', edgeId: 'e2', conflictingEdgeId: 'e1' });
+    expect(
+      validateEdgeAgainstLayout(e3, layoutId, context, all).find((v) => v.kind === 'duplicate-connection'),
+    ).toEqual({ kind: 'duplicate-connection', edgeId: 'e3', conflictingEdgeId: 'e1' });
+  });
+
+  it('produces identical violation lists for a raw array and a prebuilt EdgeIndex over the same input', () => {
+    const e1 = edge({ id: 'e1' });
+    const e2 = edge({ id: 'e2' });
+    const all = [e1, e2];
+    const index = buildEdgeIndex(all);
+
+    expect(validateEdgeAgainstLayout(e1, layoutId, context, all)).toEqual(
+      validateEdgeAgainstLayout(e1, layoutId, context, index),
+    );
+    expect(validateEdgeAgainstLayout(e2, layoutId, context, all)).toEqual(
+      validateEdgeAgainstLayout(e2, layoutId, context, index),
+    );
   });
 });
 

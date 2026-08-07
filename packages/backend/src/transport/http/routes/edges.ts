@@ -3,6 +3,7 @@ import {
   TopologyService,
   TopologyRejectedError,
   EdgeNotFoundError,
+  EdgeLimitExceededError,
 } from '../../../services/TopologyService';
 import { edgeCreateSchema, edgeUpdateSchema } from '../../../services/validation';
 import { requireAdmin } from '../auth/hook';
@@ -34,6 +35,11 @@ export async function edgeRoutes(
         const created = await topologyService.createEdge(req.params.layoutId, parsed.data);
         return reply.status(201).send(created);
       } catch (err) {
+        if (err instanceof EdgeLimitExceededError) {
+          return reply
+            .status(409)
+            .send({ error: err.message, limit: err.limit, current: err.current });
+        }
         if (err instanceof TopologyRejectedError) {
           return reply.status(422).send({ error: err.message, violations: err.violations });
         }

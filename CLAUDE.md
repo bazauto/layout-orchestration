@@ -151,6 +151,16 @@ The three security findings against the original topology commit — #10 (Safe-S
 invalid topology rather than a bare throw), #11 (DB-level graph invariants), #12 (Zod
 over the whole `block_edges` row) — have landed with this work.
 
+**#21 landed**: topology validation (`domain/topology.ts`'s `validateTopology`) is O(n)
+in edge count rather than O(n²) — duplicate-connection detection is index-backed
+(`EdgeIndex`/`buildEdgeIndex`) instead of an `Array#find` scan per edge — and each
+layout is capped at `MAX_EDGES_PER_LAYOUT` (2,000) edges, enforced only by
+`TopologyService.createEdge` (admission control, not a DB invariant or a load-path
+check — see `docs/topology.md`). `TopologyService.getStatus` now delegates to
+`validateTopology` instead of open-coding its own scan, so `GET .../topology` and the
+load path that decides Safe-Stop report the same violation set. A cap breach is a new
+`EdgeLimitExceededError`, mapped to HTTP 409 on `POST .../edges`.
+
 `packages/backend/tests/scenario/` now exists and has content (topology Safe-Stop and
 recovery paths); it was empty before.
 
