@@ -13,6 +13,7 @@
 import { MAX_EDGES_PER_LAYOUT, validateEdgeAgainstLayout, validateTopology } from '../domain/topology';
 import { BlockEdge, BlockEdgeId, LayoutId, PointId, TopologyViolation } from '../domain/types';
 import { ILayoutRepository, PointRecord } from '../ports/ILayoutRepository';
+import { IRouteLockView } from '../ports/IRouteLockView';
 
 export interface TopologyServiceLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -78,6 +79,26 @@ export class RecordNotFoundError extends Error {
   }
 }
 
+/**
+ * Thrown when a write would touch an edge, block, or point currently held
+ * by an `active` or `suspended` route reservation (D10 — closes the
+ * `docs/topology.md` deferred note). Mutating track geometry out from under
+ * a held reservation is exactly the "guess a train's position" failure
+ * CLAUDE.md's fail-safe rule forbids. The operator must cancel the route
+ * first — always available, so this is an ordering requirement, not a
+ * deadlock.
+ */
+export class LockedByRouteError extends Error {
+  constructor(
+    readonly kind: 'edge' | 'block' | 'point',
+    readonly targetId: string,
+    readonly routeId: string,
+  ) {
+    super(`${kind} ${targetId} is held by route ${routeId}`);
+    this.name = 'LockedByRouteError';
+  }
+}
+
 export type EdgeCreateData = Omit<BlockEdge, 'id' | 'layoutId'>;
 export type EdgeUpdateData = Partial<Omit<BlockEdge, 'id' | 'layoutId'>>;
 export type PointUpdateData = Partial<Omit<PointRecord, 'id' | 'layoutId'>>;
@@ -87,6 +108,12 @@ export class TopologyService {
     private readonly repo: ILayoutRepository,
     private readonly onTopologyChanged: () => Promise<unknown>,
     private readonly log: TopologyServiceLogger,
+    /**
+     * Read-only route-lock port (D10), matching the `onTopologyChanged`
+     * injection style so this service stays testable standalone — no direct
+     * `ReservationService` dependency. Implemented by `ReservationService`.
+     */
+    private readonly lockView: IRouteLockView,
   ) {}
 
   async listEdges(layoutId: LayoutId): Promise<BlockEdge[]> {
@@ -106,6 +133,13 @@ export class TopologyService {
     return { valid: violations.length === 0, violations, edgeCount: edges.length };
   }
 
+  /**
+   * `createEdge` is deliberately NOT guarded against held routes (D10). A
+   * new edge moves no train, and it cannot be traversed into reserved track
+   * because the target block is already locked — the block/point locks
+   * themselves are what protect a live route, not an admission check on
+   * every new edge.
+   */
   async createEdge(layoutId: LayoutId, data: EdgeCreateData): Promise<BlockEdge> {
     const existingEdges = await this.repo.listBlockEdges(layoutId);
 
@@ -146,6 +180,7 @@ export class TopologyService {
     if (!existing || existing.layoutId !== layoutId) {
       throw new EdgeNotFoundError(id);
     }
+    this.assertEdgeUnlocked(layoutId, id);
 
     const existingEdges = await this.repo.listBlockEdges(layoutId);
     const context = await this.buildContext(layoutId);
@@ -172,6 +207,7 @@ export class TopologyService {
     if (!existing || existing.layoutId !== layoutId) {
       throw new EdgeNotFoundError(id);
     }
+    this.assertEdgeUnlocked(layoutId, id);
 
     await this.repo.deleteBlockEdge(id);
     this.log.info('[TopologyService] Edge deleted', { layoutId, edgeId: id });
@@ -192,11 +228,16 @@ export class TopologyService {
     if (!blocks.some((block) => block.id === blockId)) {
       throw new RecordNotFoundError('block', blockId);
     }
+    this.assertBlockUnlocked(layoutId, blockId);
 
     const edges = await this.repo.listBlockEdges(layoutId);
-    const removedEdges = edges.filter(
+    const referencingEdges = edges.filter(
       (edge) => edge.fromBlockId === blockId || edge.toBlockId === blockId,
-    ).length;
+    );
+    for (const edge of referencingEdges) {
+      this.assertEdgeUnlocked(layoutId, edge.id);
+    }
+    const removedEdges = referencingEdges.length;
 
     await this.repo.deleteBlock(layoutId, blockId);
     this.log.info('[TopologyService] Block deleted with edges', {
@@ -223,6 +264,7 @@ export class TopologyService {
     if (!points.some((point) => point.id === pointId)) {
       throw new RecordNotFoundError('point', pointId);
     }
+    this.assertPointUnlocked(layoutId, pointId);
 
     const edges = await this.repo.listBlockEdges(layoutId);
     const referencingEdgeIds = edges
@@ -281,5 +323,47 @@ export class TopologyService {
       blockIds: new Set(blocks.map((b) => b.id)),
       pointIds: new Set(points.map((p) => p.id)),
     };
+  }
+
+  // ─── D10: the topology write-guard ─────────────────────────────────────────
+  //
+  // `lockView` only reports `active`/`suspended` holders (see
+  // `ReservationService`'s `IRouteLockView` implementation) — a
+  // `released`/`cancelled` route holds nothing, so it never blocks a write.
+
+  private assertEdgeUnlocked(layoutId: LayoutId, edgeId: BlockEdgeId): void {
+    const routeId = this.lockView.findRouteHoldingEdge(layoutId, edgeId);
+    if (routeId) {
+      this.log.warn('[TopologyService] Rejected edge write — held by an active route', {
+        layoutId,
+        edgeId,
+        routeId,
+      });
+      throw new LockedByRouteError('edge', edgeId, routeId);
+    }
+  }
+
+  private assertBlockUnlocked(layoutId: LayoutId, blockId: string): void {
+    const routeId = this.lockView.findRouteHoldingBlock(layoutId, blockId);
+    if (routeId) {
+      this.log.warn('[TopologyService] Rejected block delete — held by an active route', {
+        layoutId,
+        blockId,
+        routeId,
+      });
+      throw new LockedByRouteError('block', blockId, routeId);
+    }
+  }
+
+  private assertPointUnlocked(layoutId: LayoutId, pointId: PointId): void {
+    const routeId = this.lockView.findRouteHoldingPoint(layoutId, pointId);
+    if (routeId) {
+      this.log.warn('[TopologyService] Rejected point delete — held by an active route', {
+        layoutId,
+        pointId,
+        routeId,
+      });
+      throw new LockedByRouteError('point', pointId, routeId);
+    }
   }
 }
