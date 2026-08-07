@@ -144,7 +144,98 @@ export interface LayoutRuntimeState {
   blocks: Map<BlockId, BlockState>;
   points: Map<PointId, PointState>;
   locos: Map<LocoAddress, LocoState>;
+  routes: Map<RouteId, RouteReservation>;
 }
+
+// ─── Route Reservations (see docs/route-locking.md) ───────────────────────────
+
+/**
+ * Lifecycle of a `RouteReservation`. 'active' holds live locks under normal
+ * operation; 'suspended' also holds locks but forbids driving (Safe-Stop, or
+ * `systemMode === 'manual'` suspending auto-authority routes — D7/D8);
+ * 'released' and 'cancelled' hold nothing and are terminal.
+ */
+export type RouteStatus = 'active' | 'suspended' | 'released' | 'cancelled';
+
+/** What kind of entity a `RouteHold` exclusively reserves. See D1: edges are
+ * recorded as route membership, not a third lock namespace — an edge hold
+ * exists so the topology write-guard and #6's braking model can find it, not
+ * because edges are independently exclusive. */
+export type RouteHoldKind = 'block' | 'point' | 'edge';
+
+/**
+ * One block in an ordered route path. `edgeId`/`entryEnd` are null only for
+ * step 0 (the starting block, entered by no edge in this route); `exitEnd` is
+ * null only for the final step (the route ends there, no edge leaves it).
+ */
+export interface RoutePathStep {
+  edgeId: BlockEdgeId | null;
+  blockId: BlockId;
+  entryEnd: BlockEndLabel | null;
+  exitEnd: BlockEndLabel | null;
+}
+
+/**
+ * An exclusive hold a `RouteReservation` places on one block, point, or edge.
+ * `requiredPosition` is set only for a `point` hold — the position the route
+ * needs the point locked at, per its `pointConditions`. `releaseAfterIndex`
+ * is the `RoutePathStep` index this hold sits "behind": it is eligible for
+ * release once the route's `confirmedIndex` moves strictly past it (see
+ * `holdsReleasableAt`). A block hold ALSO requires the block to have gone
+ * `occupied` -> `clear` before it actually releases (D5's two-condition
+ * rule); a point or edge hold releases on the index condition alone.
+ */
+export interface RouteHold {
+  kind: RouteHoldKind;
+  targetId: string;
+  requiredPosition: 'normal' | 'reverse' | null;
+  releaseAfterIndex: number;
+  released: boolean;
+}
+
+/**
+ * The authoritative record of what a route holds (D1). `BlockState.lockedByRoute`
+ * / `PointState.lockedByRoute` are a projection of this, maintained by the
+ * same code path (`ReservationService`) — never written independently.
+ */
+export interface RouteReservation {
+  id: RouteId;
+  layoutId: LayoutId;
+  locoAddress: LocoAddress;
+  /** Who drives this route once granted — does not affect whether it can be
+   * granted (D7); governs what a manual throttle/force-point command does. */
+  authority: Authority;
+  status: RouteStatus;
+  path: RoutePathStep[];
+  holds: RouteHold[];
+  /** Index into `path` of the last block the train has been confirmed in. */
+  confirmedIndex: number;
+  /** Safe-Stop reason, restart-recovery reason, or cancel reason — null while `active`. */
+  reason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Every reason `planReservation` (see `domain/routeLocking.ts`) may refuse a
+ * grant. A rejected grant returns every applicable member of this union, not
+ * just the first found (D14) — matching `validateTopology`'s posture.
+ */
+export type RouteRejection =
+  | { kind: 'system-not-online'; status: SystemStatus }
+  | { kind: 'empty-path' }
+  | { kind: 'unknown-edge'; edgeId: BlockEdgeId }
+  | { kind: 'path-not-connected'; index: number }
+  | { kind: 'reversal-at-block'; blockId: BlockId }
+  | { kind: 'start-block-not-occupied'; blockId: BlockId; occupancy: Occupancy }
+  | { kind: 'start-block-holds-other-loco'; blockId: BlockId; locoAddress: LocoAddress }
+  | { kind: 'block-not-clear'; blockId: BlockId; occupancy: Occupancy }
+  | { kind: 'block-locked'; blockId: BlockId; heldBy: RouteId }
+  | { kind: 'point-locked'; pointId: PointId; heldBy: RouteId }
+  | { kind: 'point-position-conflict'; pointId: PointId }
+  | { kind: 'loco-already-routed'; locoAddress: LocoAddress; routeId: RouteId }
+  | { kind: 'unknown-loco'; locoAddress: LocoAddress }
+  | { kind: 'no-graph' };
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -178,6 +269,7 @@ export type LayoutEvent =
   | { type: 'BLOCK_STATE'; payload: BlockState }
   | { type: 'POINT_STATE'; payload: PointState }
   | { type: 'LOCO_STATE'; payload: LocoState }
+  | { type: 'ROUTE_STATE'; payload: RouteReservation }
   | {
       type: 'SYSTEM_STATUS';
       payload: { status: SystemStatus; mode: SystemMode; reason: string | null };
