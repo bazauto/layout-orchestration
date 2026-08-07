@@ -27,12 +27,21 @@ export interface ConnectionHealth {
  * reading means occupancy for that block is no longer trustworthy, and per the
  * fail-safe rule that requires explicit operator recovery, not a quiet
  * self-clear the next time an unrelated connection event re-evaluates health.
+ *
+ * `recoveredRouteCount` is likewise required, not optional (same posture as
+ * `topologyValid`): the number of route reservations that survived a
+ * restart and still await an operator's explicit cancel or resume (D9). It
+ * is folded into `evaluateSystemSafeStop` LAST — after the sensor fault
+ * check — and — like the topology and sensor-fault latches — does not clear
+ * on its own: `LayoutService` decrements it only as `ReservationService`
+ * reports each recovered route resolved.
  */
 export interface SystemHealth extends ConnectionHealth {
   topologyValid: boolean;
   topologyReason: string | null;
   sensorFault: boolean;
   sensorFaultReason: string | null;
+  recoveredRouteCount: number;
 }
 
 /**
@@ -54,11 +63,12 @@ export function evaluateSafeStop(health: ConnectionHealth): {
 
 /**
  * Determines whether a Safe-Stop should be triggered based on connection
- * health, topology health, and sensor-payload health. Check order is MQTT,
- * then DCC, then topology, then a latched sensor fault — a connection
- * failure reason always wins over a topology reason, which in turn wins over
- * a sensor fault, so an operator investigating a Safe-Stop sees the more
- * systemic, more actionable cause first.
+ * health, topology health, sensor-payload health, and restart-recovered
+ * routes. Check order is MQTT, then DCC, then topology, then a latched
+ * sensor fault, then recovered routes — a connection failure reason always
+ * wins over a topology reason, which wins over a sensor fault, which wins
+ * over a recovered-route reason, so an operator investigating a Safe-Stop
+ * sees the more systemic, more actionable cause first.
  */
 export function evaluateSystemSafeStop(health: SystemHealth): {
   shouldStop: boolean;
@@ -73,6 +83,12 @@ export function evaluateSystemSafeStop(health: SystemHealth): {
   }
   if (health.sensorFault) {
     return { shouldStop: true, reason: health.sensorFaultReason };
+  }
+  if (health.recoveredRouteCount > 0) {
+    return {
+      shouldStop: true,
+      reason: `${health.recoveredRouteCount} route reservation(s) survived a restart and must be cleared`,
+    };
   }
   return { shouldStop: false, reason: null };
 }
@@ -94,6 +110,31 @@ export function canIssueAutoCommand(status: SystemStatus, mode: SystemMode): boo
  */
 export function canIssueManualCommand(status: SystemStatus): boolean {
   return status !== 'offline';
+}
+
+/**
+ * Whether a route may be granted. Independent of `SystemMode` (D7) — a
+ * reservation in `manual` mode is a pure interlocking (points set and
+ * locked, blocks reserved, operator drives it), which is useful before
+ * automation exists and costs nothing. Only system status gates it: a route
+ * must never be granted while Safe-Stopped or offline.
+ */
+export function canGrantRoute(status: SystemStatus): boolean {
+  return status === 'online';
+}
+
+/**
+ * Whether an operator's `force: true` point override is permitted (D6).
+ * Refused outright in `auto` mode — there is no manual authority in auto,
+ * codifying the existing `PointCommand.force` doc comment — and refused
+ * when the system is `offline` (no DCC connection to issue the command on).
+ * Permitted in `safe-stop` for operator recovery, same posture as
+ * `canIssueManualCommand`. A permitted override still cancels the route
+ * holding the point (D6) — that is enforced by the caller, not this
+ * predicate, which only answers "is the override itself allowed".
+ */
+export function canForcePointOverride(status: SystemStatus, mode: SystemMode): boolean {
+  return mode !== 'auto' && status !== 'offline';
 }
 
 // ─── Block Safety ─────────────────────────────────────────────────────────────

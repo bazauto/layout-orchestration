@@ -4,6 +4,8 @@ import {
   evaluateSystemSafeStop,
   canIssueAutoCommand,
   canIssueManualCommand,
+  canGrantRoute,
+  canForcePointOverride,
   isBlockEffectivelyOccupied,
   isValidSpeed,
   isValidLocoAddress,
@@ -35,7 +37,7 @@ describe('evaluateSafeStop', () => {
 });
 
 describe('evaluateSystemSafeStop', () => {
-  it('returns no safe-stop when connections, topology, and sensor health are all healthy', () => {
+  it('returns no safe-stop when connections, topology, sensor health, and route recovery are all healthy', () => {
     const result = evaluateSystemSafeStop({
       mqttConnected: true,
       dccConnected: true,
@@ -43,6 +45,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyReason: null,
       sensorFault: false,
       sensorFaultReason: null,
+      recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(false);
     expect(result.reason).toBeNull();
@@ -56,6 +59,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
       sensorFault: false,
       sensorFaultReason: null,
+      recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toBe(
@@ -71,12 +75,13 @@ describe('evaluateSystemSafeStop', () => {
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
       sensorFault: false,
       sensorFaultReason: null,
+      recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toMatch(/MQTT/i);
   });
 
-  it('stops with the sensor-fault reason when connections and topology are healthy but a sensor payload was malformed', () => {
+  it('stops with the sensor-fault reason when connections, topology, and route recovery are healthy but a sensor payload was malformed', () => {
     const result = evaluateSystemSafeStop({
       mqttConnected: true,
       dccConnected: true,
@@ -84,6 +89,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyReason: null,
       sensorFault: true,
       sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+      recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toBe(
@@ -99,6 +105,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyReason: null,
       sensorFault: true,
       sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+      recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toMatch(/MQTT/i);
@@ -112,9 +119,74 @@ describe('evaluateSystemSafeStop', () => {
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
       sensorFault: true,
       sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+      recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toMatch(/self-loop/i);
+  });
+
+  it('stops with a recovered-route reason when connections, topology, and sensor health are all healthy but routes survived a restart (D9)', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFault: false,
+      sensorFaultReason: null,
+      recoveredRouteCount: 2,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/2 route reservation\(s\) survived a restart/i);
+  });
+
+  it('lets a sensor fault win over recovered routes (full check order: MQTT, DCC, topology, sensor fault, then recovered routes)', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFault: true,
+      sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+      recoveredRouteCount: 1,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/malformed/i);
+  });
+});
+
+describe('canGrantRoute', () => {
+  it('permits a grant only when online', () => {
+    expect(canGrantRoute('online')).toBe(true);
+  });
+
+  it('refuses a grant during safe-stop', () => {
+    expect(canGrantRoute('safe-stop')).toBe(false);
+  });
+
+  it('refuses a grant when offline', () => {
+    expect(canGrantRoute('offline')).toBe(false);
+  });
+});
+
+describe('canForcePointOverride', () => {
+  it('permits a force override in manual mode while online', () => {
+    expect(canForcePointOverride('online', 'manual')).toBe(true);
+  });
+
+  it('permits a force override in hybrid mode', () => {
+    expect(canForcePointOverride('online', 'hybrid')).toBe(true);
+  });
+
+  it('refuses a force override in auto mode — no manual authority in auto', () => {
+    expect(canForcePointOverride('online', 'auto')).toBe(false);
+  });
+
+  it('permits a force override during safe-stop for operator recovery', () => {
+    expect(canForcePointOverride('safe-stop', 'manual')).toBe(true);
+  });
+
+  it('refuses a force override when offline', () => {
+    expect(canForcePointOverride('offline', 'manual')).toBe(false);
   });
 });
 
