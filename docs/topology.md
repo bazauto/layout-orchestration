@@ -294,14 +294,30 @@ Two reasons this is stated rather than assumed:
   delete would be waved through, stranding the owning layout's edge conditions
   as `unknown-point`. Ownership is therefore checked **first**.
 
-## Deferred: edge writes vs. route reservations (#4)
+## Edge writes vs. route reservations (D10, #3)
 
-`RouteId` and `lockedByRoute` exist in `domain/types.ts` but nothing populates
-them yet — route reservation (#4) hasn't landed. Once it does,
-`TopologyService#updateEdge`/`#deleteEdge` will need to refuse a write against
-an edge that is part of a currently-reserved route (or, at minimum, force
-that route to be torn down first) — mutating track geometry out from under an
-active reservation is exactly the kind of "guess a train's position" failure
-CLAUDE.md's fail-safe rule forbids. That check does not exist yet; there is
-nothing to conflict with it yet. Do not assume `TopologyService` writes are
-currently gated by reservation state — they are not.
+This used to be a deferred note: `RouteId` and `lockedByRoute` existed in
+`domain/types.ts` but nothing populated them, and `TopologyService` writes
+were not gated by reservation state at all. Route locking (#3) closed it.
+Full design record: `docs/route-locking.md` D10.
+
+`TopologyService`'s constructor now takes a fourth argument,
+`lockView: IRouteLockView`, implemented by `ReservationService` — the same
+injection style as the existing `onTopologyChanged` callback, so
+`TopologyService` stays testable standalone (a hand-rolled `IRouteLockView`
+in tests, no real `ReservationService` needed).
+
+- `updateEdge` / `deleteEdge`: refused (`LockedByRouteError` -> HTTP 409)
+  when the edge is held by an `active` or `suspended` reservation.
+- `deleteBlockWithEdges`: refused when the block itself, or any edge
+  referencing it, is held.
+- `deletePointIfUnreferenced`: refused when the point is held.
+- `createEdge` stays **permitted** — a new edge moves no train, and it
+  cannot be traversed into reserved track because the target block is
+  already locked.
+
+The interaction with the "edge writes stay permitted during Safe-Stop"
+rule above still holds, but a *suspended* reservation (not just `active`)
+still blocks the write, since `IRouteLockView` reports both. The operator
+cancels the route first, then edits — cancel is always available, so this
+is an explicit ordering, not a deadlock.

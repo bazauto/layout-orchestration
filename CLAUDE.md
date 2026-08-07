@@ -140,15 +140,35 @@ edge and a point delete is refused while an edge still references it.
 **The Configure UI has an Edges tab.** Edges are authored explicitly from the Configure
 screen — not derived from grid tiles, which stays deferred (see `docs/topology.md`).
 
-`lockBlock` / `lockPoint` in `domain/layoutState.ts` do populate `lockedByRoute`. Nothing
-calls them — there is no reservation engine to supply a `RouteId`, and the locking
-semantics are undecided (#3).
+**Route locking has landed (#3).** `lockBlock` / `lockPoint` in `domain/layoutState.ts`
+are now called — by `ReservationService`, the sole owner of that policy;
+`LayoutStateManager` stays storage only. `domain/routeLocking.ts` is the pure planning/
+release logic (`planReservation`, `evaluateOccupancyChange`, `holdsReleasableAt`);
+`domain/types.ts` carries `RouteReservation`/`RouteHold`/`RouteRejection`;
+`route_reservations`/`route_holds` (migration `0004_redundant_tana_nile.sql`) persist
+reservations with DB-level exclusivity (partial unique indexes, #11's posture — no two
+routes may hold the same block/point, at most one active/suspended reservation per loco);
+`ReservationService` (`grant`/`cancel`/`suspendAll`/`suspendAuto`/`resume`/
+`onOccupancyChange`/`loadOnStartup`) owns the lifecycle, with no MQTT/DCC access of its
+own — `LayoutService` calls in and reacts to the outcomes. `TopologyService` gained a
+fourth constructor argument, `lockView: IRouteLockView` (implemented by
+`ReservationService`), closing the deferred edge-writes-vs-reservations note in
+`docs/topology.md`: an edge/block/point held by an active or suspended route now refuses
+a topology write (409). REST: `GET|POST /api/layouts/:layoutId/routes`,
+`DELETE .../routes/:routeId`, `POST .../routes/:routeId/resume` — not role-gated beyond
+authentication, same posture as the WebSocket driving commands. Full design record
+(D1–D14) — why, not just what — is `docs/route-locking.md`; read it before touching
+`domain/routeLocking.ts`, `services/ReservationService.ts`, or the route-lock guard in
+`services/TopologyService.ts`.
 
-Phase 3 is therefore gated on #3 (locking semantics) alone. The graph, its persistence,
-and its authoring surface are all done. Route reservation (#4),
-per-loco braking (#6), and collision avoidance (#7) follow those. Note for #4: edge writes
-are not yet refused while a route is reserved — see the deferred note in
-`docs/topology.md`.
+Phase 3 was gated on #3 (locking semantics) alone; that gate is now clear. Pathfinding
+(#4) takes an explicit ordered edge list from `ReservationService.grant` — #3 deliberately
+does not search the graph. Per-loco braking (#6) and collision avoidance (#7) follow #4.
+Two limits #3 records rather than closes: a point lock is an authority guarantee ("no
+other authority will command this point"), not a physical position guarantee — there is
+still no point-position feedback channel (#25) — and the locking model does not catch two
+routes fouling at a plain (non-switched) diamond crossing, since neither shares a block or
+a point (#26; Westgate Hollow has none today).
 
 The three security findings against the original topology commit — #10 (Safe-Stop on
 invalid topology rather than a bare throw), #11 (DB-level graph invariants), #12 (Zod

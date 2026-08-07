@@ -6,7 +6,9 @@ This repository contains a local-first control stack for a DCC-based layout:
 - A Node.js backend for layout state, MQTT integration, DCC control, SQLite persistence, REST APIs, and WebSocket updates
 - A React frontend for operating the layout, editing topology, and configuring blocks, sensors, points, locos, and track tiles
 
-The project is currently in the layout-definition and operator tooling phase. Route reservation and automation are planned next.
+The project is currently in the layout-definition and operator tooling phase. Route
+reservation and locking has landed (see Current Status); pathfinding, driving a granted
+route, and automation are planned next.
 
 ## Current Status
 
@@ -19,6 +21,9 @@ Implemented:
 - Safe-Stop on a malformed sensor payload (a message on a `sensor/*/reading` topic that
   fails Zod validation, including a non-JSON payload), naming the sensor and topic in the
   reason, with no threshold or auto-clear
+- Route reservation and locking engine — grant/cancel/suspend/resume over an
+  explicit ordered path, exclusive block/point locks with progressive
+  release, Safe-Stop suspension and restart recovery — see `docs/route-locking.md`
 - WebSocket state streaming to the frontend
 - Local username/password authentication with role-based access (`admin` /
   `operator`) — see `docs/auth.md` for the scheme and its threat model
@@ -30,7 +35,7 @@ Implemented:
 - GitHub Actions CI
 
 Planned next:
-- Route reservation engine
+- Pathfinding and driving a granted route (issuing point/throttle commands) — #4
 - Automation engine / schedules
 
 ## Workspace Layout
@@ -204,14 +209,20 @@ The system follows a fail-safe posture:
 
 A formal track graph exists — `block_edges` in the schema, with construction and
 traversal in `domain/graph.ts`, a full REST CRUD surface, and a Configure UI tab for
-authoring it. What remains: there is no route reservation engine, no automation, and no
-route locking (`RouteId`/`lockedByRoute` are declared but nothing populates them).
-Edges are authored explicitly through the Edges tab rather than derived from grid
-tiles — track-editor tiles and the topology graph are two independent representations
-today. Each layout is capped at 2,000 `block_edges` — a deliberate admission-control
-limit on `POST .../edges` (not a physical layout constraint; Westgate Hollow is ~40
-edges), enforced only on create and only in `TopologyService`, not the database or the
-load path — see `docs/topology.md`.
+authoring it. Route reservation and locking now exists on top of it (`docs/route-locking.md`)
+— granting, cancelling, suspending, resuming, and progressive release — but it takes an
+explicit ordered edge list; there is no pathfinder yet and nothing issues point/throttle
+commands for a granted route (both #4). Two limits the locking model records rather than
+closes: a point lock guarantees no other software authority will command the point, not
+that the point is physically in the required position — there is still no point-position
+feedback channel from the DCC controller (#25) — and the model does not catch two routes
+fouling at a plain (non-switched) diamond crossing, since neither shares a block or a
+point (#26; Westgate Hollow has none today). Edges are authored explicitly through the
+Edges tab rather than derived from grid tiles — track-editor tiles and the topology graph
+are two independent representations today. Each layout is capped at 2,000 `block_edges` —
+a deliberate admission-control limit on `POST .../edges` (not a physical layout constraint;
+Westgate Hollow is ~40 edges), enforced only on create and only in `TopologyService`, not
+the database or the load path — see `docs/topology.md`.
 
 A sensor-payload Safe-Stop (#27) is latched: once tripped it is not cleared by an
 unrelated health re-evaluation (e.g. an MQTT/DCC reconnect), and there is no
@@ -240,7 +251,8 @@ time (#36). `edges` and `points` validate with `.strict()` schemas in
 
 ## Next Milestones
 
-1. Route reservation engine
-2. Automation engine / schedules
-3. Link grid tiles to the topology graph, so tile placement can derive edges
-4. Hardware validation and operator workflows
+1. Pathfinding and driving a granted route (#4)
+2. Point position confirmation (#25)
+3. Automation engine / schedules
+4. Link grid tiles to the topology graph, so tile placement can derive edges
+5. Hardware validation and operator workflows
