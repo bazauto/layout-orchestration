@@ -15,6 +15,7 @@ import { DrizzleRepository } from './adapters/db/repository';
 import { DrizzleAuthRepository } from './adapters/db/authRepository';
 import { LayoutService } from './services/LayoutService';
 import { TopologyService } from './services/TopologyService';
+import { ReservationService } from './services/ReservationService';
 import { AuthService } from './services/AuthService';
 import { bootstrapAdminIfNeeded } from './services/bootstrapAdmin';
 import { buildServer } from './transport/http/server';
@@ -109,12 +110,19 @@ async function main() {
   }
 
   // ── Service & Server ──────────────────────────────────────────────────────────
+  // ReservationService is constructed before LayoutService and
+  // TopologyService, and passed to both — LayoutService calls into it to
+  // grant/cancel/suspend/resume routes and react to occupancy changes;
+  // TopologyService depends on it only through the read-only IRouteLockView
+  // port (D10).
   const stateManager = new LayoutStateManager(activeLayoutId);
-  const layoutService = new LayoutService(dcc, mqtt, repo, stateManager, adapterLogger);
+  const reservationService = new ReservationService(repo, stateManager, adapterLogger);
+  const layoutService = new LayoutService(dcc, mqtt, repo, stateManager, reservationService, adapterLogger);
   const topologyService = new TopologyService(
     repo,
     () => layoutService.reloadTopology(),
     adapterLogger,
+    reservationService,
   );
   const authService = new AuthService(authRepo, adapterLogger);
   await layoutService.start(activeLayoutId);
