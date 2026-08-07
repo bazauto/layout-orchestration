@@ -16,6 +16,9 @@ Implemented:
 - SQLite persistence via Drizzle ORM with auto-migrate on startup
 - REST API for layouts, locos, blocks, points, sensors, grid tiles, and block edges (track topology)
 - Topology validation with Safe-Stop on an invalid graph, and operator recovery via edge authoring
+- Safe-Stop on a malformed sensor payload (a message on a `sensor/*/reading` topic that
+  fails Zod validation, including a non-JSON payload), naming the sensor and topic in the
+  reason, with no threshold or auto-clear
 - WebSocket state streaming to the frontend
 - Local username/password authentication with role-based access (`admin` /
   `operator`) — see `docs/auth.md` for the scheme and its threat model
@@ -144,7 +147,8 @@ Current automated coverage includes:
 - backend HTTP route integration tests, including authenticated/unauthenticated
   and role-enforcement paths (logging in for real via Fastify `inject()`, not
   a bypass) and a real end-to-end authenticated WebSocket upgrade
-- backend scenario tests (`packages/backend/tests/scenario/`) covering topology Safe-Stop and recovery paths
+- backend scenario tests (`packages/backend/tests/scenario/`) covering topology Safe-Stop
+  and recovery paths, and malformed-sensor-payload Safe-Stop (#27)
 - Playwright tests for editor happy path, erase flow, keyboard shortcuts,
   no-scrollbar viewport regression, edge authoring, and the login screen
 
@@ -208,6 +212,14 @@ today. Each layout is capped at 2,000 `block_edges` — a deliberate admission-c
 limit on `POST .../edges` (not a physical layout constraint; Westgate Hollow is ~40
 edges), enforced only on create and only in `TopologyService`, not the database or the
 load path — see `docs/topology.md`.
+
+A sensor-payload Safe-Stop (#27) is latched: once tripped it is not cleared by an
+unrelated health re-evaluation (e.g. an MQTT/DCC reconnect), and there is no
+"acknowledge and clear" operator action yet — recovery today means restarting the
+backend process, which re-initialises `SystemHealth` from scratch. `websocket`/HTTP
+parse failures on operator-facing requests remain ordinary 4xx/`ERROR` responses, not a
+Safe-Stop — see the fail-safe rule in `docs/mqtt-contract.md`, which applies only to
+sensor and control topics.
 
 Authentication is local-only and, until TLS is added, only defends against a stray
 device, a curious guest, or a rogue web page — not an attacker who already has a

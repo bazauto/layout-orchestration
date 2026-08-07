@@ -56,6 +56,8 @@ export class LayoutService extends EventEmitter {
     dccConnected: false,
     topologyValid: true,
     topologyReason: null,
+    sensorFault: false,
+    sensorFaultReason: null,
   };
   private graph: TrackGraph | null = null;
 
@@ -293,7 +295,7 @@ export class LayoutService extends EventEmitter {
 
     for (const sensor of dbSensors) {
       await this.mqtt.subscribe(sensor.mqttTopic, (payload) => {
-        this.handleSensorReading(sensor.id, sensor.blockId, payload);
+        this.handleSensorReading(sensor.id, sensor.blockId, sensor.mqttTopic, payload);
       });
     }
 
@@ -304,17 +306,36 @@ export class LayoutService extends EventEmitter {
 
   // ─── Private: Sensor Ingestion ────────────────────────────────────────────────
 
+  /**
+   * A malformed sensor payload is a Fail-Safe Trigger (mqtt-contract.md
+   * §Fail-Safe Triggers item 3 / CLAUDE.md safety rule 3), not a logged
+   * warning: a sensor that has started sending garbage is indistinguishable,
+   * from the domain's point of view, from one that has silently stopped
+   * updating — and occupancy state that has silently stopped updating is
+   * indistinguishable from track that is genuinely clear. Trips immediately
+   * on the first malformed message, via the same `evaluateAndApplySafeStop`
+   * path as a connection or topology failure — no parallel mechanism, no
+   * tolerance/threshold. Block state is never touched on this path; the
+   * `return` happens before `stateManager.updateBlockOccupancy` is reached.
+   */
   private handleSensorReading(
     sensorId: string,
     blockId: string | null,
+    topic: string,
     rawPayload: unknown,
   ): void {
     const result = sensorReadingSchema.safeParse(rawPayload);
     if (!result.success) {
-      this.log.warn('[LayoutService] Invalid sensor payload', {
+      const reason = `Malformed sensor payload from sensor "${sensorId}" on topic "${topic}": ${result.error.message}`;
+      this.log.error('[LayoutService] Invalid sensor payload — entering Safe-Stop', {
+        layoutId: this.layoutId,
         sensorId,
+        blockId,
+        topic,
         error: result.error.message,
       });
+      this.health = { ...this.health, sensorFault: true, sensorFaultReason: reason };
+      this.evaluateAndApplySafeStop();
       return;
     }
 

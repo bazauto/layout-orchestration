@@ -20,10 +20,19 @@ export interface ConnectionHealth {
  * optional-defaulting-to-true — an unset field must never be read as safe,
  * per the fail-safe rule. `topologyReason` carries the Safe-Stop reason
  * (from `describeViolations`) when `topologyValid` is false.
+ *
+ * `sensorFault` is the same shape for a malformed sensor payload (mqtt-contract.md
+ * §Fail-Safe Triggers item 3): required, not optional-defaulting-to-false, and
+ * latched — nothing in this module clears it once set. A dropped/corrupted
+ * reading means occupancy for that block is no longer trustworthy, and per the
+ * fail-safe rule that requires explicit operator recovery, not a quiet
+ * self-clear the next time an unrelated connection event re-evaluates health.
  */
 export interface SystemHealth extends ConnectionHealth {
   topologyValid: boolean;
   topologyReason: string | null;
+  sensorFault: boolean;
+  sensorFaultReason: string | null;
 }
 
 /**
@@ -45,10 +54,11 @@ export function evaluateSafeStop(health: ConnectionHealth): {
 
 /**
  * Determines whether a Safe-Stop should be triggered based on connection
- * health AND topology health. Check order is MQTT, then DCC, then topology —
- * a connection failure reason always wins over a topology reason, so an
- * operator investigating a Safe-Stop sees the more actionable, more urgent
- * cause first.
+ * health, topology health, and sensor-payload health. Check order is MQTT,
+ * then DCC, then topology, then a latched sensor fault — a connection
+ * failure reason always wins over a topology reason, which in turn wins over
+ * a sensor fault, so an operator investigating a Safe-Stop sees the more
+ * systemic, more actionable cause first.
  */
 export function evaluateSystemSafeStop(health: SystemHealth): {
   shouldStop: boolean;
@@ -60,6 +70,9 @@ export function evaluateSystemSafeStop(health: SystemHealth): {
   }
   if (!health.topologyValid) {
     return { shouldStop: true, reason: health.topologyReason };
+  }
+  if (health.sensorFault) {
+    return { shouldStop: true, reason: health.sensorFaultReason };
   }
   return { shouldStop: false, reason: null };
 }

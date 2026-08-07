@@ -95,8 +95,19 @@ export class MqttAdapter implements IMqttAdapter {
         try {
           payload = JSON.parse(rawPayload.toString());
         } catch {
-          this.log.warn('[MQTT] Received non-JSON payload', { topic });
-          return;
+          // Do NOT drop this silently: a non-JSON payload is just as malformed
+          // as one that parses but fails Zod validation (mqtt-contract.md
+          // §Fail-Safe Triggers item 3), and this adapter has no way to know
+          // whether `topic` is a sensor/control topic that requires a
+          // Safe-Stop — that decision belongs to the subscriber (LayoutService),
+          // per CLAUDE.md's "no business logic in transport callbacks" rule.
+          // Deliver the raw string through instead of returning early, so the
+          // subscriber's own schema validation sees it, fails, and reacts the
+          // same way it would for a structurally-valid-but-wrong-shape payload.
+          this.log.warn('[MQTT] Received non-JSON payload; forwarding raw for the subscriber to validate', {
+            topic,
+          });
+          payload = rawPayload.toString();
         }
 
         for (const [pattern, handler] of this.subscriptions) {

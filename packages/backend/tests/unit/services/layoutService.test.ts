@@ -193,14 +193,41 @@ describe('LayoutService — sensor-driven block state', () => {
     await service.stop();
   });
 
-  it('ignores malformed sensor payloads', async () => {
+  it('enters Safe-Stop on a malformed sensor payload, naming the sensor and topic, without mutating block state', async () => {
     const { service, mqtt, stateManager } = await buildStartedService();
 
     mqtt.simulateIncoming('layout/test/sensor/s1/reading', { badField: 'nonsense' });
     await new Promise((r) => setImmediate(r));
 
-    // Block should remain in its initial 'unknown' state
+    // Block must remain in its initial 'unknown' state — the malformed
+    // message must never reach stateManager.updateBlockOccupancy.
     expect(stateManager.getBlock('b1')?.occupancy).toBe('unknown');
+
+    const status = service.getSystemStatus();
+    expect(status.status).toBe('safe-stop');
+    expect(status.reason).toMatch(/s1/);
+    expect(status.reason).toMatch(/layout\/test\/sensor\/s1\/reading/);
+
+    await service.stop();
+  });
+
+  it('does not un-mutate an already-tracked block on a later malformed reading for the same sensor', async () => {
+    const { service, mqtt, stateManager } = await buildStartedService();
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', {
+      state: 'occupied',
+      updatedAt: new Date().toISOString(),
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('occupied');
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', { badField: 'nonsense' });
+    await new Promise((r) => setImmediate(r));
+
+    // The last known-good occupancy must survive the malformed message.
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('occupied');
+    expect(service.getSystemStatus().status).toBe('safe-stop');
+
     await service.stop();
   });
 });

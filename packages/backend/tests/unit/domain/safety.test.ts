@@ -35,12 +35,14 @@ describe('evaluateSafeStop', () => {
 });
 
 describe('evaluateSystemSafeStop', () => {
-  it('returns no safe-stop when connections and topology are both healthy', () => {
+  it('returns no safe-stop when connections, topology, and sensor health are all healthy', () => {
     const result = evaluateSystemSafeStop({
       mqttConnected: true,
       dccConnected: true,
       topologyValid: true,
       topologyReason: null,
+      sensorFault: false,
+      sensorFaultReason: null,
     });
     expect(result.shouldStop).toBe(false);
     expect(result.reason).toBeNull();
@@ -52,6 +54,8 @@ describe('evaluateSystemSafeStop', () => {
       dccConnected: true,
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
+      sensorFault: false,
+      sensorFaultReason: null,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toBe(
@@ -65,9 +69,52 @@ describe('evaluateSystemSafeStop', () => {
       dccConnected: true,
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
+      sensorFault: false,
+      sensorFaultReason: null,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toMatch(/MQTT/i);
+  });
+
+  it('stops with the sensor-fault reason when connections and topology are healthy but a sensor payload was malformed', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFault: true,
+      sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toBe(
+      'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+    );
+  });
+
+  it('lets a connection failure reason win over a sensor fault', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: false,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFault: true,
+      sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/MQTT/i);
+  });
+
+  it('lets an invalid-topology reason win over a sensor fault', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: false,
+      topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
+      sensorFault: true,
+      sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/self-loop/i);
   });
 });
 

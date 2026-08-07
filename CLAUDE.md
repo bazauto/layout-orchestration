@@ -192,3 +192,34 @@ Frontend: `LoginScreen`, `useAuth`, and `api.ts` (`credentials: 'include'` +
 centralised 401 handling) gate the rest of the UI behind a session. Full
 scheme and the pre-TLS threat model are in `docs/auth.md` — read it before
 touching anything under `transport/http/auth/` or `services/AuthService.ts`.
+
+**#27 landed**: `LayoutService.handleSensorReading` now enters Safe-Stop — via
+the same `SystemHealth`/`evaluateAndApplySafeStop` machinery as a connection
+or topology failure, not a parallel mechanism — the instant a sensor payload
+fails `sensorReadingSchema`, per mqtt-contract.md §Fail-Safe Triggers item 3.
+The old warn-and-return is gone; the reason names the sensor id and topic,
+block state is never touched on that path (the `return` happens before
+`stateManager.updateBlockOccupancy`), and there is no tolerance — the first
+malformed message trips it. `SystemHealth` gained `sensorFault`/
+`sensorFaultReason` (`domain/safety.ts`), required fields mirroring
+`topologyValid`/`topologyReason`; `evaluateSystemSafeStop`'s priority order is
+now MQTT, then DCC, then topology, then sensor fault. The fault is latched —
+nothing clears it automatically, so an unrelated MQTT/DCC reconnect can't
+silently undo it — and there is still no "acknowledge and clear" operator
+action; recovery today means restarting the backend process. Audited the
+other inbound-parse warn-and-return sites while in there: `MqttAdapter`'s raw
+`JSON.parse` failure (`adapters/mqtt/`) had the *same* bug one layer up —
+malformed non-JSON on a sensor topic was dropped before it ever reached
+`handleSensorReading`'s Zod check, so it now forwards the raw string through
+to the subscriber instead of swallowing it, keeping the Safe-Stop decision in
+the service layer rather than the transport (rule 2). HTTP/WS parse failures
+on operator-facing routes (`transport/http/routes/{auth,edges}.ts`,
+`transport/websocket/index.ts`'s `clientMessageSchema`) were also audited and
+left as ordinary 400s / `ERROR` frames — the contract's fail-safe rule is
+scoped to sensor/control topics, not operator UI requests, and turning a bad
+UI request into a layout halt would itself be a bug. `services/validation.ts`'s
+other `safeParse` sites (`block_edges`/`users`/`sessions` row parsing) were
+already throwing rather than warn-and-return, and DB-row corruption already
+surfaces as Safe-Stop via the topology load path (#12) or a 500, so those were
+left unchanged. `docs/mqtt-contract.md` did not change — the code moved to
+meet it.
