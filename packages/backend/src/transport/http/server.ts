@@ -20,6 +20,7 @@ import { sensorRoutes } from './routes/sensors';
 import { gridRoutes } from './routes/grid';
 import { edgeRoutes } from './routes/edges';
 import { topologyRoutes } from './routes/topology';
+import { routeRoutes } from './routes/routes';
 import { authRoutes } from './routes/auth';
 import { emergencyStopRoutes } from './routes/emergencyStop';
 import { registerAuthHook } from './auth/hook';
@@ -79,6 +80,7 @@ export async function buildServer(
   await gridRoutes(fastify, repo);
   await edgeRoutes(fastify, topologyService);
   await topologyRoutes(fastify, layoutService, topologyService);
+  await routeRoutes(fastify, layoutService);
 
   // WebSocket — the upgrade itself is gated by the onRequest hook above;
   // no auth logic lives in the WS transport handler.
