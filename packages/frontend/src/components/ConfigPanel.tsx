@@ -49,40 +49,66 @@ export function ConfigPanel({ layoutId }: Props) {
 
 // ─── Shared inline-edit cell ──────────────────────────────────────────────────
 
+/** Narrowed shape any `updateX` call needs to satisfy for `EditableCell` to report success/failure. */
+type SaveResult = { ok: boolean; message?: string };
+
 function EditableCell({
   value,
   onSave,
 }: {
   value: string;
-  onSave: (v: string) => void;
+  onSave: (v: string) => Promise<SaveResult>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const save = () => {
-    if (draft.trim() && draft.trim() !== value) onSave(draft.trim());
-    setEditing(false);
+  const save = async () => {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === value) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    const result = await onSave(trimmed);
+    setSaving(false);
+    if (result.ok) {
+      setError(null);
+      setEditing(false);
+    } else {
+      // Stay in edit mode with the operator's draft intact — a failed save
+      // must not look like it succeeded, and must not lose their input.
+      setError(result.message ?? 'Save failed');
+    }
   };
 
   if (editing) {
     return (
-      <span style={{ display: 'flex', gap: 4 }}>
-        <input
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
-          style={s.inlineInput}
-        />
-        <button onClick={save} style={s.saveBtn}>✓</button>
-        <button onClick={() => setEditing(false)} style={s.cancelBtn}>✕</button>
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span style={{ display: 'flex', gap: 4 }}>
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') save();
+              if (e.key === 'Escape') { setEditing(false); setError(null); }
+            }}
+            style={s.inlineInput}
+            disabled={saving}
+          />
+          <button onClick={() => save()} style={s.saveBtn} disabled={saving}>✓</button>
+          <button onClick={() => { setEditing(false); setError(null); }} style={s.cancelBtn}>✕</button>
+        </span>
+        {error && <span style={s.error}>{error}</span>}
       </span>
     );
   }
   return (
     <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
       {value}
-      <button onClick={() => { setDraft(value); setEditing(true); }} style={s.editBtn} title="Edit">✎</button>
+      <button onClick={() => { setDraft(value); setEditing(true); setError(null); }} style={s.editBtn} title="Edit">✎</button>
     </span>
   );
 }
@@ -91,17 +117,23 @@ function EditableCell({
 
 function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
   const [name, setName] = useState('');
-  const [deleteFeedback, setDeleteFeedback] = useState<{ text: string; ok: boolean } | null>(null);
+  const [feedback, setFeedback] = useState<{ text: string; ok: boolean } | null>(null);
   const submit = async () => {
     if (!name.trim()) return;
-    await ops.createBlock(name.trim());
-    setName('');
+    const result = await ops.createBlock(name.trim());
+    if (result.ok) {
+      setName('');
+      setFeedback(null);
+    } else {
+      // Leave the operator's input in place — a failed create must not look like it saved.
+      setFeedback({ text: result.message ?? 'Create failed', ok: false });
+    }
   };
   // A block delete now cascades to its edges — the response carries the
   // count, and can also 404. Both are surfaced rather than silently dropped.
   const handleDelete = async (id: string) => {
     const result = await ops.deleteBlock(id);
-    setDeleteFeedback(
+    setFeedback(
       result.ok
         ? { text: `Removed block and ${result.removedEdges} edge(s)`, ok: true }
         : { text: result.message ?? 'Delete failed', ok: false },
@@ -115,8 +147,8 @@ function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
           placeholder="Block name" style={s.input} />
         <button onClick={submit} style={s.addBtn}>Add</button>
       </div>
-      {deleteFeedback && (
-        <p style={deleteFeedback.ok ? s.topicPreview : s.error}>{deleteFeedback.text}</p>
+      {feedback && (
+        <p style={feedback.ok ? s.topicPreview : s.error}>{feedback.text}</p>
       )}
       <table style={s.table}>
         <thead><tr>
@@ -149,14 +181,30 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
   const [name, setName] = useState('');
   const [type, setType] = useState<'block_detection' | 'ir_position'>('block_detection');
   const [blockId, setBlockId] = useState('');
+  const [feedback, setFeedback] = useState<string | null>(null);
 
   const slug = (str: string) => str.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
   const derivedTopic = name.trim() ? `layout/${layoutId}/sensor/${slug(name.trim())}/reading` : '';
 
   const submit = async () => {
     if (!name.trim()) return;
-    await ops.createSensor(name.trim(), type, blockId || null, derivedTopic);
-    setName(''); setBlockId('');
+    const result = await ops.createSensor(name.trim(), type, blockId || null, derivedTopic);
+    if (result.ok) {
+      setName(''); setBlockId('');
+      setFeedback(null);
+    } else {
+      // Leave the operator's input in place — a failed create must not look like it saved.
+      setFeedback(result.message ?? 'Create failed');
+    }
+  };
+
+  // Shared by every inline `<select>`/delete below: a failed update reverts
+  // the control to `ss.*` on the next render (the select is controlled by
+  // the still-unchanged record, since a failure never triggers `refresh()`)
+  // — this just makes sure the operator sees *why* it reverted.
+  const runUpdate = async (result: Promise<{ ok: boolean; message?: string }>) => {
+    const r = await result;
+    setFeedback(r.ok ? null : (r.message ?? 'Update failed'));
   };
 
   return (
@@ -174,6 +222,7 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
         <button onClick={submit} style={s.addBtn}>Add</button>
       </div>
       {name.trim() && <p style={s.topicPreview}>Topic: <code>{derivedTopic}</code></p>}
+      {feedback && <p style={s.error}>{feedback}</p>}
       <table style={s.table}>
         <thead><tr>
           {['Name', 'Type', 'Block', 'MQTT Topic', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
@@ -187,7 +236,7 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
               <td style={s.td}>
                 <select
                   value={ss.type}
-                  onChange={(e) => ops.updateSensor(ss.id, { type: e.target.value as typeof ss.type })}
+                  onChange={(e) => runUpdate(ops.updateSensor(ss.id, { type: e.target.value as typeof ss.type }))}
                   style={s.inlineSelect}
                 >
                   <option value="block_detection">Block detection</option>
@@ -197,7 +246,7 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
               <td style={s.td}>
                 <select
                   value={ss.blockId ?? ''}
-                  onChange={(e) => ops.updateSensor(ss.id, { blockId: e.target.value || null })}
+                  onChange={(e) => runUpdate(ops.updateSensor(ss.id, { blockId: e.target.value || null }))}
                   style={s.inlineSelect}
                 >
                   <option value="">— none —</option>
@@ -207,7 +256,7 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
               <td style={s.tdMono}>
                 <EditableCell value={ss.mqttTopic} onSave={(v) => ops.updateSensor(ss.id, { mqttTopic: v })} />
               </td>
-              <td style={s.td}><button onClick={() => ops.deleteSensor(ss.id)} style={s.delBtn}>×</button></td>
+              <td style={s.td}><button onClick={() => runUpdate(ops.deleteSensor(ss.id))} style={s.delBtn}>×</button></td>
             </tr>
           ))}
         </tbody>
@@ -222,20 +271,27 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
   const [name, setName] = useState('');
   const [addr, setAddr] = useState('');
   const [blockId, setBlockId] = useState('');
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
 
   const submit = async () => {
     const dcc = parseInt(addr, 10);
     if (!name.trim() || isNaN(dcc)) return;
-    await ops.createPoint(name.trim(), dcc, blockId || null);
-    setName(''); setAddr(''); setBlockId('');
+    const result = await ops.createPoint(name.trim(), dcc, blockId || null);
+    if (result.ok) {
+      setName(''); setAddr(''); setBlockId('');
+      setFeedback(null);
+    } else {
+      // Leave the operator's input in place — a failed create must not look like it saved.
+      setFeedback(result.message ?? 'Create failed');
+    }
   };
 
   // A point delete can now be refused (422) while an edge's pointConditions
   // still reference it, and can 404 — both are surfaced instead of swallowed.
-  const handleDelete = async (id: string) => {
-    const result = await ops.deletePoint(id);
-    setDeleteError(result.ok ? null : (result.message ?? 'Delete failed'));
+  // Shared with the inline update/select controls below.
+  const runUpdate = async (result: Promise<{ ok: boolean; message?: string }>) => {
+    const r = await result;
+    setFeedback(r.ok ? null : (r.message ?? 'Update failed'));
   };
 
   return (
@@ -250,7 +306,7 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
         </select>
         <button onClick={submit} style={s.addBtn}>Add</button>
       </div>
-      {deleteError && <p style={s.error}>{deleteError}</p>}
+      {feedback && <p style={s.error}>{feedback}</p>}
       <table style={s.table}>
         <thead><tr>
           {['Name', 'DCC Addr', 'Block', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
@@ -264,20 +320,24 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
               <td style={s.td}>
                 <EditableCell
                   value={String(p.dccAddress)}
-                  onSave={(v) => { const n = parseInt(v, 10); if (!isNaN(n)) ops.updatePoint(p.id, { dccAddress: n }); }}
+                  onSave={(v) => {
+                    const n = parseInt(v, 10);
+                    if (isNaN(n)) return Promise.resolve({ ok: false, message: 'Not a number' });
+                    return ops.updatePoint(p.id, { dccAddress: n });
+                  }}
                 />
               </td>
               <td style={s.td}>
                 <select
                   value={p.blockId ?? ''}
-                  onChange={(e) => ops.updatePoint(p.id, { blockId: e.target.value || null })}
+                  onChange={(e) => runUpdate(ops.updatePoint(p.id, { blockId: e.target.value || null }))}
                   style={s.inlineSelect}
                 >
                   <option value="">— none —</option>
                   {blocks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
               </td>
-              <td style={s.td}><button onClick={() => handleDelete(p.id)} style={s.delBtn}>×</button></td>
+              <td style={s.td}><button onClick={() => runUpdate(ops.deletePoint(p.id))} style={s.delBtn}>×</button></td>
             </tr>
           ))}
         </tbody>
@@ -294,12 +354,25 @@ function LocosTab({ locos, ops }: { locos: Ops['config']['locos']; ops: Ops }) {
   const [type, setType] = useState('diesel');
   const [maxSpeed, setMaxSpeed] = useState('126');
   const [braking, setBraking] = useState('0.5');
+  const [feedback, setFeedback] = useState<string | null>(null);
 
   const submit = async () => {
     const dcc = parseInt(addr, 10);
     if (!name.trim() || isNaN(dcc)) return;
-    await ops.createLoco(name.trim(), dcc, type, parseInt(maxSpeed, 10), parseFloat(braking));
-    setName(''); setAddr('');
+    const result = await ops.createLoco(name.trim(), dcc, type, parseInt(maxSpeed, 10), parseFloat(braking));
+    if (result.ok) {
+      setName(''); setAddr('');
+      setFeedback(null);
+    } else {
+      // Leave the operator's input in place — a failed create must not look like it saved.
+      setFeedback(result.message ?? 'Create failed');
+    }
+  };
+
+  // Shared by every inline `<select>`/delete below — see PointsTab/SensorsTab.
+  const runUpdate = async (result: Promise<{ ok: boolean; message?: string }>) => {
+    const r = await result;
+    setFeedback(r.ok ? null : (r.message ?? 'Update failed'));
   };
 
   return (
@@ -317,6 +390,7 @@ function LocosTab({ locos, ops }: { locos: Ops['config']['locos']; ops: Ops }) {
           style={{ ...s.input, flex: '0 0 60px' }} type="number" min={0} max={1} step={0.1} />
         <button onClick={submit} style={s.addBtn}>Add</button>
       </div>
+      {feedback && <p style={s.error}>{feedback}</p>}
       <table style={s.table}>
         <thead><tr>
           {['Name', 'Addr', 'Type', 'Max Speed', 'Braking', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
@@ -330,27 +404,43 @@ function LocosTab({ locos, ops }: { locos: Ops['config']['locos']; ops: Ops }) {
               <td style={s.td}>
                 <EditableCell
                   value={String(l.address)}
-                  onSave={(v) => { const n = parseInt(v, 10); if (!isNaN(n)) ops.updateLoco(l.id, { address: n }); }}
+                  onSave={(v) => {
+                    const n = parseInt(v, 10);
+                    if (isNaN(n)) return Promise.resolve({ ok: false, message: 'Not a number' });
+                    return ops.updateLoco(l.id, { address: n });
+                  }}
                 />
               </td>
               <td style={s.td}>
-                <select value={l.type} onChange={(e) => ops.updateLoco(l.id, { type: e.target.value })} style={s.inlineSelect}>
+                <select
+                  value={l.type}
+                  onChange={(e) => runUpdate(ops.updateLoco(l.id, { type: e.target.value }))}
+                  style={s.inlineSelect}
+                >
                   {['steam', 'diesel', 'electric', 'unknown'].map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </td>
               <td style={s.td}>
                 <EditableCell
                   value={String(l.maxSpeed)}
-                  onSave={(v) => { const n = parseInt(v, 10); if (!isNaN(n)) ops.updateLoco(l.id, { maxSpeed: n }); }}
+                  onSave={(v) => {
+                    const n = parseInt(v, 10);
+                    if (isNaN(n)) return Promise.resolve({ ok: false, message: 'Not a number' });
+                    return ops.updateLoco(l.id, { maxSpeed: n });
+                  }}
                 />
               </td>
               <td style={s.td}>
                 <EditableCell
                   value={String(l.brakingFactor)}
-                  onSave={(v) => { const n = parseFloat(v); if (!isNaN(n)) ops.updateLoco(l.id, { brakingFactor: n }); }}
+                  onSave={(v) => {
+                    const n = parseFloat(v);
+                    if (isNaN(n)) return Promise.resolve({ ok: false, message: 'Not a number' });
+                    return ops.updateLoco(l.id, { brakingFactor: n });
+                  }}
                 />
               </td>
-              <td style={s.td}><button onClick={() => ops.deleteLoco(l.id)} style={s.delBtn}>×</button></td>
+              <td style={s.td}><button onClick={() => runUpdate(ops.deleteLoco(l.id))} style={s.delBtn}>×</button></td>
             </tr>
           ))}
         </tbody>

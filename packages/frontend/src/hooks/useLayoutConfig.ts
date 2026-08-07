@@ -62,9 +62,15 @@ async function extractErrorMessage(res: Response): Promise<string> {
 
 /**
  * Result of a mutation that must surface a non-2xx response to the caller
- * rather than swallow it — used by the edge mutations, which (unlike the
- * block/point/sensor/loco mutations below) can be rejected with a 422 the
- * operator needs to see (`TopologyRejectedError` → `violations`).
+ * rather than swallow it. Originally introduced for the edge mutations,
+ * which can be rejected with a 422 the operator needs to see
+ * (`TopologyRejectedError` → `violations`); every block/point/sensor/loco
+ * create/update/delete below (#22) is now built on this same helper, so a
+ * failed save is always `{ ok: false, message }` rather than a response the
+ * caller never looked at. `deleteBlock`/`deletePoint` predate this and keep
+ * their own narrower result shapes (`DeleteBlockResult`/`DeletePointResult`)
+ * below, since their bodies (`removedEdges`, a bare 204) don't fit `data: T`
+ * — they already surface failures, just not through `mutate()`.
  */
 export interface MutationResult<T = void> {
   ok: boolean;
@@ -155,23 +161,30 @@ export function useLayoutConfig(layoutId: string | null) {
   }, [refresh]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────────
+  //
+  // All mutations below route through `mutate()` so a non-2xx reaches the
+  // caller as `{ ok: false, message }` instead of being discarded — see
+  // issue #22. Only a successful mutation triggers `refresh()`; a failed one
+  // must leave the form and the table exactly as they were.
 
-  const createBlock = async (name: string) => {
-    await apiFetch(`/api/layouts/${layoutId}/blocks`, {
+  const createBlock = async (name: string): Promise<MutationResult<BlockRecord>> => {
+    const result = await mutate<BlockRecord>(`/api/layouts/${layoutId}/blocks`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
     });
-    await refresh();
+    if (result.ok) await refresh();
+    return result;
   };
 
-  const updateBlock = async (id: string, name: string) => {
-    await apiFetch(`/api/layouts/${layoutId}/blocks/${id}`, {
+  const updateBlock = async (id: string, name: string): Promise<MutationResult<BlockRecord>> => {
+    const result = await mutate<BlockRecord>(`/api/layouts/${layoutId}/blocks/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
     });
-    await refresh();
+    if (result.ok) await refresh();
+    return result;
   };
 
   // A block delete now returns 200 with { removedEdges } (a block delete
@@ -188,25 +201,31 @@ export function useLayoutConfig(layoutId: string | null) {
     return { ok: true, removedEdges: body.removedEdges };
   };
 
-  const createPoint = async (name: string, dccAddress: number, blockId: string | null) => {
-    await apiFetch(`/api/layouts/${layoutId}/points`, {
+  const createPoint = async (
+    name: string,
+    dccAddress: number,
+    blockId: string | null,
+  ): Promise<MutationResult<PointRecord>> => {
+    const result = await mutate<PointRecord>(`/api/layouts/${layoutId}/points`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name, dccAddress, blockId }),
     });
-    await refresh();
+    if (result.ok) await refresh();
+    return result;
   };
 
   const updatePoint = async (
     id: string,
     data: { name?: string; dccAddress?: number; blockId?: string | null },
-  ) => {
-    await apiFetch(`/api/layouts/${layoutId}/points/${id}`, {
+  ): Promise<MutationResult<PointRecord>> => {
+    const result = await mutate<PointRecord>(`/api/layouts/${layoutId}/points/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(data),
     });
-    await refresh();
+    if (result.ok) await refresh();
+    return result;
   };
 
   // A point delete can now be refused with 422 while an edge's
@@ -226,30 +245,33 @@ export function useLayoutConfig(layoutId: string | null) {
     type: 'block_detection' | 'ir_position',
     blockId: string | null,
     mqttTopic: string,
-  ) => {
-    await apiFetch(`/api/layouts/${layoutId}/sensors`, {
+  ): Promise<MutationResult<SensorRecord>> => {
+    const result = await mutate<SensorRecord>(`/api/layouts/${layoutId}/sensors`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name, type, blockId, mqttTopic }),
     });
-    await refresh();
+    if (result.ok) await refresh();
+    return result;
   };
 
   const updateSensor = async (
     id: string,
     data: { name?: string; type?: 'block_detection' | 'ir_position'; blockId?: string | null; mqttTopic?: string },
-  ) => {
-    await apiFetch(`/api/layouts/${layoutId}/sensors/${id}`, {
+  ): Promise<MutationResult<SensorRecord>> => {
+    const result = await mutate<SensorRecord>(`/api/layouts/${layoutId}/sensors/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(data),
     });
-    await refresh();
+    if (result.ok) await refresh();
+    return result;
   };
 
-  const deleteSensor = async (id: string) => {
-    await apiFetch(`/api/layouts/${layoutId}/sensors/${id}`, { method: 'DELETE' });
-    await refresh();
+  const deleteSensor = async (id: string): Promise<MutationResult<void>> => {
+    const result = await mutate<void>(`/api/layouts/${layoutId}/sensors/${id}`, { method: 'DELETE' });
+    if (result.ok) await refresh();
+    return result;
   };
 
   const createLoco = async (
@@ -258,36 +280,40 @@ export function useLayoutConfig(layoutId: string | null) {
     type: string,
     maxSpeed: number,
     brakingFactor: number,
-  ) => {
-    await apiFetch(`/api/layouts/${layoutId}/locos`, {
+  ): Promise<MutationResult<LocoRecord>> => {
+    const result = await mutate<LocoRecord>(`/api/layouts/${layoutId}/locos`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name, address, type, maxSpeed, brakingFactor }),
     });
-    await refresh();
+    if (result.ok) await refresh();
+    return result;
   };
 
   const updateLoco = async (
     id: string,
     data: { name?: string; address?: number; type?: string; maxSpeed?: number; brakingFactor?: number },
-  ) => {
-    await apiFetch(`/api/layouts/${layoutId}/locos/${id}`, {
+  ): Promise<MutationResult<LocoRecord>> => {
+    const result = await mutate<LocoRecord>(`/api/layouts/${layoutId}/locos/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(data),
     });
-    await refresh();
+    if (result.ok) await refresh();
+    return result;
   };
 
-  const deleteLoco = async (id: string) => {
-    await apiFetch(`/api/layouts/${layoutId}/locos/${id}`, { method: 'DELETE' });
-    await refresh();
+  const deleteLoco = async (id: string): Promise<MutationResult<void>> => {
+    const result = await mutate<void>(`/api/layouts/${layoutId}/locos/${id}`, { method: 'DELETE' });
+    if (result.ok) await refresh();
+    return result;
   };
 
   // Edge mutations use `mutate()` so a 422 (topology rejected) or 400/404
-  // reaches the caller with its `violations`/`message` intact, rather than
-  // being swallowed like the mutations above — see EdgesTab, which renders
-  // `violations` inline without clearing the operator's form.
+  // reaches the caller with its `violations`/`message` intact — see
+  // EdgesTab, which renders `violations` inline without clearing the
+  // operator's form. (This was the original use of `mutate()`; every other
+  // create/update/delete above now follows the same convention — #22.)
   const createEdge = async (data: EdgeWriteInput): Promise<MutationResult<BlockEdgeRecord>> => {
     const result = await mutate<BlockEdgeRecord>(`/api/layouts/${layoutId}/edges`, {
       method: 'POST',
