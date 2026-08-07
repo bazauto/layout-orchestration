@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { LayoutStateManager } from '../../../src/domain/layoutState';
+import { RouteReservation } from '../../../src/domain/types';
 
 describe('LayoutStateManager', () => {
   let manager: LayoutStateManager;
@@ -82,6 +83,12 @@ describe('LayoutStateManager', () => {
       manager.unlockBlock('b1');
       expect(manager.getBlock('b1')?.lockedByRoute).toBeNull();
     });
+
+    it('lockBlock on an unregistered block id is a silent no-op (ReservationService must not rely on this call to validate anything)', () => {
+      // No registerBlock('ghost') call — the block does not exist in state.
+      expect(() => manager.lockBlock('ghost', 'route-1')).not.toThrow();
+      expect(manager.getBlock('ghost')).toBeUndefined();
+    });
   });
 
   describe('point management', () => {
@@ -105,6 +112,11 @@ describe('LayoutStateManager', () => {
       expect(manager.getPoint('p1')?.lockedByRoute).toBe('route-2');
       manager.unlockPoint('p1');
       expect(manager.getPoint('p1')?.locked).toBe(false);
+    });
+
+    it('lockPoint on an unregistered point id is a silent no-op', () => {
+      expect(() => manager.lockPoint('ghost', 'route-1')).not.toThrow();
+      expect(manager.getPoint('ghost')).toBeUndefined();
     });
   });
 
@@ -133,6 +145,57 @@ describe('LayoutStateManager', () => {
         expect(loco.speed).toBe(0);
         expect(loco.direction).toBe('stop');
       }
+    });
+  });
+
+  describe('route management', () => {
+    function route(overrides: Partial<RouteReservation> = {}): RouteReservation {
+      const now = new Date();
+      return {
+        id: 'route-1',
+        layoutId: 'test-layout',
+        locoAddress: 3,
+        authority: 'manual',
+        status: 'active',
+        path: [],
+        holds: [],
+        confirmedIndex: 0,
+        reason: null,
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+      };
+    }
+
+    it('has no routes initially', () => {
+      expect(manager.listRoutes()).toEqual([]);
+      expect(manager.getRoute('route-1')).toBeUndefined();
+    });
+
+    it('upserts and retrieves a route', () => {
+      manager.upsertRoute(route());
+      expect(manager.getRoute('route-1')?.status).toBe('active');
+      expect(manager.listRoutes()).toHaveLength(1);
+    });
+
+    it('upsertRoute replaces an existing route by id', () => {
+      manager.upsertRoute(route({ status: 'active' }));
+      manager.upsertRoute(route({ status: 'suspended' }));
+      expect(manager.listRoutes()).toHaveLength(1);
+      expect(manager.getRoute('route-1')?.status).toBe('suspended');
+    });
+
+    it('listRoutes filters by status when given', () => {
+      manager.upsertRoute(route({ id: 'r1', status: 'active' }));
+      manager.upsertRoute(route({ id: 'r2', status: 'cancelled' }));
+      expect(manager.listRoutes(['active']).map((r) => r.id)).toEqual(['r1']);
+    });
+
+    it('removeRoute deletes a route', () => {
+      manager.upsertRoute(route());
+      manager.removeRoute('route-1');
+      expect(manager.getRoute('route-1')).toBeUndefined();
+      expect(manager.listRoutes()).toEqual([]);
     });
   });
 });

@@ -17,6 +17,8 @@ import {
   PointId,
   PointState,
   RouteId,
+  RouteReservation,
+  RouteStatus,
   SystemMode,
 } from './types';
 
@@ -32,6 +34,7 @@ export class LayoutStateManager {
       blocks: new Map(),
       points: new Map(),
       locos: new Map(),
+      routes: new Map(),
     };
   }
 
@@ -200,5 +203,32 @@ export class LayoutStateManager {
       stopped.push(updated);
     }
     return stopped;
+  }
+
+  // ─── Route Reservations ───────────────────────────────────────────────────────
+  //
+  // `LayoutStateManager` is storage only, same posture as blocks/points above:
+  // it holds whatever `ReservationService` (which owns policy — grant/cancel/
+  // release decisions) tells it to. It does not validate a reservation
+  // against block/point state itself.
+
+  getRoute(routeId: RouteId): RouteReservation | undefined {
+    return this.state.routes.get(routeId);
+  }
+
+  /** All routes, optionally filtered to the given statuses. Unfiltered order matches insertion order. */
+  listRoutes(statuses?: RouteStatus[]): RouteReservation[] {
+    const all = [...this.state.routes.values()];
+    if (!statuses) return all;
+    return all.filter((r) => statuses.includes(r.status));
+  }
+
+  /** Inserts or replaces a route's cached state — the projection (block/point `lockedByRoute`) is maintained separately by the caller, not derived here. */
+  upsertRoute(route: RouteReservation): void {
+    this.state.routes.set(route.id, route);
+  }
+
+  removeRoute(routeId: RouteId): void {
+    this.state.routes.delete(routeId);
   }
 }
