@@ -5,7 +5,7 @@
  * Creates the data directory and database file automatically if they do not exist.
  */
 
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { randomUUID } from 'crypto';
 import {
@@ -17,8 +17,8 @@ import {
   SensorRecord,
   GridTileRecord,
 } from '../../ports/ILayoutRepository';
-import { BlockEdge } from '../../domain/types';
-import { parseBlockEdgeRow } from '../../services/validation';
+import { BlockEdge, RouteHoldKind, RouteId, RouteReservation, RouteStatus } from '../../domain/types';
+import { parseBlockEdgeRow, parseReservationRow } from '../../services/validation';
 import {
   layouts,
   locos,
@@ -27,6 +27,8 @@ import {
   sensors,
   gridTiles,
   blockEdges,
+  routeReservations,
+  routeHolds,
 } from './schema';
 
 export class DrizzleRepository implements ILayoutRepository {
@@ -281,6 +283,126 @@ export class DrizzleRepository implements ILayoutRepository {
 
   async deleteBlockEdge(id: string): Promise<void> {
     this.db.delete(blockEdges).where(eq(blockEdges.id, id)).run();
+  }
+
+  // ─── Route Reservations ─────────────────────────────────────────────────────
+
+  async listReservations(layoutId: string, statuses?: RouteStatus[]): Promise<RouteReservation[]> {
+    const whereClause =
+      statuses && statuses.length > 0
+        ? and(eq(routeReservations.layoutId, layoutId), inArray(routeReservations.status, statuses))
+        : eq(routeReservations.layoutId, layoutId);
+    const rows = this.db.select().from(routeReservations).where(whereClause).all();
+    if (rows.length === 0) return [];
+
+    const holdRows = this.db
+      .select()
+      .from(routeHolds)
+      .where(
+        inArray(
+          routeHolds.routeId,
+          rows.map((r) => r.id),
+        ),
+      )
+      .all();
+    const holdsByRoute = new Map<string, typeof holdRows>();
+    for (const holdRow of holdRows) {
+      const bucket = holdsByRoute.get(holdRow.routeId) ?? [];
+      bucket.push(holdRow);
+      holdsByRoute.set(holdRow.routeId, bucket);
+    }
+
+    return rows.map((row) => parseReservationRow(row, holdsByRoute.get(row.id) ?? []));
+  }
+
+  async getReservation(id: string): Promise<RouteReservation | null> {
+    const rows = this.db.select().from(routeReservations).where(eq(routeReservations.id, id)).all();
+    if (rows.length === 0) return null;
+    const holdRows = this.db.select().from(routeHolds).where(eq(routeHolds.routeId, id)).all();
+    return parseReservationRow(rows[0], holdRows);
+  }
+
+  /**
+   * Writes the reservation row and every hold row in ONE transaction — see
+   * the atomicity doc comment on `ILayoutRepository#createReservation`. If
+   * any hold insert violates `route_holds_exclusive_unq` (D2's exclusivity,
+   * enforced at the DB level per #11's posture), better-sqlite3's
+   * transaction wrapper rolls back the reservation row too — zero rows
+   * persisted, not a partial write.
+   */
+  async createReservation(
+    data: Omit<RouteReservation, 'createdAt' | 'updatedAt'>,
+  ): Promise<RouteReservation> {
+    const now = new Date();
+    this.db.transaction((tx) => {
+      tx.insert(routeReservations)
+        .values({
+          id: data.id,
+          layoutId: data.layoutId,
+          locoAddress: data.locoAddress,
+          authority: data.authority,
+          status: data.status,
+          path: JSON.stringify(data.path),
+          confirmedIndex: data.confirmedIndex,
+          reason: data.reason,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+
+      for (const hold of data.holds) {
+        tx.insert(routeHolds)
+          .values({
+            id: randomUUID(),
+            routeId: data.id,
+            layoutId: data.layoutId,
+            kind: hold.kind,
+            targetId: hold.targetId,
+            requiredPosition: hold.requiredPosition,
+            releaseAfterIndex: hold.releaseAfterIndex,
+            released: hold.released,
+          })
+          .run();
+      }
+    });
+
+    const created = await this.getReservation(data.id);
+    if (!created) throw new Error(`Route reservation ${data.id} not found after create`);
+    return created;
+  }
+
+  async updateReservation(
+    id: string,
+    data: { status?: RouteStatus; confirmedIndex?: number; reason?: string | null },
+  ): Promise<RouteReservation> {
+    this.db
+      .update(routeReservations)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(routeReservations.id, id))
+      .run();
+    const updated = await this.getReservation(id);
+    if (!updated) throw new Error(`Route reservation ${id} not found after update`);
+    return updated;
+  }
+
+  async markHoldsReleased(
+    routeId: RouteId,
+    holds: Array<{ kind: RouteHoldKind; targetId: string }>,
+  ): Promise<void> {
+    this.db.transaction((tx) => {
+      for (const hold of holds) {
+        tx.update(routeHolds)
+          .set({ released: true })
+          .where(
+            and(
+              eq(routeHolds.routeId, routeId),
+              eq(routeHolds.kind, hold.kind),
+              eq(routeHolds.targetId, hold.targetId),
+            ),
+          )
+          .run();
+      }
+    });
   }
 }
 

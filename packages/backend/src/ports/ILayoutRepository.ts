@@ -5,7 +5,7 @@
  * Implementation: DrizzleRepository (SQLite via Drizzle ORM).
  */
 
-import { BlockEdge } from '../domain/types';
+import { BlockEdge, RouteHoldKind, RouteId, RouteReservation, RouteStatus } from '../domain/types';
 
 export interface LayoutRecord {
   id: string;
@@ -122,4 +122,26 @@ export interface ILayoutRepository {
   createBlockEdge(data: Omit<BlockEdge, 'id'>): Promise<BlockEdge>;
   updateBlockEdge(id: string, data: Partial<Omit<BlockEdge, 'id' | 'layoutId'>>): Promise<BlockEdge>;
   deleteBlockEdge(id: string): Promise<void>;
+
+  // Route Reservations (see docs/route-locking.md)
+  listReservations(layoutId: string, statuses?: RouteStatus[]): Promise<RouteReservation[]>;
+  getReservation(id: string): Promise<RouteReservation | null>;
+  /**
+   * Writes the reservation row and every one of its hold rows in ONE
+   * transaction. A reservation with a partial hold set (some holds
+   * persisted, some not) is exactly the corruption D3's atomicity
+   * requirement exists to prevent — implementations MUST NOT leave a
+   * reservation row with a subset of its holds committed. Matches the
+   * atomicity contract `deleteBlock` documents for its own transaction.
+   */
+  createReservation(data: Omit<RouteReservation, 'createdAt' | 'updatedAt'>): Promise<RouteReservation>;
+  updateReservation(
+    id: string,
+    data: { status?: RouteStatus; confirmedIndex?: number; reason?: string | null },
+  ): Promise<RouteReservation>;
+  /** Marks the named holds of `routeId` as released (D5/D6/D8 release paths). Never deletes — see the `route_holds.released` column comment in `schema.ts`. */
+  markHoldsReleased(
+    routeId: RouteId,
+    holds: Array<{ kind: RouteHoldKind; targetId: string }>,
+  ): Promise<void>;
 }

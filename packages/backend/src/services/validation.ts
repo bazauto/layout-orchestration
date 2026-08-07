@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import { BlockEdge, PointCondition } from '../domain/types';
+import { BlockEdge, PointCondition, RouteHold, RoutePathStep, RouteReservation } from '../domain/types';
 import { SessionRecord, UserRecord } from '../ports/IAuthRepository';
 
 export const sensorReadingSchema = z.object({
@@ -185,6 +185,121 @@ export const pointUpdateSchema = z
   .strict();
 
 export type PointUpdateInput = z.infer<typeof pointUpdateSchema>;
+
+// ─── Route Reservations ────────────────────────────────────────────────────
+//
+// Same posture as block_edges above: full-row Zod, no coercion, no defaults,
+// no `.catch()`. A `route_reservations`/`route_holds` row already in the
+// database is either valid or it is corruption, and corruption must throw
+// (which the reservation load path turns into Safe-Stop, per D9), never
+// silently substitute a "safe-looking" value.
+
+const authoritySchema = z.enum(['manual', 'auto']);
+const routeStatusSchema = z.enum(['active', 'suspended', 'released', 'cancelled']);
+const routeHoldKindSchema = z.enum(['block', 'point', 'edge']);
+const requiredPositionSchema = z.enum(['normal', 'reverse']).nullable();
+
+const routePathStepSchema = z.object({
+  edgeId: z.string().min(1).nullable(),
+  blockId: z.string().min(1),
+  entryEnd: z.string().min(1).nullable(),
+  exitEnd: z.string().min(1).nullable(),
+});
+
+/** Parses the `route_reservations.path` JSON column. THROWS on malformed JSON or a failed schema check — never degrades to `[]`, which would silently turn a real path into an empty one. */
+const routePathSchema = z.array(routePathStepSchema);
+
+/** Full-row schema for a `route_reservations` DB row. */
+export const routeReservationRowSchema = z.object({
+  id: z.string().min(1),
+  layoutId: z.string().min(1),
+  locoAddress: z.number().int().min(1).max(9999),
+  authority: authoritySchema,
+  status: routeStatusSchema,
+  path: z.string(),
+  confirmedIndex: z.number().int().min(0),
+  reason: z.string().nullable(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+/** Full-row schema for a `route_holds` DB row. */
+export const routeHoldRowSchema = z.object({
+  id: z.string().min(1),
+  routeId: z.string().min(1),
+  layoutId: z.string().min(1),
+  kind: routeHoldKindSchema,
+  targetId: z.string().min(1),
+  requiredPosition: requiredPositionSchema,
+  releaseAfterIndex: z.number().int().min(0),
+  released: z.boolean(),
+});
+
+/** Thrown by `parseReservationRow` when a `route_reservations`/`route_holds` row fails validation. */
+export class RouteRowInvalidError extends Error {
+  readonly rowId: string;
+  readonly issues: z.ZodIssue[];
+
+  constructor(rowId: string, issues: z.ZodIssue[]) {
+    super(`route reservation row ${rowId} failed validation: ${issues.map((i) => i.message).join('; ')}`);
+    this.name = 'RouteRowInvalidError';
+    this.rowId = rowId;
+    this.issues = issues;
+  }
+}
+
+/**
+ * Parses a raw `route_reservations` row plus its `route_holds` rows into a
+ * domain `RouteReservation`. Deliberately NO coercion, NO defaults, no
+ * `.catch()` fallback — same posture as `parseBlockEdgeRow`.
+ */
+export function parseReservationRow(row: unknown, holdRows: readonly unknown[]): RouteReservation {
+  const parsedRow = routeReservationRowSchema.safeParse(row);
+  if (!parsedRow.success) {
+    throw new RouteRowInvalidError(extractRowId(row), parsedRow.error.issues);
+  }
+
+  let path: RoutePathStep[];
+  try {
+    path = routePathSchema.parse(JSON.parse(parsedRow.data.path));
+  } catch (err) {
+    throw new RouteRowInvalidError(parsedRow.data.id, [
+      {
+        code: z.ZodIssueCode.custom,
+        path: ['path'],
+        message: err instanceof Error ? err.message : 'Invalid path JSON',
+      },
+    ]);
+  }
+
+  const holds: RouteHold[] = holdRows.map((holdRow) => {
+    const parsedHold = routeHoldRowSchema.safeParse(holdRow);
+    if (!parsedHold.success) {
+      throw new RouteRowInvalidError(extractRowId(holdRow), parsedHold.error.issues);
+    }
+    return {
+      kind: parsedHold.data.kind,
+      targetId: parsedHold.data.targetId,
+      requiredPosition: parsedHold.data.requiredPosition,
+      releaseAfterIndex: parsedHold.data.releaseAfterIndex,
+      released: parsedHold.data.released,
+    };
+  });
+
+  return {
+    id: parsedRow.data.id,
+    layoutId: parsedRow.data.layoutId,
+    locoAddress: parsedRow.data.locoAddress,
+    authority: parsedRow.data.authority,
+    status: parsedRow.data.status,
+    path,
+    holds,
+    confirmedIndex: parsedRow.data.confirmedIndex,
+    reason: parsedRow.data.reason,
+    createdAt: parsedRow.data.createdAt,
+    updatedAt: parsedRow.data.updatedAt,
+  };
+}
 
 // ─── Auth ────────────────────────────────────────────────────────────────
 
