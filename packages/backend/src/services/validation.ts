@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import { BlockEdge, PointCondition } from '../domain/types';
+import { SessionRecord, UserRecord } from '../ports/IAuthRepository';
 
 export const sensorReadingSchema = z.object({
   state: z.enum(['occupied', 'clear']),
@@ -166,6 +167,93 @@ export type EdgeCreateInput = z.infer<typeof edgeCreateSchema>;
 export const edgeUpdateSchema = edgeCreateSchema.partial().strict();
 
 export type EdgeUpdateInput = z.infer<typeof edgeUpdateSchema>;
+
+// ─── Auth ────────────────────────────────────────────────────────────────
+
+const roleSchema = z.enum(['admin', 'operator']);
+
+/**
+ * Full-row schema for a `users` DB row. `passwordHash` is nullable — see the
+ * doc comment on the `users` table in `schema.ts` — but if present must be a
+ * non-empty argon2id-encoded string, not an empty string masquerading as
+ * "no credential".
+ */
+export const userRowSchema = z.object({
+  id: z.string().min(1),
+  username: z.string().min(1),
+  passwordHash: z.string().min(1).nullable(),
+  role: roleSchema,
+  createdAt: z.date(),
+});
+
+/** Thrown by `parseUserRow` when a `users` row fails validation. */
+export class UserRowInvalidError extends Error {
+  readonly rowId: string;
+  readonly issues: z.ZodIssue[];
+
+  constructor(rowId: string, issues: z.ZodIssue[]) {
+    super(`users row ${rowId} failed validation: ${issues.map((i) => i.message).join('; ')}`);
+    this.name = 'UserRowInvalidError';
+    this.rowId = rowId;
+    this.issues = issues;
+  }
+}
+
+/**
+ * Parses a raw `users` DB row into a `UserRecord`. Same posture as
+ * `parseBlockEdgeRow`: no coercion, no defaults — a row already in the
+ * database is either valid or it is corruption, and corruption must throw.
+ */
+export function parseUserRow(row: unknown): UserRecord {
+  const parsed = userRowSchema.safeParse(row);
+  if (!parsed.success) {
+    throw new UserRowInvalidError(extractRowId(row), parsed.error.issues);
+  }
+  return parsed.data;
+}
+
+/** Full-row schema for a `sessions` DB row. */
+export const sessionRowSchema = z.object({
+  id: z.string().min(1),
+  userId: z.string().min(1),
+  tokenHash: z.string().min(1),
+  createdAt: z.date(),
+  expiresAt: z.date(),
+});
+
+/** Thrown by `parseSessionRow` when a `sessions` row fails validation. */
+export class SessionRowInvalidError extends Error {
+  readonly rowId: string;
+  readonly issues: z.ZodIssue[];
+
+  constructor(rowId: string, issues: z.ZodIssue[]) {
+    super(`sessions row ${rowId} failed validation: ${issues.map((i) => i.message).join('; ')}`);
+    this.name = 'SessionRowInvalidError';
+    this.rowId = rowId;
+    this.issues = issues;
+  }
+}
+
+/** Parses a raw `sessions` DB row into a `SessionRecord`. Same posture as `parseUserRow`. */
+export function parseSessionRow(row: unknown): SessionRecord {
+  const parsed = sessionRowSchema.safeParse(row);
+  if (!parsed.success) {
+    throw new SessionRowInvalidError(extractRowId(row), parsed.error.issues);
+  }
+  return parsed.data;
+}
+
+/**
+ * Write schema for `POST /api/auth/login`. `.strict()` so an unexpected
+ * field (e.g. a client accidentally posting `role`) is a 400, not silently
+ * ignored.
+ */
+export const loginSchema = z
+  .object({
+    username: z.string().min(1),
+    password: z.string().min(1),
+  })
+  .strict();
 
 export const clientMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('THROTTLE_COMMAND'), payload: throttleCommandSchema }),

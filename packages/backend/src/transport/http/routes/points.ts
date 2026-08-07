@@ -5,6 +5,7 @@ import {
   TopologyRejectedError,
   TopologyService,
 } from '../../../services/TopologyService';
+import { requireAdmin } from '../auth/hook';
 
 export async function pointRoutes(
   fastify: FastifyInstance,
@@ -18,10 +19,13 @@ export async function pointRoutes(
     },
   );
 
+  // Defining a point (its DCC address, block assignment) is topology
+  // config — admin-only. Throwing an existing point (POINT_COMMAND over
+  // WebSocket) is driving, not gated by role.
   fastify.post<{
     Params: { layoutId: string };
     Body: { name: string; dccAddress: number; blockId?: string };
-  }>('/api/layouts/:layoutId/points', async (req, reply) => {
+  }>('/api/layouts/:layoutId/points', { preHandler: requireAdmin }, async (req, reply) => {
     const point = await repo.createPoint({
       layoutId: req.params.layoutId,
       name: req.body.name,
@@ -35,6 +39,7 @@ export async function pointRoutes(
   // — see TopologyService#deletePointIfUnreferenced.
   fastify.delete<{ Params: { layoutId: string; id: string } }>(
     '/api/layouts/:layoutId/points/:id',
+    { preHandler: requireAdmin },
     async (req, reply) => {
       try {
         await topologyService.deletePointIfUnreferenced(req.params.layoutId, req.params.id);

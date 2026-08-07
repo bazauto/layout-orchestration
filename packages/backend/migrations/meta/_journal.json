@@ -22,6 +22,13 @@
       "when": 1785869241812,
       "tag": "0002_bitter_jane_foster",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786031777675,
+      "tag": "0003_cooing_blur",
+      "breakpoints": true
     }
   ]
 }

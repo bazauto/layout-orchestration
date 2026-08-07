@@ -22,6 +22,12 @@ import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapt
 import { ILayoutRepository, BlockRecord, PointRecord } from '../../src/ports/ILayoutRepository';
 import { BlockEdge } from '../../src/domain/types';
 import { MAX_EDGES_PER_LAYOUT } from '../../src/domain/topology';
+import {
+  authenticateAsAdmin,
+  authenticateAsOperator,
+  makeTestAuthService,
+  TEST_AUTH_CONFIG,
+} from './testAuthHelpers';
 
 const silentLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -105,14 +111,32 @@ function makeRepo(): ILayoutRepository {
   };
 }
 
-async function buildTestServer(repo: ILayoutRepository) {
+/**
+ * Logs in as the seeded admin by default (unless `skipLogin`) — see
+ * testAuthHelpers.ts. Edge/topology writes require the admin role, and this
+ * file's existing tests were all written to exercise TopologyService, not
+ * auth, so they run as admin unless a test opts out.
+ */
+async function buildTestServer(repo: ILayoutRepository, options: { skipLogin?: boolean } = {}) {
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
   const state = new LayoutStateManager(LAYOUT_ID);
   const service = new LayoutService(dcc, mqtt, repo, state, silentLogger);
   const topologyService = new TopologyService(repo, () => service.reloadTopology(), silentLogger);
   await service.start(LAYOUT_ID);
-  return buildServer(service, repo, 'silent', topologyService);
+  const authService = await makeTestAuthService();
+  const app = await buildServer(
+    service,
+    repo,
+    'silent',
+    topologyService,
+    authService,
+    TEST_AUTH_CONFIG,
+  );
+  if (!options.skipLogin) {
+    await authenticateAsAdmin(app);
+  }
+  return app;
 }
 
 describe('Edge routes', () => {
@@ -322,5 +346,63 @@ describe('Topology routes', () => {
     const body = JSON.parse(res.body);
     expect(body.valid).toBe(true);
     expect(body.edgeCount).toBe(1);
+  });
+});
+
+// ─── Role enforcement ────────────────────────────────────────────────────────
+//
+// The plan's acceptance criterion, verbatim: "Roles enforced: operator
+// cannot write topology or config." Edges are the sharpest case since
+// they're purely topology, no driving angle at all.
+
+describe('Edge routes — role enforcement', () => {
+  let repo: ILayoutRepository;
+  let app: Awaited<ReturnType<typeof buildTestServer>>;
+
+  beforeEach(async () => {
+    repo = makeRepo();
+    app = await buildTestServer(repo, { skipLogin: true });
+  });
+
+  it('an operator creating an edge is refused with 403', async () => {
+    await authenticateAsOperator(app);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/edges`,
+      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('an operator may still read edges', async () => {
+    await authenticateAsOperator(app);
+    const res = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('an operator deleting an edge is refused with 403', async () => {
+    await authenticateAsAdmin(app);
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/edges`,
+      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
+    });
+    const created = JSON.parse(createRes.body);
+
+    await authenticateAsOperator(app);
+    const res = await app.inject({
+      method: 'DELETE',
+      url: `/api/layouts/${LAYOUT_ID}/edges/${created.id}`,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('an unauthenticated edge create is rejected with 401, not 403', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/edges`,
+      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
+    });
+    expect(res.statusCode).toBe(401);
   });
 });

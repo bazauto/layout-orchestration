@@ -14,11 +14,13 @@ import { resolve } from 'path';
 config({ path: resolve(__dirname, '../../../.env') });
 
 import { DrizzleRepository } from '../src/adapters/db/repository';
+import { openDatabase } from '../src/adapters/db/connection';
 
 async function seed() {
   const dbPath = process.env.DATABASE_PATH ?? './data/layout.db';
   const migrationsFolder = process.env.MIGRATIONS_PATH ?? './migrations';
-  const repo = new DrizzleRepository(dbPath, migrationsFolder);
+  const db = openDatabase(dbPath, migrationsFolder);
+  const repo = new DrizzleRepository(db);
 
   // ── Find or create the default layout ────────────────────────────────────────
   let layouts = await repo.listLayouts();

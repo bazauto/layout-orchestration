@@ -1,5 +1,5 @@
 import { expect, test, Page } from '@playwright/test';
-import { installMockWebSocket } from './helpers';
+import { installMockAuth, installMockWebSocket } from './helpers';
 
 interface EdgeBody {
   fromBlockId: string;
@@ -87,6 +87,10 @@ async function stubApis(
 }
 
 async function openEdgesTab(page: Page) {
+  // The UI is now gated behind a session, so every spec that isn't testing
+  // the login flow itself must mock GET /api/auth/me before navigating —
+  // otherwise the app renders LoginScreen and nothing below is reachable.
+  await installMockAuth(page);
   await page.goto('/');
   await page.getByRole('button', { name: 'Configure' }).click();
   await page.getByRole('button', { name: /^Edges/ }).click();

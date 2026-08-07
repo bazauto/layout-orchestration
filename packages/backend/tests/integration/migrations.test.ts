@@ -15,6 +15,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { DrizzleRepository } from '../../src/adapters/db/repository';
+import { openDatabase } from '../../src/adapters/db/connection';
 
 const MIGRATIONS_FOLDER = join(__dirname, '../../migrations');
 
@@ -26,8 +27,9 @@ describe('migrations', () => {
   beforeAll(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'layout-orchestrator-migrations-'));
     dbPath = join(tempDir, `${randomUUID()}.db`);
-    // Constructing the repository applies all pending migrations.
-    new DrizzleRepository(dbPath, MIGRATIONS_FOLDER);
+    // openDatabase applies all pending migrations before returning.
+    const db = openDatabase(dbPath, MIGRATIONS_FOLDER);
+    new DrizzleRepository(db);
     sqlite = new Database(dbPath);
   });
 

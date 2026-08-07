@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
+import { requireAdmin } from '../auth/hook';
 
 export async function gridRoutes(
   fastify: FastifyInstance,
@@ -11,11 +12,11 @@ export async function gridRoutes(
     async (req) => repo.listGridTiles(req.params.layoutId),
   );
 
-  // PUT (upsert) a single tile
+  // PUT (upsert) a single tile — track editing is config, admin-only.
   fastify.put<{
     Params: { layoutId: string };
     Body: { x: number; y: number; tileType: string; metadata?: Record<string, unknown> };
-  }>('/api/layouts/:layoutId/grid', async (req, reply) => {
+  }>('/api/layouts/:layoutId/grid', { preHandler: requireAdmin }, async (req, reply) => {
     const tile = await repo.upsertGridTile({
       layoutId: req.params.layoutId,
       x: req.body.x,
@@ -30,18 +31,23 @@ export async function gridRoutes(
   fastify.delete<{
     Params: { layoutId: string };
     Querystring: { x: string; y: string };
-  }>('/api/layouts/:layoutId/grid/tile', async (req, reply) => {
-    const x = parseInt(req.query.x, 10);
-    const y = parseInt(req.query.y, 10);
-    const tiles = await repo.listGridTiles(req.params.layoutId);
-    const tile = tiles.find((t) => t.x === x && t.y === y);
-    if (tile) await repo.deleteTile(tile.id);
-    return reply.status(204).send();
-  });
+  }>(
+    '/api/layouts/:layoutId/grid/tile',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const x = parseInt(req.query.x, 10);
+      const y = parseInt(req.query.y, 10);
+      const tiles = await repo.listGridTiles(req.params.layoutId);
+      const tile = tiles.find((t) => t.x === x && t.y === y);
+      if (tile) await repo.deleteTile(tile.id);
+      return reply.status(204).send();
+    },
+  );
 
   // DELETE entire grid for a layout
   fastify.delete<{ Params: { layoutId: string } }>(
     '/api/layouts/:layoutId/grid',
+    { preHandler: requireAdmin },
     async (req, reply) => {
       await repo.clearGrid(req.params.layoutId);
       return reply.status(204).send();

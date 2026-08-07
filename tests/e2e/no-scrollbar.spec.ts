@@ -1,6 +1,9 @@
 import { expect, test } from '@playwright/test';
+import { installMockAuth } from './helpers';
 
 test('app fits viewport with no persistent scrollbar', async ({ page }) => {
+  await installMockAuth(page);
+
   await page.route('**://localhost:3000/api/layouts', async (route) => {
     await route.fulfill({
       status: 200,

@@ -29,6 +29,33 @@ export const config = {
     path: process.env.DATABASE_PATH ?? './data/layout.db',
     migrationsFolder: process.env.MIGRATIONS_PATH ?? './migrations',
   },
+  auth: {
+    /**
+     * Required to bootstrap the first admin account on an empty `users`
+     * table (see `scripts/bootstrap-admin.ts`). Not read anywhere else —
+     * there is deliberately no `AUTH_ENABLED` bypass flag.
+     */
+    initialAdminPassword: process.env.INITIAL_ADMIN_PASSWORD,
+    cookieName: 'layout_session',
+    /**
+     * Config-driven, not hardcoded off: this stack runs over plain HTTP
+     * today, so the cookie cannot be `Secure` yet (the browser would refuse
+     * to send it and every session would silently fail to authenticate).
+     * Once TLS lands, set COOKIE_SECURE=true — see docs/auth.md.
+     */
+    cookieSecure: process.env.COOKIE_SECURE === 'true',
+  },
+  cors: {
+    /**
+     * Explicit allowlist, not `origin: true` — see docs/auth.md. Comma-
+     * separated so an operator can add an `https://` origin as TLS comes
+     * online without a code change.
+     */
+    allowedOrigins: (process.env.CORS_ALLOWED_ORIGINS ?? 'http://localhost:5173')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0),
+  },
   simulator: {
     /** Both DCC and MQTT are simulated — no hardware or broker required. */
     full: process.env.USE_SIMULATOR === 'true',

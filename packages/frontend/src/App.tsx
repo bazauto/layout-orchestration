@@ -1,16 +1,41 @@
 import { useEffect, useState } from 'react';
+import { useAuth } from './hooks/useAuth';
 import { useLayoutSocket } from './hooks/useLayoutSocket';
 import { useLayoutConfig } from './hooks/useLayoutConfig';
 import { StatusBar } from './components/StatusBar';
+import { LoginScreen } from './components/LoginScreen';
 import { ThrottlePanel } from './components/ThrottlePanel';
 import { LayoutPanel } from './components/LayoutPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { GridEditor } from './components/GridEditor';
-import { ClientMessage, SystemMode } from './types';
+import { apiFetch, API_BASE } from './api';
+import { ClientMessage, Role, SystemMode } from './types';
 
 type AppTab = 'operate' | 'configure' | 'grid';
 
 export default function App() {
+  const auth = useAuth();
+
+  if (auth.status === 'loading') {
+    return <div style={styles.root} />;
+  }
+
+  if (auth.status === 'unauthenticated') {
+    return <LoginScreen onLogin={auth.login} error={auth.error} />;
+  }
+
+  return <AuthenticatedApp username={auth.user!.username} role={auth.user!.role} onLogout={auth.logout} />;
+}
+
+function AuthenticatedApp({
+  username,
+  role,
+  onLogout,
+}: {
+  username: string;
+  role: Role;
+  onLogout: () => void;
+}) {
   const { snapshot, connectionState, send } = useLayoutSocket();
   const { systemStatus, systemMode, safeStopReason, blocks, points, locos } = snapshot;
   const [appTab, setAppTab] = useState<AppTab>('operate');
@@ -18,7 +43,7 @@ export default function App() {
 
   useEffect(() => {
     if (connectionState !== 'connected' || layoutId) return;
-    fetch('http://localhost:3000/api/layouts')
+    apiFetch('/api/layouts')
       .then((r) => r.json())
       .then((list: Array<{ id: string }>) => { if (list[0]) setLayoutId(list[0].id); })
       .catch(() => undefined);
@@ -28,7 +53,15 @@ export default function App() {
 
   const isDisabled = connectionState !== 'connected' || systemStatus === 'offline';
 
-  const handleEmergencyStop = () => send({ type: 'EMERGENCY_STOP' });
+  // Deliberately NOT the WebSocket EMERGENCY_STOP message: the WS upgrade
+  // now requires a live authenticated session, but Emergency Stop must work
+  // even if that session has expired or the socket has dropped — it can
+  // only move the system in the fail-safe direction. POST /api/emergency-stop
+  // is unauthenticated on the backend for exactly this reason (see
+  // docs/auth.md).
+  const handleEmergencyStop = () => {
+    fetch(`${API_BASE}/api/emergency-stop`, { method: 'POST' }).catch(() => undefined);
+  };
   const handleModeChange = (mode: SystemMode) => send({ type: 'SET_MODE', payload: { mode } });
 
   return (
@@ -52,6 +85,12 @@ export default function App() {
             {t === 'operate' ? 'Operate' : t === 'grid' ? 'Track Editor' : 'Configure'}
           </button>
         ))}
+        <div style={styles.session}>
+          <span style={styles.sessionLabel}>{username} ({role})</span>
+          <button onClick={onLogout} style={styles.logoutBtn}>
+            Log out
+          </button>
+        </div>
       </nav>
 
       <main style={styles.main}>
@@ -118,6 +157,25 @@ const styles = {
   navBtnActive: {
     color: '#cdd6f4',
     borderBottomColor: '#89b4fa',
+  } as React.CSSProperties,
+  session: {
+    marginLeft: 'auto',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+  } as React.CSSProperties,
+  sessionLabel: {
+    fontSize: 12,
+    color: '#a6adc8',
+  } as React.CSSProperties,
+  logoutBtn: {
+    background: 'none',
+    border: '1px solid #45475a',
+    borderRadius: 4,
+    padding: '4px 10px',
+    color: '#cdd6f4',
+    cursor: 'pointer',
+    fontSize: 12,
   } as React.CSSProperties,
   main: {
     padding: 16,

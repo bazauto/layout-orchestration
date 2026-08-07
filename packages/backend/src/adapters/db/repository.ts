@@ -5,12 +5,8 @@
  * Creates the data directory and database file automatically if they do not exist.
  */
 
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'fs';
-import { dirname } from 'path';
 import { and, eq, or } from 'drizzle-orm';
-import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { randomUUID } from 'crypto';
 import {
   ILayoutRepository,
@@ -34,18 +30,14 @@ import {
 } from './schema';
 
 export class DrizzleRepository implements ILayoutRepository {
-  private readonly db: BetterSQLite3Database;
-
-  constructor(dbPath: string, migrationsFolder: string) {
-    // Ensure the data directory exists
-    mkdirSync(dirname(dbPath), { recursive: true });
-    const sqlite = new Database(dbPath);
-    // Enable WAL mode for better concurrent read performance
-    sqlite.pragma('journal_mode = WAL');
-    this.db = drizzle(sqlite);
-    // Apply any pending migrations automatically on startup
-    migrate(this.db, { migrationsFolder });
-  }
+  /**
+   * Takes an already-open, already-migrated connection (see
+   * `adapters/db/connection.ts#openDatabase`) rather than a `dbPath` —
+   * `DrizzleAuthRepository` reads and writes the same file, and two
+   * independent connections each running their own migration pass is not a
+   * risk worth taking on a database that cannot be reset.
+   */
+  constructor(private readonly db: BetterSQLite3Database) {}
 
   // ─── Layouts ────────────────────────────────────────────────────────────────
 

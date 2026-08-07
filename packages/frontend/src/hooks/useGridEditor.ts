@@ -6,9 +6,8 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { apiFetch } from '../api';
 import { GridTileRecord, TileType } from '../types';
-
-const API = 'http://localhost:3000';
 
 export type GridMap = Map<string, GridTileRecord>;
 
@@ -26,7 +25,7 @@ export function useGridEditor(layoutId: string | null) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/api/layouts/${layoutId}/grid`);
+      const res = await apiFetch(`/api/layouts/${layoutId}/grid`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const tiles: GridTileRecord[] = await res.json();
       const map: GridMap = new Map();
@@ -61,7 +60,7 @@ export function useGridEditor(layoutId: string | null) {
         return next;
       });
       try {
-        const res = await fetch(`${API}/api/layouts/${layoutId}/grid`, {
+        const res = await apiFetch(`/api/layouts/${layoutId}/grid`, {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ x, y, tileType, metadata }),
@@ -90,7 +89,7 @@ export function useGridEditor(layoutId: string | null) {
         return next;
       });
       try {
-        await fetch(`${API}/api/layouts/${layoutId}/grid/tile?x=${x}&y=${y}`, {
+        await apiFetch(`/api/layouts/${layoutId}/grid/tile?x=${x}&y=${y}`, {
           method: 'DELETE',
         });
       } catch (e) {
@@ -105,7 +104,7 @@ export function useGridEditor(layoutId: string | null) {
     if (!layoutId) return;
     setGrid(new Map());
     try {
-      await fetch(`${API}/api/layouts/${layoutId}/grid`, { method: 'DELETE' });
+      await apiFetch(`/api/layouts/${layoutId}/grid`, { method: 'DELETE' });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       await refresh();

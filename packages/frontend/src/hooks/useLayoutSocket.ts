@@ -38,6 +38,13 @@ const WS_URL =
 const BASE_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30000;
 
+/**
+ * The /ws upgrade now requires a valid session cookie (see docs/auth.md).
+ * This hook is only called from `AuthenticatedApp` (App.tsx), which itself
+ * only mounts once `useAuth` reports an authenticated session — so a
+ * connection is never attempted before login, without this hook needing to
+ * know anything about auth state itself.
+ */
 export function useLayoutSocket() {
   const [snapshot, setSnapshot] = useState<StateSnapshot>(INITIAL_SNAPSHOT);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');

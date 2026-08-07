@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
 import { RecordNotFoundError, TopologyService } from '../../../services/TopologyService';
+import { requireAdmin } from '../auth/hook';
 
 export async function blockRoutes(
   fastify: FastifyInstance,
@@ -14,10 +15,11 @@ export async function blockRoutes(
     },
   );
 
+  // Topology config — admin-only. 'operator' may drive, not edit topology.
   fastify.post<{
     Params: { layoutId: string };
     Body: { name: string };
-  }>('/api/layouts/:layoutId/blocks', async (req, reply) => {
+  }>('/api/layouts/:layoutId/blocks', { preHandler: requireAdmin }, async (req, reply) => {
     const block = await repo.createBlock({
       layoutId: req.params.layoutId,
       name: req.body.name,
@@ -28,15 +30,20 @@ export async function blockRoutes(
   fastify.put<{
     Params: { layoutId: string; id: string };
     Body: { name: string };
-  }>('/api/layouts/:layoutId/blocks/:id', async (req, reply) => {
-    const updated = await repo.updateBlock(req.params.id, { name: req.body.name });
-    return reply.status(200).send(updated);
-  });
+  }>(
+    '/api/layouts/:layoutId/blocks/:id',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const updated = await repo.updateBlock(req.params.id, { name: req.body.name });
+      return reply.status(200).send(updated);
+    },
+  );
 
   // Deletes the block and every edge that references it, atomically — see
   // TopologyService#deleteBlockWithEdges and ILayoutRepository#deleteBlock.
   fastify.delete<{ Params: { layoutId: string; id: string } }>(
     '/api/layouts/:layoutId/blocks/:id',
+    { preHandler: requireAdmin },
     async (req, reply) => {
       try {
         const result = await topologyService.deleteBlockWithEdges(

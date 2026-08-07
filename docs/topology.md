@@ -280,11 +280,14 @@ mismatched layout deletes zero rows rather than another layout's records.
 
 Two reasons this is stated rather than assumed:
 
-- **Ids are enumerable.** `GET /api/layouts` and `GET /api/layouts/:id/blocks`
-  are unauthenticated, so any id in the system can be discovered. Deleting by
-  id alone would let `DELETE /api/layouts/<anything>/blocks/<real-id>` destroy
-  the owning layout's block — and, now that block deletes cascade to edges,
-  its topology with it.
+- **Ids are enumerable by any logged-in user.** `GET /api/layouts` and
+  `GET /api/layouts/:id/blocks` require an authenticated session (see
+  `docs/auth.md`) but are not role-gated — an `operator` can read them the
+  same as an `admin` — so any id in the system is discoverable by anyone who
+  can log in at all. Deleting by id alone would let
+  `DELETE /api/layouts/<anything>/blocks/<real-id>` destroy the owning
+  layout's block — and, now that block deletes cascade to edges, its
+  topology with it.
 - **Ordering matters in `deletePointIfUnreferenced`.** The reference guard
   scans the *path* layout's edges. If ownership were checked after the guard, a
   point belonging to another layout would show no references there and the

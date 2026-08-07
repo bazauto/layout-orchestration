@@ -14,6 +14,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { DrizzleRepository } from '../../src/adapters/db/repository';
+import { openDatabase } from '../../src/adapters/db/connection';
 
 const MIGRATIONS_FOLDER = join(__dirname, '../../migrations');
 
@@ -29,7 +30,7 @@ describe('DrizzleRepository — block edges', () => {
   beforeAll(async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'layout-orchestrator-repo-edges-'));
     dbPath = join(tempDir, `${randomUUID()}.db`);
-    repo = new DrizzleRepository(dbPath, MIGRATIONS_FOLDER);
+    repo = new DrizzleRepository(openDatabase(dbPath, MIGRATIONS_FOLDER));
 
     const layout = await repo.createLayout({ name: 'Test Layout', description: null });
     layoutId = layout.id;

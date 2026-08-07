@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { installMockWebSocket } from './helpers';
+import { installMockAuth, installMockWebSocket } from './helpers';
 
 /** Intercept API calls with minimal stubs to get the editor visible. */
 async function stubApis(page: import('@playwright/test').Page) {
@@ -39,6 +39,7 @@ async function stubApis(page: import('@playwright/test').Page) {
 
 test('right-click erases a placed tile', async ({ page }) => {
   await installMockWebSocket(page);
+  await installMockAuth(page);
 
   await stubApis(page);
   await page.goto('/');

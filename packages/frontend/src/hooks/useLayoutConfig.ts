@@ -7,6 +7,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { apiFetch } from '../api';
 import {
   BlockEdgeRecord,
   BlockRecord,
@@ -17,8 +18,6 @@ import {
   TopologyStatus,
   TopologyViolation,
 } from '../types';
-
-const API = 'http://localhost:3000';
 
 export interface LayoutConfig {
   layoutId: string;
@@ -75,8 +74,11 @@ export interface MutationResult<T = void> {
   violations?: TopologyViolation[];
 }
 
-async function mutate<T = void>(url: string, init: RequestInit): Promise<MutationResult<T>> {
-  const res = await fetch(url, init);
+async function mutate<T = void>(path: string, init: RequestInit): Promise<MutationResult<T>> {
+  // Must go through apiFetch, not bare fetch: these are cross-origin in dev,
+  // so the session cookie would be dropped, and a 401 here needs to reach
+  // the app's central unauthorized handler like every other call site.
+  const res = await apiFetch(path, init);
   if (res.ok) {
     const data = res.status === 204 ? undefined : ((await res.json()) as T);
     return { ok: true, status: res.status, data };
@@ -133,12 +135,12 @@ export function useLayoutConfig(layoutId: string | null) {
     setError(null);
     try {
       const [blocks, points, sensors, locos, edges, topology] = await Promise.all([
-        fetch(`${API}/api/layouts/${layoutId}/blocks`).then((r) => json<BlockRecord[]>(r)),
-        fetch(`${API}/api/layouts/${layoutId}/points`).then((r) => json<PointRecord[]>(r)),
-        fetch(`${API}/api/layouts/${layoutId}/sensors`).then((r) => json<SensorRecord[]>(r)),
-        fetch(`${API}/api/layouts/${layoutId}/locos`).then((r) => json<LocoRecord[]>(r)),
-        fetch(`${API}/api/layouts/${layoutId}/edges`).then((r) => json<BlockEdgeRecord[]>(r)),
-        fetch(`${API}/api/layouts/${layoutId}/topology`).then((r) => json<TopologyStatus>(r)),
+        apiFetch(`/api/layouts/${layoutId}/blocks`).then((r) => json<BlockRecord[]>(r)),
+        apiFetch(`/api/layouts/${layoutId}/points`).then((r) => json<PointRecord[]>(r)),
+        apiFetch(`/api/layouts/${layoutId}/sensors`).then((r) => json<SensorRecord[]>(r)),
+        apiFetch(`/api/layouts/${layoutId}/locos`).then((r) => json<LocoRecord[]>(r)),
+        apiFetch(`/api/layouts/${layoutId}/edges`).then((r) => json<BlockEdgeRecord[]>(r)),
+        apiFetch(`/api/layouts/${layoutId}/topology`).then((r) => json<TopologyStatus>(r)),
       ]);
       setConfig({ layoutId, blocks, points, sensors, locos, edges, topology });
     } catch (e) {
@@ -155,7 +157,7 @@ export function useLayoutConfig(layoutId: string | null) {
   // ── Mutations ─────────────────────────────────────────────────────────────────
 
   const createBlock = async (name: string) => {
-    await fetch(`${API}/api/layouts/${layoutId}/blocks`, {
+    await apiFetch(`/api/layouts/${layoutId}/blocks`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -164,7 +166,7 @@ export function useLayoutConfig(layoutId: string | null) {
   };
 
   const updateBlock = async (id: string, name: string) => {
-    await fetch(`${API}/api/layouts/${layoutId}/blocks/${id}`, {
+    await apiFetch(`/api/layouts/${layoutId}/blocks/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -177,7 +179,7 @@ export function useLayoutConfig(layoutId: string | null) {
   // can 404 if the block doesn't belong to this layout. Both are surfaced to
   // the caller rather than swallowed.
   const deleteBlock = async (id: string): Promise<DeleteBlockResult> => {
-    const res = await fetch(`${API}/api/layouts/${layoutId}/blocks/${id}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/layouts/${layoutId}/blocks/${id}`, { method: 'DELETE' });
     if (!res.ok) {
       return { ok: false, message: await extractErrorMessage(res) };
     }
@@ -187,7 +189,7 @@ export function useLayoutConfig(layoutId: string | null) {
   };
 
   const createPoint = async (name: string, dccAddress: number, blockId: string | null) => {
-    await fetch(`${API}/api/layouts/${layoutId}/points`, {
+    await apiFetch(`/api/layouts/${layoutId}/points`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name, dccAddress, blockId }),
@@ -199,7 +201,7 @@ export function useLayoutConfig(layoutId: string | null) {
     id: string,
     data: { name?: string; dccAddress?: number; blockId?: string | null },
   ) => {
-    await fetch(`${API}/api/layouts/${layoutId}/points/${id}`, {
+    await apiFetch(`/api/layouts/${layoutId}/points/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(data),
@@ -211,7 +213,7 @@ export function useLayoutConfig(layoutId: string | null) {
   // pointConditions still reference it, and can 404. Both are surfaced
   // rather than swallowed.
   const deletePoint = async (id: string): Promise<DeletePointResult> => {
-    const res = await fetch(`${API}/api/layouts/${layoutId}/points/${id}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/layouts/${layoutId}/points/${id}`, { method: 'DELETE' });
     if (res.status !== 204) {
       return { ok: false, message: await extractErrorMessage(res) };
     }
@@ -225,7 +227,7 @@ export function useLayoutConfig(layoutId: string | null) {
     blockId: string | null,
     mqttTopic: string,
   ) => {
-    await fetch(`${API}/api/layouts/${layoutId}/sensors`, {
+    await apiFetch(`/api/layouts/${layoutId}/sensors`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name, type, blockId, mqttTopic }),
@@ -237,7 +239,7 @@ export function useLayoutConfig(layoutId: string | null) {
     id: string,
     data: { name?: string; type?: 'block_detection' | 'ir_position'; blockId?: string | null; mqttTopic?: string },
   ) => {
-    await fetch(`${API}/api/layouts/${layoutId}/sensors/${id}`, {
+    await apiFetch(`/api/layouts/${layoutId}/sensors/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(data),
@@ -246,7 +248,7 @@ export function useLayoutConfig(layoutId: string | null) {
   };
 
   const deleteSensor = async (id: string) => {
-    await fetch(`${API}/api/layouts/${layoutId}/sensors/${id}`, { method: 'DELETE' });
+    await apiFetch(`/api/layouts/${layoutId}/sensors/${id}`, { method: 'DELETE' });
     await refresh();
   };
 
@@ -257,7 +259,7 @@ export function useLayoutConfig(layoutId: string | null) {
     maxSpeed: number,
     brakingFactor: number,
   ) => {
-    await fetch(`${API}/api/layouts/${layoutId}/locos`, {
+    await apiFetch(`/api/layouts/${layoutId}/locos`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name, address, type, maxSpeed, brakingFactor }),
@@ -269,7 +271,7 @@ export function useLayoutConfig(layoutId: string | null) {
     id: string,
     data: { name?: string; address?: number; type?: string; maxSpeed?: number; brakingFactor?: number },
   ) => {
-    await fetch(`${API}/api/layouts/${layoutId}/locos/${id}`, {
+    await apiFetch(`/api/layouts/${layoutId}/locos/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(data),
@@ -278,7 +280,7 @@ export function useLayoutConfig(layoutId: string | null) {
   };
 
   const deleteLoco = async (id: string) => {
-    await fetch(`${API}/api/layouts/${layoutId}/locos/${id}`, { method: 'DELETE' });
+    await apiFetch(`/api/layouts/${layoutId}/locos/${id}`, { method: 'DELETE' });
     await refresh();
   };
 
@@ -287,7 +289,7 @@ export function useLayoutConfig(layoutId: string | null) {
   // being swallowed like the mutations above — see EdgesTab, which renders
   // `violations` inline without clearing the operator's form.
   const createEdge = async (data: EdgeWriteInput): Promise<MutationResult<BlockEdgeRecord>> => {
-    const result = await mutate<BlockEdgeRecord>(`${API}/api/layouts/${layoutId}/edges`, {
+    const result = await mutate<BlockEdgeRecord>(`/api/layouts/${layoutId}/edges`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(data),
@@ -300,7 +302,7 @@ export function useLayoutConfig(layoutId: string | null) {
     id: string,
     data: Partial<EdgeWriteInput>,
   ): Promise<MutationResult<BlockEdgeRecord>> => {
-    const result = await mutate<BlockEdgeRecord>(`${API}/api/layouts/${layoutId}/edges/${id}`, {
+    const result = await mutate<BlockEdgeRecord>(`/api/layouts/${layoutId}/edges/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(data),
@@ -310,7 +312,7 @@ export function useLayoutConfig(layoutId: string | null) {
   };
 
   const deleteEdge = async (id: string): Promise<MutationResult<void>> => {
-    const result = await mutate<void>(`${API}/api/layouts/${layoutId}/edges/${id}`, {
+    const result = await mutate<void>(`/api/layouts/${layoutId}/edges/${id}`, {
       method: 'DELETE',
     });
     if (result.ok) await refresh();
