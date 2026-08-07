@@ -186,4 +186,97 @@ describe('migrations', () => {
       ).toThrow();
     });
   });
+
+  // ── Route reservation invariants (route_reservations/route_holds) ───────────
+  //
+  // D2 (one route per block/point) and D13 (one active/suspended reservation
+  // per loco per layout), enforced at the DB level per #11's posture — see
+  // docs/route-locking.md.
+
+  describe('route reservation invariants', () => {
+    let routeCounter = 0;
+
+    function insertReservation(overrides: {
+      locoAddress?: number;
+      status?: string;
+      authority?: string;
+      confirmedIndex?: number;
+    }): string {
+      routeCounter += 1;
+      const id = `route-${routeCounter}`;
+      const now = Date.now();
+      sqlite
+        .prepare(
+          `INSERT INTO route_reservations (id, layout_id, loco_address, authority, status, path, confirmed_index, reason, created_at, updated_at)
+           VALUES (@id, @layoutId, @locoAddress, @authority, @status, @path, @confirmedIndex, @reason, @now, @now)`,
+        )
+        .run({
+          id,
+          layoutId: 'layout-1',
+          locoAddress: overrides.locoAddress ?? 3,
+          authority: overrides.authority ?? 'manual',
+          status: overrides.status ?? 'active',
+          path: '[]',
+          confirmedIndex: overrides.confirmedIndex ?? 0,
+          reason: null,
+          now,
+        });
+      return id;
+    }
+
+    function insertHold(routeId: string, overrides: {
+      kind?: string;
+      targetId?: string;
+      released?: number;
+    }): void {
+      sqlite
+        .prepare(
+          `INSERT INTO route_holds (id, route_id, layout_id, kind, target_id, required_position, release_after_index, released)
+           VALUES (@id, @routeId, @layoutId, @kind, @targetId, NULL, 0, @released)`,
+        )
+        .run({
+          id: `hold-${routeId}-${overrides.targetId ?? 'x'}-${overrides.released ?? 0}-${Math.random()}`,
+          routeId,
+          layoutId: 'layout-1',
+          kind: overrides.kind ?? 'block',
+          targetId: overrides.targetId ?? 'block-a',
+          released: overrides.released ?? 0,
+        });
+    }
+
+    it('rejects an invalid status', () => {
+      expect(() => insertReservation({ status: 'bogus' })).toThrow();
+    });
+
+    it('rejects an invalid hold kind', () => {
+      const routeId = insertReservation({});
+      expect(() => insertHold(routeId, { kind: 'bogus' })).toThrow();
+    });
+
+    it('rejects a second active/suspended reservation for the same loco in the same layout', () => {
+      insertReservation({ locoAddress: 77, status: 'active' });
+      expect(() => insertReservation({ locoAddress: 77, status: 'suspended' })).toThrow();
+    });
+
+    it('allows a released reservation to coexist with a later active one for the same loco', () => {
+      insertReservation({ locoAddress: 88, status: 'released' });
+      expect(() => insertReservation({ locoAddress: 88, status: 'active' })).not.toThrow();
+    });
+
+    it('rejects two routes holding the same block while both unreleased', () => {
+      const routeA = insertReservation({ locoAddress: 101 });
+      const routeB = insertReservation({ locoAddress: 102 });
+      insertHold(routeA, { kind: 'block', targetId: 'shared-block', released: 0 });
+      expect(() => insertHold(routeB, { kind: 'block', targetId: 'shared-block', released: 0 })).toThrow();
+    });
+
+    it('allows the same block to be held again once the first hold is released', () => {
+      const routeA = insertReservation({ locoAddress: 111 });
+      const routeB = insertReservation({ locoAddress: 112 });
+      insertHold(routeA, { kind: 'block', targetId: 'reusable-block', released: 1 });
+      expect(() =>
+        insertHold(routeB, { kind: 'block', targetId: 'reusable-block', released: 0 }),
+      ).not.toThrow();
+    });
+  });
 });
