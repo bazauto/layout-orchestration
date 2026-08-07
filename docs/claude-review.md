@@ -23,12 +23,24 @@ layout/{layoutId}/block/{blockId}/occupied      # backend broadcast block occupa
 
 This must be agreed and documented before implementing either the MQTT client (Phase 1 Step 3) or the ESP firmware refactor.
 
-### 3. Operating Modes are Entirely Missing
+### 3. Operating Modes are Entirely Missing — **Partially resolved by #3 (D7)**
 The original requirements explicitly list Manual, Auto, and Hybrid modes — yet none of the three phases address them. This is a fundamental architectural decision that needs answering before Phase 3:
 
 - Does the system have a single global mode switch, or can individual locos have independent modes?
 - In Hybrid mode, which resources (blocks, locos) are under automation and which under manual control?
 - What happens to an in-flight automated route when the operator flips to Manual? (Emergency stop? Route completes? Operator takes over?)
+
+Route locking (#3), `docs/route-locking.md` D7, answers the third bullet
+directly: flipping `systemMode` to `manual` **suspends** every
+auto-authority route (locks retained, not released — the operator decides
+what happens next). It also settles a question this list didn't ask but
+needed answering first — can a route be granted at all outside `auto`
+mode? Yes: grantability is independent of `SystemMode` (`canGrantRoute`
+checks only `SystemStatus`), so a `manual`-mode reservation is a pure
+interlocking an operator drives themselves. The first two bullets — a
+single global mode switch vs. per-loco authority, and Hybrid's resource
+split — remain open; #3 only had to decide what "mode" does to an
+*existing route*, not the full authority model.
 
 ### 4. No Real-Time UI Update Strategy
 The plan describes a live layout schematic but doesn't specify how the backend *pushes* state changes to the browser. When a block becomes occupied, the signal on the mimic diagram must update immediately without polling. This requires **WebSockets** (or Server-Sent Events) from day one and affects the backend framework choice and structure.
@@ -46,13 +58,23 @@ SQLite is the right call for local-first. However, as the schema grows, fields w
 ### 7. Layout Builder Tile Vocabulary Undefined
 "Grid-based UI layout builder" is under-specified. Before building it, a **tile vocabulary** must be defined — what cell types exist? For example: Straight (horizontal/vertical), Curve, Left-hand point, Right-hand point, Buffer stop, Sector plate, Platform, Engine shed road, Uncoupler. This vocabulary also directly drives the data model for storing the layout and should be agreed before Phase 2 modelling begins.
 
-### 8. Route Locking Edge Cases Unresolved
+### 8. Route Locking Edge Cases Unresolved — **Resolved by #3**
 Phase 3 mentions "Route Locking" without defining the behaviour:
 
 - What exactly is locked — points only, blocks, or both?
 - What does the system do when a manual command conflicts with a lock — silent rejection, warning, or a deliberate operator override?
 
-This needs a design decision before building the Route Locking service; it directly affects the UI design.
+Both answered in full by `docs/route-locking.md` (D1–D14), landed with #3:
+locks are held on **both** blocks and points (D1) — edges are recorded as
+route membership, not a third lock namespace. A manual command against a
+locked point is rejected with a typed error by default; `force: true` is
+permitted (except in `auto` mode) but **cancels the route holding it**
+rather than silently overriding the lock (D6) — the previous behaviour
+(silently throwing the point while `lockedByRoute` still pointed at a now-
+wrong route) was the actual safety bug this issue existed to catch. See
+`docs/route-locking.md` for the full record, including release semantics
+(D5), Safe-Stop interaction (D8), restart recovery (D9), and the topology
+write-guard this necessitated (D10).
 
 ### 9. Automation Engine Complexity is Understated
 "Automatically slows/stops locos to prevent collisions" is a deceptively complex problem. It requires:
@@ -78,11 +100,11 @@ Step 4 ("Define the JSON over MQTT command protocol") should logically precede S
 |---|---------|----------------|
 | 1 | Mosquitto broker not specified | Before Phase 1 |
 | 2 | MQTT topic structure undefined | Before Phase 1 |
-| 3 | Operating modes not designed | Before Phase 3 |
+| 3 | Operating modes not designed | Before Phase 3 — **partially resolved by #3** |
 | 4 | No real-time UI push strategy | Before Phase 1 |
 | 5 | HTTP API framework unspecified | Before scaffolding |
 | 6 | No DB migration strategy | Before Phase 2 |
 | 7 | Tile vocabulary undefined | Before Phase 2 UI work |
-| 8 | Route locking behaviour undefined | Before Phase 3 |
+| 8 | Route locking behaviour undefined | Before Phase 3 — **resolved by #3** |
 | 9 | Automation engine underscoped | Before Phase 3 planning |
 | 10 | Phase 1 step order incorrect | Minor — fix in plan |

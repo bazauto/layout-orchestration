@@ -32,7 +32,7 @@ Before implementation begins, we must define the core architectural contracts an
 ## Phase 3: Routing, Movements & Automation
 *Crucial: Separate Routeing (infrastructure paths) from Movements/Jobs (loco instructions) and Schedules (time/event triggers).*
 
-9. **Route Locking:** Implement reservation logic to lock points/blocks, utilizing the Fail-Safe policy if conflicts occur.
+9. **Route Locking:** Implement reservation logic to lock points/blocks, utilizing the Fail-Safe policy if conflicts occur. **Landed (#3)** — semantics and mechanism recorded in `docs/route-locking.md` (D1–D14): `ReservationService` grants an explicit ordered path (pathfinding itself is #4), locks blocks and points exclusively, releases progressively as a train advances, and Safe-Stops on an unexpected occupancy or a route surviving a restart.
 10. **Automation Engine:** Implement collision avoidance and dynamic speed adjustment. This requires a **braking model** per loco class (stopping distance vs direction/speed/topology).
 11. **Order & Scheduling Systems:** Build the trigger system for sequential or interval-based jobs.
 
