@@ -5,12 +5,21 @@ import {
   EdgeNotFoundError,
   RecordNotFoundError,
   EdgeLimitExceededError,
+  LockedByRouteError,
 } from '../../../src/services/TopologyService';
 import { MAX_EDGES_PER_LAYOUT } from '../../../src/domain/topology';
 import { BlockEdge } from '../../../src/domain/types';
 import { ILayoutRepository } from '../../../src/ports/ILayoutRepository';
+import { IRouteLockView } from '../../../src/ports/IRouteLockView';
 
 const silentLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+/** A lock view reporting everything unheld — the default for tests that don't exercise D10's guard. */
+const noLocks: IRouteLockView = {
+  findRouteHoldingBlock: () => null,
+  findRouteHoldingPoint: () => null,
+  findRouteHoldingEdge: () => null,
+};
 
 const LAYOUT = 'layout-1';
 const OTHER_LAYOUT = 'layout-2';
@@ -76,7 +85,7 @@ describe('TopologyService — getStatus', () => {
       edge({ id: 'e2', fromBlockId: 'b2', toBlockId: 'b3' }),
     ];
     const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue(edges) });
-    const service = new TopologyService(repo, vi.fn(), silentLogger);
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
 
     const status = await service.getStatus(LAYOUT);
 
@@ -89,7 +98,7 @@ describe('TopologyService — getStatus', () => {
       edge({ id: 'dup', fromBlockId: 'b2', toBlockId: 'b3' }),
     ];
     const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue(edges) });
-    const service = new TopologyService(repo, vi.fn(), silentLogger);
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
 
     const status = await service.getStatus(LAYOUT);
 
@@ -102,7 +111,7 @@ describe('TopologyService — createEdge', () => {
   it('rejects an edge whose fromBlockId belongs to another layout (unknown-block in this layout)', async () => {
     const repo = makeRepo();
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await expect(
       service.createEdge(LAYOUT, {
@@ -122,7 +131,7 @@ describe('TopologyService — createEdge', () => {
   it('rejects an edge whose point condition references a point from another layout (unknown-point)', async () => {
     const repo = makeRepo();
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await expect(
       service.createEdge(LAYOUT, {
@@ -142,7 +151,7 @@ describe('TopologyService — createEdge', () => {
   it('rejects a self-loop', async () => {
     const repo = makeRepo();
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await expect(
       service.createEdge(LAYOUT, {
@@ -163,7 +172,7 @@ describe('TopologyService — createEdge', () => {
       listBlockEdges: vi.fn().mockResolvedValue([edge({ id: 'existing', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' })]),
     });
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await expect(
       service.createEdge(LAYOUT, {
@@ -182,7 +191,7 @@ describe('TopologyService — createEdge', () => {
   it('persists and calls onTopologyChanged exactly once on a valid create', async () => {
     const repo = makeRepo();
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     const created = await service.createEdge(LAYOUT, {
       fromBlockId: 'b1',
@@ -201,7 +210,7 @@ describe('TopologyService — createEdge', () => {
   it('calls onTopologyChanged zero times on a rejected create', async () => {
     const repo = makeRepo();
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await expect(
       service.createEdge(LAYOUT, {
@@ -223,7 +232,7 @@ describe('TopologyService — createEdge', () => {
     );
     const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue(atCap) });
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await expect(
       service.createEdge(LAYOUT, {
@@ -246,7 +255,7 @@ describe('TopologyService — createEdge', () => {
     );
     const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue(belowCap) });
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     const created = await service.createEdge(LAYOUT, {
       fromBlockId: 'b1',
@@ -271,7 +280,7 @@ describe('TopologyService — updateEdge', () => {
       listBlockEdges: vi.fn().mockResolvedValue([existing]),
     });
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await expect(service.updateEdge(LAYOUT, 'e1', { toBlockId: 'b1' })).rejects.toThrow(
       TopologyRejectedError,
@@ -285,7 +294,7 @@ describe('TopologyService — updateEdge', () => {
     const existing = edge({ id: 'e1', layoutId: OTHER_LAYOUT });
     const repo = makeRepo({ getBlockEdge: vi.fn().mockResolvedValue(existing) });
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await expect(service.updateEdge(LAYOUT, 'e1', { lengthMm: 100 })).rejects.toThrow(
       EdgeNotFoundError,
@@ -295,7 +304,7 @@ describe('TopologyService — updateEdge', () => {
 
   it('throws EdgeNotFoundError when the edge does not exist at all', async () => {
     const repo = makeRepo({ getBlockEdge: vi.fn().mockResolvedValue(null) });
-    const service = new TopologyService(repo, vi.fn(), silentLogger);
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
 
     await expect(service.updateEdge(LAYOUT, 'missing', { lengthMm: 100 })).rejects.toThrow(
       EdgeNotFoundError,
@@ -309,7 +318,7 @@ describe('TopologyService — updateEdge', () => {
       listBlockEdges: vi.fn().mockResolvedValue([existing]),
     });
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     const updated = await service.updateEdge(LAYOUT, 'e1', { toBlockId: 'b3' });
 
@@ -322,7 +331,7 @@ describe('TopologyService — updateEdge', () => {
 describe('TopologyService — deleteEdge', () => {
   it('throws EdgeNotFoundError for a cross-layout id and does not delete', async () => {
     const repo = makeRepo({ getBlockEdge: vi.fn().mockResolvedValue(edge({ layoutId: OTHER_LAYOUT })) });
-    const service = new TopologyService(repo, vi.fn(), silentLogger);
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
 
     await expect(service.deleteEdge(LAYOUT, 'e1')).rejects.toThrow(EdgeNotFoundError);
     expect(repo.deleteBlockEdge).not.toHaveBeenCalled();
@@ -331,7 +340,7 @@ describe('TopologyService — deleteEdge', () => {
   it('deletes and calls onTopologyChanged once', async () => {
     const repo = makeRepo({ getBlockEdge: vi.fn().mockResolvedValue(edge()) });
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await service.deleteEdge(LAYOUT, 'e1');
 
@@ -350,7 +359,7 @@ describe('TopologyService — deleteBlockWithEdges', () => {
       ]),
     });
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     const result = await service.deleteBlockWithEdges(LAYOUT, 'b1');
 
@@ -366,7 +375,7 @@ describe('TopologyService — deleteBlockWithEdges', () => {
       listBlocks: vi.fn().mockResolvedValue([{ id: 'b1', layoutId: LAYOUT, name: 'Block 1' }]),
     });
     const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await expect(service.deleteBlockWithEdges(LAYOUT, 'foreign-block')).rejects.toThrow(
       RecordNotFoundError,
@@ -379,7 +388,7 @@ describe('TopologyService — deleteBlockWithEdges', () => {
 describe('TopologyService — deletePointIfUnreferenced', () => {
   it('deletes a point referenced by no edge', async () => {
     const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue([edge({ pointConditions: [] })]) });
-    const service = new TopologyService(repo, vi.fn(), silentLogger);
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
 
     await service.deletePointIfUnreferenced(LAYOUT, 'p1');
 
@@ -393,7 +402,7 @@ describe('TopologyService — deletePointIfUnreferenced', () => {
     const repo = makeRepo({
       listBlockEdges: vi.fn().mockResolvedValue([edge({ pointConditions: [] })]),
     });
-    const service = new TopologyService(repo, vi.fn(), silentLogger);
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
 
     await expect(service.deletePointIfUnreferenced(LAYOUT, 'foreign-point')).rejects.toThrow(
       RecordNotFoundError,
@@ -407,7 +416,7 @@ describe('TopologyService — deletePointIfUnreferenced', () => {
         edge({ id: 'e1', pointConditions: [{ pointId: 'p1', requiredPosition: 'normal' }] }),
       ]),
     });
-    const service = new TopologyService(repo, vi.fn(), silentLogger);
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
 
     await expect(service.deletePointIfUnreferenced(LAYOUT, 'p1')).rejects.toThrow(
       TopologyRejectedError,
@@ -421,7 +430,7 @@ describe('TopologyService — updatePoint', () => {
   it('updates a point that exists in the layout', async () => {
     const updated = { id: 'p1', layoutId: LAYOUT, name: 'Renamed', dccAddress: 1, blockId: null };
     const repo = makeRepo({ updatePoint: vi.fn().mockResolvedValue(updated) });
-    const service = new TopologyService(repo, vi.fn(), silentLogger);
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
 
     const result = await service.updatePoint(LAYOUT, 'p1', { name: 'Renamed' });
 
@@ -438,7 +447,7 @@ describe('TopologyService — updatePoint', () => {
     // it does not contain — as if it belonged to another layout — surfaces
     // the same way deletePointIfUnreferenced's equivalent test does.
     const repo = makeRepo();
-    const service = new TopologyService(repo, vi.fn(), silentLogger);
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
 
     await expect(service.updatePoint(LAYOUT, 'foreign-point', { name: 'Renamed' })).rejects.toThrow(
       RecordNotFoundError,
@@ -454,10 +463,98 @@ describe('TopologyService — updatePoint', () => {
     const repo = makeRepo({
       updatePoint: vi.fn().mockResolvedValue({ id: 'p1', layoutId: LAYOUT, name: 'Renamed', dccAddress: 1, blockId: null }),
     });
-    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
 
     await service.updatePoint(LAYOUT, 'p1', { name: 'Renamed' });
 
     expect(onTopologyChanged).not.toHaveBeenCalled();
+  });
+});
+
+// ─── D10: the topology write-guard ─────────────────────────────────────────
+
+describe('TopologyService — route-lock write-guard (D10)', () => {
+  function lockViewHolding(kind: 'block' | 'point' | 'edge', targetId: string, routeId = 'route-99'): IRouteLockView {
+    return {
+      findRouteHoldingBlock: (_layoutId, blockId) => (kind === 'block' && blockId === targetId ? routeId : null),
+      findRouteHoldingPoint: (_layoutId, pointId) => (kind === 'point' && pointId === targetId ? routeId : null),
+      findRouteHoldingEdge: (_layoutId, edgeId) => (kind === 'edge' && edgeId === targetId ? routeId : null),
+    };
+  }
+
+  it('refuses updateEdge when the edge is held by an active route', async () => {
+    const existing = edge({ id: 'e1' });
+    const repo = makeRepo({
+      getBlockEdge: vi.fn().mockResolvedValue(existing),
+      listBlockEdges: vi.fn().mockResolvedValue([existing]),
+    });
+    const service = new TopologyService(repo, vi.fn(), silentLogger, lockViewHolding('edge', 'e1'));
+
+    await expect(service.updateEdge(LAYOUT, 'e1', { lengthMm: 100 })).rejects.toThrow(LockedByRouteError);
+    expect(repo.updateBlockEdge).not.toHaveBeenCalled();
+  });
+
+  it('refuses deleteEdge when the edge is held', async () => {
+    const repo = makeRepo({ getBlockEdge: vi.fn().mockResolvedValue(edge({ id: 'e1' })) });
+    const service = new TopologyService(repo, vi.fn(), silentLogger, lockViewHolding('edge', 'e1'));
+
+    await expect(service.deleteEdge(LAYOUT, 'e1')).rejects.toThrow(LockedByRouteError);
+    expect(repo.deleteBlockEdge).not.toHaveBeenCalled();
+  });
+
+  it('refuses deleteBlockWithEdges when the block itself is held', async () => {
+    const repo = makeRepo();
+    const service = new TopologyService(repo, vi.fn(), silentLogger, lockViewHolding('block', 'b1'));
+
+    await expect(service.deleteBlockWithEdges(LAYOUT, 'b1')).rejects.toThrow(LockedByRouteError);
+    expect(repo.deleteBlock).not.toHaveBeenCalled();
+  });
+
+  it('refuses deleteBlockWithEdges when an edge referencing the block is held, even if the block itself is not', async () => {
+    const repo = makeRepo({
+      listBlockEdges: vi.fn().mockResolvedValue([edge({ id: 'e1', fromBlockId: 'b1', toBlockId: 'b2' })]),
+    });
+    const service = new TopologyService(repo, vi.fn(), silentLogger, lockViewHolding('edge', 'e1'));
+
+    await expect(service.deleteBlockWithEdges(LAYOUT, 'b1')).rejects.toThrow(LockedByRouteError);
+    expect(repo.deleteBlock).not.toHaveBeenCalled();
+  });
+
+  it('refuses deletePointIfUnreferenced when the point is held', async () => {
+    const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue([]) });
+    const service = new TopologyService(repo, vi.fn(), silentLogger, lockViewHolding('point', 'p1'));
+
+    await expect(service.deletePointIfUnreferenced(LAYOUT, 'p1')).rejects.toThrow(LockedByRouteError);
+    expect(repo.deletePoint).not.toHaveBeenCalled();
+  });
+
+  it('does NOT guard createEdge — a new edge is always permitted regardless of what is held', async () => {
+    const repo = makeRepo();
+    const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, lockViewHolding('block', 'b1'));
+
+    await expect(
+      service.createEdge(LAYOUT, {
+        fromBlockId: 'b1',
+        fromEnd: 'east',
+        toBlockId: 'b2',
+        toEnd: 'west',
+        pointConditions: [],
+        lengthMm: null,
+      }),
+    ).resolves.toMatchObject({ fromBlockId: 'b1', toBlockId: 'b2' });
+  });
+
+  it('does not fire when the lock view reports no holder (released/cancelled routes hold nothing)', async () => {
+    const existing = edge({ id: 'e1' });
+    const repo = makeRepo({
+      getBlockEdge: vi.fn().mockResolvedValue(existing),
+      listBlockEdges: vi.fn().mockResolvedValue([existing]),
+    });
+    const onTopologyChanged = vi.fn().mockResolvedValue(undefined);
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger, noLocks);
+
+    await expect(service.deleteEdge(LAYOUT, 'e1')).resolves.toBeUndefined();
+    expect(repo.deleteBlockEdge).toHaveBeenCalledWith('e1');
   });
 });
