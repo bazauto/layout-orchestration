@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { randomUUID } from 'crypto';
 import { ReservationService } from '../../../src/services/ReservationService';
 import { LayoutStateManager } from '../../../src/domain/layoutState';
 import { buildTrackGraph } from '../../../src/domain/graph';
