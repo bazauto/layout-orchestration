@@ -22,6 +22,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildServer } from '../../src/transport/http/server';
 import { LayoutService } from '../../src/services/LayoutService';
 import { TopologyService } from '../../src/services/TopologyService';
+import { ReservationService } from '../../src/services/ReservationService';
 import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
@@ -68,6 +69,12 @@ function makeRepo(): ILayoutRepository {
     createBlockEdge: vi.fn(),
     updateBlockEdge: vi.fn(),
     deleteBlockEdge: vi.fn(),
+
+    listReservations: vi.fn().mockResolvedValue([]),
+    getReservation: vi.fn().mockResolvedValue(null),
+    createReservation: vi.fn(),
+    updateReservation: vi.fn(),
+    markHoldsReleased: vi.fn(),
   };
 }
 
@@ -75,8 +82,9 @@ async function buildTestServer(repo: ILayoutRepository) {
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
   const state = new LayoutStateManager('layout-1');
-  const service = new LayoutService(dcc, mqtt, repo, state, silentLogger);
-  const topologyService = new TopologyService(repo, () => Promise.resolve(), silentLogger);
+  const reservations = new ReservationService(repo, state, silentLogger);
+  const service = new LayoutService(dcc, mqtt, repo, state, reservations, silentLogger);
+  const topologyService = new TopologyService(repo, () => Promise.resolve(), silentLogger, reservations);
   const authService = await makeTestAuthService();
   return buildServer(service, repo, 'silent', topologyService, authService, TEST_AUTH_CONFIG);
 }
