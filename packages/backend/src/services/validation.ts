@@ -168,6 +168,24 @@ export const edgeUpdateSchema = edgeCreateSchema.partial().strict();
 
 export type EdgeUpdateInput = z.infer<typeof edgeUpdateSchema>;
 
+// ─── Points ─────────────────────────────────────────────────────────────
+
+/**
+ * Write schema for a point update (`PUT .../points/:id`). Every field is
+ * optional — a partial update — but `.strict()` so an unexpected field (e.g.
+ * a client posting `id` or `layoutId`, both path/server-owned) is a 400, not
+ * a silently ignored write. Same posture as `edgeUpdateSchema`.
+ */
+export const pointUpdateSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    dccAddress: z.number().int().positive().optional(),
+    blockId: z.string().min(1).nullable().optional(),
+  })
+  .strict();
+
+export type PointUpdateInput = z.infer<typeof pointUpdateSchema>;
+
 // ─── Auth ────────────────────────────────────────────────────────────────
 
 const roleSchema = z.enum(['admin', 'operator']);

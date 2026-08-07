@@ -416,3 +416,48 @@ describe('TopologyService — deletePointIfUnreferenced', () => {
     expect(repo.deletePoint).not.toHaveBeenCalled();
   });
 });
+
+describe('TopologyService — updatePoint', () => {
+  it('updates a point that exists in the layout', async () => {
+    const updated = { id: 'p1', layoutId: LAYOUT, name: 'Renamed', dccAddress: 1, blockId: null };
+    const repo = makeRepo({ updatePoint: vi.fn().mockResolvedValue(updated) });
+    const service = new TopologyService(repo, vi.fn(), silentLogger);
+
+    const result = await service.updatePoint(LAYOUT, 'p1', { name: 'Renamed' });
+
+    expect(result).toEqual(updated);
+    expect(repo.updatePoint).toHaveBeenCalledWith('p1', { name: 'Renamed' });
+  });
+
+  it('refuses to update a point belonging to another layout', async () => {
+    // Same ownership rationale as deletePointIfUnreferenced: repo.updatePoint
+    // takes no layoutId, so without this check `PUT
+    // /api/layouts/<any>/points/:id` could mutate a point owned by a
+    // different layout by id alone. The guard scans LAYOUT's points (see
+    // makeRepo's default listPoints, which only contains 'p1'), so a point id
+    // it does not contain — as if it belonged to another layout — surfaces
+    // the same way deletePointIfUnreferenced's equivalent test does.
+    const repo = makeRepo();
+    const service = new TopologyService(repo, vi.fn(), silentLogger);
+
+    await expect(service.updatePoint(LAYOUT, 'foreign-point', { name: 'Renamed' })).rejects.toThrow(
+      RecordNotFoundError,
+    );
+    expect(repo.updatePoint).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger a topology revalidation — a point update can never invalidate an edge condition', async () => {
+    // Edge pointConditions reference a point only by its immutable id, and
+    // this method cannot change a point's id or layoutId — see the doc
+    // comment on TopologyService#updatePoint.
+    const onTopologyChanged = vi.fn();
+    const repo = makeRepo({
+      updatePoint: vi.fn().mockResolvedValue({ id: 'p1', layoutId: LAYOUT, name: 'Renamed', dccAddress: 1, blockId: null }),
+    });
+    const service = new TopologyService(repo, onTopologyChanged, silentLogger);
+
+    await service.updatePoint(LAYOUT, 'p1', { name: 'Renamed' });
+
+    expect(onTopologyChanged).not.toHaveBeenCalled();
+  });
+});

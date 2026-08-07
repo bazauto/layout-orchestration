@@ -12,7 +12,7 @@
 
 import { MAX_EDGES_PER_LAYOUT, validateEdgeAgainstLayout, validateTopology } from '../domain/topology';
 import { BlockEdge, BlockEdgeId, LayoutId, PointId, TopologyViolation } from '../domain/types';
-import { ILayoutRepository } from '../ports/ILayoutRepository';
+import { ILayoutRepository, PointRecord } from '../ports/ILayoutRepository';
 
 export interface TopologyServiceLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -80,6 +80,7 @@ export class RecordNotFoundError extends Error {
 
 export type EdgeCreateData = Omit<BlockEdge, 'id' | 'layoutId'>;
 export type EdgeUpdateData = Partial<Omit<BlockEdge, 'id' | 'layoutId'>>;
+export type PointUpdateData = Partial<Omit<PointRecord, 'id' | 'layoutId'>>;
 
 export class TopologyService {
   constructor(
@@ -242,6 +243,33 @@ export class TopologyService {
 
     await this.repo.deletePoint(layoutId, pointId);
     this.log.info('[TopologyService] Point deleted', { layoutId, pointId });
+  }
+
+  /**
+   * Updates a point's name, DCC address, or block assignment, scoped to
+   * `layoutId` for the same ownership reason as `deletePointIfUnreferenced`
+   * — without the check, `PUT /api/layouts/<any>/points/:id` could mutate a
+   * point belonging to a different layout by id alone.
+   *
+   * Deliberately does NOT re-validate topology or call `onTopologyChanged`,
+   * unlike the edge write path: an edge's `pointConditions` reference a
+   * point only by its immutable `id` (see `TopologyContext.pointIds` in
+   * `domain/topology.ts`), and neither `id` nor `layoutId` is updatable
+   * through this method — so no edit made here can turn an existing edge's
+   * point condition into an `unknown-point` violation, or otherwise change
+   * what the load path's topology validation sees. Compare
+   * `deletePointIfUnreferenced`, where the point's identity stops existing
+   * altogether and so must be guarded against dangling references.
+   */
+  async updatePoint(layoutId: LayoutId, pointId: PointId, patch: PointUpdateData): Promise<PointRecord> {
+    const points = await this.repo.listPoints(layoutId);
+    if (!points.some((point) => point.id === pointId)) {
+      throw new RecordNotFoundError('point', pointId);
+    }
+
+    const updated = await this.repo.updatePoint(pointId, patch);
+    this.log.info('[TopologyService] Point updated', { layoutId, pointId });
+    return updated;
   }
 
   private async buildContext(layoutId: LayoutId) {
