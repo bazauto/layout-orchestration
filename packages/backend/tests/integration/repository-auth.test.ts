@@ -147,8 +147,14 @@ describe('DrizzleAuthRepository', () => {
 
     // No direct deleteUser on the port yet (out of scope for this tranche) —
     // exercise the FK cascade directly to prove the schema-level guarantee
-    // that AuthService's "orphaned session" fail-closed path depends on.
+    // that AuthService's "orphaned session" fail-closed path depends on. This
+    // is a second connection to the same file, opened outside openDatabase,
+    // so the cascade firing here depends on this connection's own
+    // foreign_keys pragma rather than the one set in openDatabase — the same
+    // per-connection driver default #18 makes explicit in production, stated
+    // explicitly here too rather than left implicit.
     const sqlite = new Database(dbPath);
+    sqlite.pragma('foreign_keys = ON');
     sqlite.prepare('DELETE FROM users WHERE id = ?').run(user.id);
     sqlite.close();
 

@@ -28,5 +28,14 @@ export function openDatabase(dbPath: string, migrationsFolder: string): BetterSQ
   const db = drizzle(sqlite);
   // Apply any pending migrations automatically on startup
   migrate(db, { migrationsFolder });
+  // Explicit belt-and-braces: better-sqlite3 already enables foreign_keys by
+  // default (verified against 11.10.0 — see #18), so every onDelete: 'cascade'
+  // in schema.ts already fires without this. This statement doesn't fix a bug;
+  // it stops the guarantee resting on a driver default a future major version,
+  // or a swapped driver (node:sqlite, sqlite3, Bun/Deno), could silently drop.
+  // Ordering is load-bearing: SQLite ignores PRAGMA foreign_keys inside a
+  // transaction, and migrate() above runs in one — so this must come after it,
+  // never before.
+  sqlite.pragma('foreign_keys = ON');
   return db;
 }
