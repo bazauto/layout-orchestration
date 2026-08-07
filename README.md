@@ -229,6 +229,15 @@ changes once TLS lands. `EMERGENCY_STOP` is deliberately reachable without
 authentication (`POST /api/emergency-stop`); every other control and config
 endpoint requires a session.
 
+Every block/point/sensor/loco create/update/delete in `useLayoutConfig.ts` now
+surfaces a failed save instead of discarding the response — matching how the Edges
+tab has always handled a rejected write (#22). Routing `updatePoint` through this path
+exposed a pre-existing gap: there is no `PUT /api/layouts/:layoutId/points/:id` route
+(only `POST`/`DELETE`), so editing a point's name, DCC address, or block assignment
+from the Points tab will now visibly fail with a 404 rather than silently doing
+nothing — `ILayoutRepository.updatePoint` and the DB write path already exist, only
+the HTTP route is missing.
+
 ## Next Milestones
 
 1. Route reservation engine
