@@ -301,6 +301,29 @@ export function parseReservationRow(row: unknown, holdRows: readonly unknown[]):
   };
 }
 
+// ─── Route Requests (transport write schemas) ──────────────────────────────
+//
+// `.strict()`, same posture as edgeCreateSchema — an unexpected field (e.g.
+// a client posting `layoutId`, which is path/server-owned) is a 400, not a
+// silently ignored field.
+
+/** `POST /api/layouts/:layoutId/routes`. Pathfinding (#4) is out of scope for #3 — `edgeIds` is an explicit ordered path, not searched for. */
+export const routeRequestSchema = z
+  .object({
+    locoAddress: z.number().int().min(1).max(9999),
+    authority: z.enum(['manual', 'auto']),
+    startBlockId: z.string().min(1),
+    edgeIds: z.array(z.string().min(1)),
+  })
+  .strict();
+
+/** `DELETE /api/layouts/:layoutId/routes/:routeId`. `reason` is optional — a body-less DELETE defaults to a generic operator-cancel reason in the route handler. */
+export const routeCancelSchema = z
+  .object({
+    reason: z.string().min(1).optional(),
+  })
+  .strict();
+
 // ─── Auth ────────────────────────────────────────────────────────────────
 
 const roleSchema = z.enum(['admin', 'operator']);

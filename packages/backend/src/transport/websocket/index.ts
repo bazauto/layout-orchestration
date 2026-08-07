@@ -43,6 +43,7 @@ export async function registerWebSocket(
         blocks: Object.fromEntries(state.blocks),
         points: Object.fromEntries(state.points),
         locos: Object.fromEntries(state.locos),
+        routes: Object.fromEntries(state.routes),
       },
     };
     socket.send(JSON.stringify(snapshot));
