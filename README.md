@@ -231,12 +231,12 @@ endpoint requires a session.
 
 Every block/point/sensor/loco create/update/delete in `useLayoutConfig.ts` now
 surfaces a failed save instead of discarding the response — matching how the Edges
-tab has always handled a rejected write (#22). Routing `updatePoint` through this path
-exposed a pre-existing gap: there is no `PUT /api/layouts/:layoutId/points/:id` route
-(only `POST`/`DELETE`), so editing a point's name, DCC address, or block assignment
-from the Points tab will now visibly fail with a 404 rather than silently doing
-nothing — `ILayoutRepository.updatePoint` and the DB write path already exist, only
-the HTTP route is missing.
+tab has always handled a rejected write (#22).
+
+The `blocks` and `sensors` `PUT` handlers still have no runtime Zod validation —
+they declare a typed body and nothing more, and that type is erased at compile
+time (#36). `edges` and `points` validate with `.strict()` schemas in
+`services/validation.ts`; those two predate the convention and are the outliers.
 
 ## Next Milestones
 
