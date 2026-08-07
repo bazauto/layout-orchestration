@@ -104,10 +104,11 @@ describe('migrations', () => {
   describe('block_edges invariants', () => {
     let edgeCounter = 0;
 
-    // block_edges has FK references to layouts/blocks (better-sqlite3 enables
-    // foreign_keys enforcement by default, independent of the deferred #18
-    // pragma work on DrizzleRepository itself), so a fixed pool of parent
-    // rows is created up front for these constraint-only inserts to reference.
+    // block_edges has FK references to layouts/blocks (enforced both by the
+    // driver default and, since #18, by the explicit
+    // `sqlite.pragma('foreign_keys = ON')` in openDatabase), so a fixed pool
+    // of parent rows is created up front for these constraint-only inserts
+    // to reference.
     beforeAll(() => {
       sqlite
         .prepare('INSERT INTO layouts (id, name, created_at) VALUES (?, ?, ?)')
