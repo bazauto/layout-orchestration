@@ -14,6 +14,7 @@ import { vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { LayoutService, LayoutServiceLogger } from '../../src/services/LayoutService';
 import { TopologyService, TopologyServiceLogger } from '../../src/services/TopologyService';
+import { ReservationService, ReservationServiceLogger } from '../../src/services/ReservationService';
 import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
@@ -25,7 +26,7 @@ import {
   PointRecord,
   SensorRecord,
 } from '../../src/ports/ILayoutRepository';
-import { BlockEdge, LayoutEvent } from '../../src/domain/types';
+import { BlockEdge, LayoutEvent, RouteHoldKind, RouteReservation, RouteStatus } from '../../src/domain/types';
 import { parseBlockEdgeRow } from '../../src/services/validation';
 
 export const LAYOUT_ID = 'scenario-layout';
@@ -53,6 +54,10 @@ export interface InMemoryLayoutRepository extends ILayoutRepository {
   _setBlocks(blocks: BlockRecord[]): void;
   /** Test-only. Replaces the point set for a layout. */
   _setPoints(points: PointRecord[]): void;
+  /** Test-only. Replaces the sensor set for a layout — needed by `sensorReports`. */
+  _setSensors(sensors: SensorRecord[]): void;
+  /** Test-only. Replaces the loco roster for a layout — a route grant requires the loco to be known (D13). */
+  _setLocos(locos: LocoRecord[]): void;
   /**
    * Test-only. Inserts a row bypassing `parseBlockEdgeRow` — simulates a
    * `block_edges` row written outside the normal API (e.g. by hand, or by
@@ -62,13 +67,27 @@ export interface InMemoryLayoutRepository extends ILayoutRepository {
   _insertRawEdgeRow(row: RawEdgeRow): void;
 }
 
+/** Raw route_reservations/route_holds "row" shape, mirroring RawEdgeRow's role for block_edges. */
+interface StoredReservation {
+  row: Omit<RouteReservation, 'holds'>;
+  holds: Map<string, RouteReservation['holds'][number]>;
+}
+
 function makeInMemoryRepo(): InMemoryLayoutRepository {
   let blocks: BlockRecord[] = [];
   let points: PointRecord[] = [];
+  let sensors: SensorRecord[] = [];
+  let locos: LocoRecord[] = [];
   const edgeRows = new Map<string, RawEdgeRow>();
+  const reservations = new Map<string, StoredReservation>();
 
   function rowsForLayout(layoutId: string): RawEdgeRow[] {
     return [...edgeRows.values()].filter((r) => r.layoutId === layoutId);
+  }
+
+  function toReservation(id: string): RouteReservation {
+    const entry = reservations.get(id)!;
+    return { ...entry.row, holds: [...entry.holds.values()] };
   }
 
   return {
@@ -77,7 +96,9 @@ function makeInMemoryRepo(): InMemoryLayoutRepository {
     createLayout: vi.fn(),
     deleteLayout: vi.fn(),
 
-    listLocos: vi.fn().mockResolvedValue([] as LocoRecord[]),
+    listLocos: vi.fn().mockImplementation(async (layoutId: string) =>
+      locos.filter((l) => l.layoutId === layoutId),
+    ),
     getLoco: vi.fn().mockResolvedValue(null),
     createLoco: vi.fn(),
     updateLoco: vi.fn(),
@@ -104,7 +125,9 @@ function makeInMemoryRepo(): InMemoryLayoutRepository {
       points = points.filter((p) => p.id !== id);
     }),
 
-    listSensors: vi.fn().mockResolvedValue([] as SensorRecord[]),
+    listSensors: vi.fn().mockImplementation(async (layoutId: string) =>
+      sensors.filter((s) => s.layoutId === layoutId),
+    ),
     createSensor: vi.fn(),
     updateSensor: vi.fn(),
     deleteSensor: vi.fn(),
@@ -156,11 +179,70 @@ function makeInMemoryRepo(): InMemoryLayoutRepository {
       edgeRows.delete(id);
     }),
 
+    // ── Route Reservations (see docs/route-locking.md) ──────────────────────
+
+    listReservations: vi.fn().mockImplementation(async (layoutId: string, statuses?: RouteStatus[]) =>
+      [...reservations.keys()]
+        .map(toReservation)
+        .filter((r) => r.layoutId === layoutId && (!statuses || statuses.includes(r.status))),
+    ),
+    getReservation: vi.fn().mockImplementation(async (id: string) =>
+      reservations.has(id) ? toReservation(id) : null,
+    ),
+    createReservation: vi
+      .fn()
+      .mockImplementation(async (data: Omit<RouteReservation, 'createdAt' | 'updatedAt'>) => {
+        const now = new Date();
+        reservations.set(data.id, {
+          row: {
+            id: data.id,
+            layoutId: data.layoutId,
+            locoAddress: data.locoAddress,
+            authority: data.authority,
+            status: data.status,
+            path: data.path,
+            confirmedIndex: data.confirmedIndex,
+            reason: data.reason,
+            createdAt: now,
+            updatedAt: now,
+          },
+          holds: new Map(data.holds.map((h) => [`${h.kind}:${h.targetId}`, { ...h }])),
+        });
+        return toReservation(data.id);
+      }),
+    updateReservation: vi
+      .fn()
+      .mockImplementation(
+        async (id: string, data: { status?: RouteStatus; confirmedIndex?: number; reason?: string | null }) => {
+          const entry = reservations.get(id);
+          if (!entry) throw new Error(`Route reservation ${id} not found after update`);
+          entry.row = { ...entry.row, ...data, updatedAt: new Date() };
+          return toReservation(id);
+        },
+      ),
+    markHoldsReleased: vi
+      .fn()
+      .mockImplementation(async (routeId: string, holds: Array<{ kind: RouteHoldKind; targetId: string }>) => {
+        const entry = reservations.get(routeId);
+        if (!entry) return;
+        for (const h of holds) {
+          const key = `${h.kind}:${h.targetId}`;
+          const existing = entry.holds.get(key);
+          if (existing) entry.holds.set(key, { ...existing, released: true });
+        }
+      }),
+
     _setBlocks(next: BlockRecord[]) {
       blocks = next;
     },
     _setPoints(next: PointRecord[]) {
       points = next;
+    },
+    _setSensors(next: SensorRecord[]) {
+      sensors = next;
+    },
+    _setLocos(next: LocoRecord[]) {
+      locos = next;
     },
     _insertRawEdgeRow(row: RawEdgeRow) {
       edgeRows.set(row.id, row);
@@ -174,15 +256,35 @@ export interface ScenarioHarness {
   dcc: SimulatedDccAdapter;
   service: LayoutService;
   topologyService: TopologyService;
+  reservationService: ReservationService;
   /** All LayoutEvents emitted by `service`, in order, since harness creation. */
   events: LayoutEvent[];
+  /**
+   * Wall-clock source used for scenario assertions that need a
+   * reference `Date` (e.g. comparing against a reservation's
+   * `createdAt`/`updatedAt`). No scenario in this PR depends on
+   * *simulated* elapsed time — D5 explicitly forbids timeout-based
+   * release, so there is nothing time-dependent to fast-forward — but
+   * exposing it here, rather than scenario tests calling `new Date()`
+   * inline, keeps every timestamp reference in one place should that
+   * change.
+   */
+  clock(): Date;
   /** Starts the service against the layout the harness was seeded with. */
   start(): Promise<void>;
+  /**
+   * Simulates an incoming reading from the named sensor (looked up via
+   * `repo.listSensors`) and flushes microtasks so `LayoutService`'s
+   * (now-async) sensor handling — including the `onOccupancyChange` call
+   * into `ReservationService` — has settled before this resolves.
+   */
+  sensorReports(sensorId: string, state: 'occupied' | 'clear'): Promise<void>;
 }
 
 /**
  * Builds a scenario harness with an empty layout (no blocks, points, edges,
- * or sensors) — callers seed state via `repo._setBlocks` / `_setPoints` /
+ * sensors, or locos) — callers seed state via `repo._setBlocks` /
+ * `_setPoints` / `repo._setSensors` / `repo._setLocos` /
  * `repo.createBlockEdge` / `repo._insertRawEdgeRow` before calling `start()`.
  */
 export function createScenarioHarness(): ScenarioHarness {
@@ -190,11 +292,13 @@ export function createScenarioHarness(): ScenarioHarness {
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
   const stateManager = new LayoutStateManager(LAYOUT_ID);
-  const service = new LayoutService(dcc, mqtt, repo, stateManager, silentLogger);
+  const reservationService = new ReservationService(repo, stateManager, silentLogger);
+  const service = new LayoutService(dcc, mqtt, repo, stateManager, reservationService, silentLogger);
   const topologyService = new TopologyService(
     repo,
     () => service.reloadTopology(),
     silentLogger,
+    reservationService,
   );
 
   const events: LayoutEvent[] = [];
@@ -206,7 +310,25 @@ export function createScenarioHarness(): ScenarioHarness {
     dcc,
     service,
     topologyService,
+    reservationService,
     events,
+    clock: () => new Date(),
     start: () => service.start(LAYOUT_ID),
+    sensorReports: async (sensorId: string, state: 'occupied' | 'clear') => {
+      const sensors = await repo.listSensors(LAYOUT_ID);
+      const sensor = sensors.find((s) => s.id === sensorId);
+      if (!sensor) throw new Error(`sensorReports: unknown sensor ${sensorId}`);
+      mqtt.simulateIncoming(sensor.mqttTopic, { state, updatedAt: new Date().toISOString() });
+      // handleSensorReading is fire-and-forget from the MQTT handler's
+      // perspective (void-returning callback) — one microtask flush is
+      // enough for its internal awaits (all against the in-memory repo
+      // above, which resolves immediately) to settle, matching the same
+      // `setImmediate` pattern used throughout the unit tests.
+      await new Promise((r) => setImmediate(r));
+    },
   };
 }
+
+// Re-exported for scenario tests that need to construct fixtures matching
+// the reservation shape without importing from src/services directly.
+export type { ReservationServiceLogger };
