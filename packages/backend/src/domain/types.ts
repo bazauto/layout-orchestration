@@ -181,7 +181,10 @@ export interface PointState {
 
 export interface LocoState {
   address: LocoAddress;
-  /** DCC speed step 0–126. */
+  /**
+   * DCC speed step 0–126. Commanded, never confirmed — there is no loco
+   * feedback channel (docs/braking.md B7).
+   */
   speed: number;
   direction: Direction;
   /** Map of DCC function number to boolean state. */
@@ -366,6 +369,110 @@ export interface RouteFaultView {
   faultedAt: string;
 }
 
+// ─── Braking (see docs/braking.md) ─────────────────────────────────────────────
+
+/**
+ * One loco's braking-relevant roster data, as `BrakingService` builds it from
+ * `ILayoutRepository.LocoRecord` before handing it to a `StoppingDistanceModel`.
+ */
+export interface BrakingProfile {
+  locoAddress: LocoAddress;
+  maxSpeed: number;
+  /** Dimensionless braking effectiveness 0.0–1.0 (B1). NOT a distance, NOT a rate. */
+  brakingFactor: number;
+}
+
+/** One command in a `BrakingSchedule` (B3). */
+export interface BrakingStep {
+  /** ms after the first step. The first step is always 0. */
+  atOffsetMs: number;
+  speedStep: number;
+  direction: Direction;
+}
+
+/**
+ * A pure, timer-free plan produced by `domain/braking.ts#planBrakingSchedule`
+ * (B3). `LayoutService` (PR B) is what executes it against an `IClock`.
+ */
+export interface BrakingSchedule {
+  locoAddress: LocoAddress;
+  steps: BrakingStep[];
+  /** What the model predicts (B1). Never confirmed (B7). */
+  estimatedStoppingDistanceMm: number;
+  /** estimate + margin (B5). */
+  requiredDistanceMm: number;
+  totalDurationMs: number;
+}
+
+/** Why a `StoppingDistanceModel` could not produce an estimate. */
+export type BrakingModelFault =
+  | { kind: 'invalid-braking-factor'; brakingFactor: number }
+  | { kind: 'invalid-max-speed'; maxSpeed: number }
+  | { kind: 'invalid-speed-step'; commandedSpeedStep: number }
+  | { kind: 'speed-exceeds-max'; commandedSpeedStep: number; maxSpeed: number }
+  | { kind: 'speed-direction-mismatch'; commandedSpeedStep: number; direction: Direction };
+
+/**
+ * Every reason a braking plan may be refused. Following the `RouteRejection`
+ * precedent (`docs/pathfinding.md` P6), this deliberately mixes domain- and
+ * service-produced kinds so callers see one refusal vocabulary regardless of
+ * which layer detected the problem.
+ */
+export type BrakingRefusal =
+  | { kind: 'model-unavailable'; fault: BrakingModelFault }
+  | { kind: 'already-stopped'; locoAddress: LocoAddress }
+  | { kind: 'insufficient-distance'; requiredMm: number; availableMm: number }
+  | { kind: 'unmeasured-track'; edgeId: BlockEdgeId }
+  | { kind: 'unknown-edge'; edgeId: BlockEdgeId }
+  | { kind: 'target-behind-train'; targetIndex: number; confirmedIndex: number }
+  | { kind: 'unknown-loco'; locoAddress: LocoAddress }
+  | { kind: 'ambiguous-loco'; locoAddress: LocoAddress; count: number }
+  | { kind: 'unknown-loco-state'; locoAddress: LocoAddress }
+  | { kind: 'system-not-online'; status: SystemStatus }
+  | { kind: 'auto-not-permitted'; status: SystemStatus; mode: SystemMode }
+  | { kind: 'manual-authority'; routeId: RouteId }
+  | { kind: 'route-not-active'; routeId: RouteId; status: RouteStatus }
+  | { kind: 'command-rejected'; message: string };
+
+/**
+ * A latched fault against one loco's braking run (B10), keyed by
+ * `locoAddress` in `SystemHealth.brakingFaults` — same posture as
+ * `SensorFault`/`RouteFault`. `speed-command-rejected` is a `setSpeed`
+ * rejection mid-ramp (B6); `overrun` is B5's armed-expectation check firing.
+ */
+export type BrakingFaultKind = 'speed-command-rejected' | 'overrun';
+
+export interface BrakingFault {
+  locoAddress: LocoAddress;
+  kind: BrakingFaultKind;
+  reason: string;
+  routeId: RouteId | null;
+  blockId: BlockId | null;
+  faultedAt: Date;
+}
+
+/** Wire projection of `BrakingFault`, mirroring `SensorFaultView`/`RouteFaultView`. Dates as ISO 8601. */
+export interface BrakingFaultView {
+  locoAddress: LocoAddress;
+  kind: BrakingFaultKind;
+  reason: string;
+  routeId: RouteId | null;
+  blockId: BlockId | null;
+  faultedAt: string;
+}
+
+/**
+ * Blocks a braking run has told its train not to reach (B5). A snapshot
+ * taken at run start, not a live query — the overrun check needs no
+ * reservation lookup and cannot race the release path in `recomputeBlock`.
+ */
+export interface BrakingStopExpectation {
+  locoAddress: LocoAddress;
+  routeId: RouteId;
+  targetIndex: number;
+  forbiddenBlockIds: BlockId[];
+}
+
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
 export interface ThrottleCommand {
@@ -404,7 +511,8 @@ export type LayoutEvent =
       payload: { status: SystemStatus; mode: SystemMode; reason: string | null };
     }
   | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
-  | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } };
+  | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
+  | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } };
 
 // ─── WebSocket Message Shapes ─────────────────────────────────────────────────
 
