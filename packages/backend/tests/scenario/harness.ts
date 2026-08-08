@@ -128,9 +128,23 @@ function makeInMemoryRepo(): InMemoryLayoutRepository {
     listSensors: vi.fn().mockImplementation(async (layoutId: string) =>
       sensors.filter((s) => s.layoutId === layoutId),
     ),
-    createSensor: vi.fn(),
-    updateSensor: vi.fn(),
-    deleteSensor: vi.fn(),
+    createSensor: vi.fn().mockImplementation(async (data: Omit<SensorRecord, 'id'>) => {
+      const created: SensorRecord = { id: randomUUID(), ...data };
+      sensors = [...sensors, created];
+      return created;
+    }),
+    updateSensor: vi
+      .fn()
+      .mockImplementation(async (id: string, data: Partial<Omit<SensorRecord, 'id' | 'layoutId'>>) => {
+        const index = sensors.findIndex((s) => s.id === id);
+        if (index === -1) throw new Error(`Sensor ${id} not found after update`);
+        const updated = { ...sensors[index], ...data };
+        sensors = sensors.map((s, i) => (i === index ? updated : s));
+        return updated;
+      }),
+    deleteSensor: vi.fn().mockImplementation(async (id: string) => {
+      sensors = sensors.filter((s) => s.id !== id);
+    }),
 
     listGridTiles: vi.fn().mockResolvedValue([] as GridTileRecord[]),
     upsertGridTile: vi.fn(),
@@ -277,8 +291,14 @@ export interface ScenarioHarness {
    * `repo.listSensors`) and flushes microtasks so `LayoutService`'s
    * (now-async) sensor handling — including the `onOccupancyChange` call
    * into `ReservationService` — has settled before this resolves.
+   * `options.retained` defaults to `false`; pass `true` to exercise the
+   * broker reconnect-replay case (see docs/sensor-fault-recovery.md D1/D8).
    */
-  sensorReports(sensorId: string, state: 'occupied' | 'clear'): Promise<void>;
+  sensorReports(
+    sensorId: string,
+    state: 'occupied' | 'clear',
+    options?: { retained?: boolean },
+  ): Promise<void>;
 }
 
 /**
@@ -286,14 +306,26 @@ export interface ScenarioHarness {
  * sensors, or locos) — callers seed state via `repo._setBlocks` /
  * `_setPoints` / `repo._setSensors` / `repo._setLocos` /
  * `repo.createBlockEdge` / `repo._insertRawEdgeRow` before calling `start()`.
+ *
+ * `options.clearAfterValidReadings` is passed straight through to
+ * `LayoutService`'s constructor (DD8) — a scenario can use a small
+ * threshold (e.g. 2) rather than three round trips of `sensorReports`.
  */
-export function createScenarioHarness(): ScenarioHarness {
+export function createScenarioHarness(options?: { clearAfterValidReadings?: number }): ScenarioHarness {
   const repo = makeInMemoryRepo();
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
   const stateManager = new LayoutStateManager(LAYOUT_ID);
   const reservationService = new ReservationService(repo, stateManager, silentLogger);
-  const service = new LayoutService(dcc, mqtt, repo, stateManager, reservationService, silentLogger);
+  const service = new LayoutService(
+    dcc,
+    mqtt,
+    repo,
+    stateManager,
+    reservationService,
+    silentLogger,
+    options,
+  );
   const topologyService = new TopologyService(
     repo,
     () => service.reloadTopology(),
@@ -314,11 +346,19 @@ export function createScenarioHarness(): ScenarioHarness {
     events,
     clock: () => new Date(),
     start: () => service.start(LAYOUT_ID),
-    sensorReports: async (sensorId: string, state: 'occupied' | 'clear') => {
+    sensorReports: async (
+      sensorId: string,
+      state: 'occupied' | 'clear',
+      readingOptions?: { retained?: boolean },
+    ) => {
       const sensors = await repo.listSensors(LAYOUT_ID);
       const sensor = sensors.find((s) => s.id === sensorId);
       if (!sensor) throw new Error(`sensorReports: unknown sensor ${sensorId}`);
-      mqtt.simulateIncoming(sensor.mqttTopic, { state, updatedAt: new Date().toISOString() });
+      mqtt.simulateIncoming(
+        sensor.mqttTopic,
+        { state, updatedAt: new Date().toISOString() },
+        readingOptions?.retained ?? false,
+      );
       // handleSensorReading is fire-and-forget from the MQTT handler's
       // perspective (void-returning callback) — one microtask flush is
       // enough for its internal awaits (all against the in-memory repo

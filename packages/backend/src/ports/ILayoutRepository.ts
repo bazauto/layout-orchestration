@@ -54,6 +54,8 @@ export interface SensorRecord {
   blockId: string | null;
   /** The MQTT topic this sensor publishes its reading to. */
   mqttTopic: string;
+  /** Whether the system trusts this sensor at all (see docs/sensor-fault-recovery.md D1/D3). */
+  inService: boolean;
 }
 
 export interface GridTileRecord {

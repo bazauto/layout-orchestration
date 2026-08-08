@@ -225,7 +225,7 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
       {feedback && <p style={s.error}>{feedback}</p>}
       <table style={s.table}>
         <thead><tr>
-          {['Name', 'Type', 'Block', 'MQTT Topic', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
+          {['Name', 'Type', 'Block', 'In service', 'MQTT Topic', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
         </tr></thead>
         <tbody>
           {sensors.map((ss) => (
@@ -252,6 +252,21 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
                   <option value="">— none —</option>
                   {blocks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
+              </td>
+              <td style={s.td}>
+                {/*
+                  Admin-only (requireAdmin already gates PUT .../sensors/:id
+                  on the backend): out-of-service is a persistent config
+                  change, not a driving action — #34 D5. Unchecking this
+                  clears any latched fault for the sensor and unsubscribes it;
+                  checking it starts clean, with no fault and no reading
+                  (docs/sensor-fault-recovery.md D5's "not a regression").
+                */}
+                <input
+                  type="checkbox"
+                  checked={ss.inService}
+                  onChange={(e) => runUpdate(ops.updateSensor(ss.id, { inService: e.target.checked }))}
+                />
               </td>
               <td style={s.tdMono}>
                 <EditableCell value={ss.mqttTopic} onSave={(v) => ops.updateSensor(ss.id, { mqttTopic: v })} />

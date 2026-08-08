@@ -44,6 +44,11 @@ export async function registerWebSocket(
         points: Object.fromEntries(state.points),
         locos: Object.fromEntries(state.locos),
         routes: Object.fromEntries(state.routes),
+        // DD10 (docs/sensor-fault-recovery.md): only the derived fault set is
+        // surfaced here. `state.sensors` (per-sensor last-reading) is
+        // deliberately NOT included — it is diagnostic runtime state nothing
+        // renders. Do not "complete" this snapshot with it later.
+        sensorFaults: layoutService.getSensorFaults(),
       },
     };
     socket.send(JSON.stringify(snapshot));

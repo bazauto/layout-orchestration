@@ -14,7 +14,9 @@ import {
   LocoRecord,
   PointCondition,
   PointRecord,
+  SensorFaultView,
   SensorRecord,
+  SystemStatus,
   TopologyStatus,
   TopologyViolation,
 } from '../types';
@@ -128,6 +130,15 @@ export interface DeleteBlockResult {
 export interface DeletePointResult {
   ok: boolean;
   message?: string;
+}
+
+/** Response of `POST /sensors/:id/acknowledge-fault` (#34) — see `docs/sensor-fault-recovery.md` D1/D5. */
+export interface AcknowledgeFaultResponse {
+  sensorId: string;
+  cleared: true;
+  systemStatus: SystemStatus;
+  safeStopReason: string | null;
+  faults: SensorFaultView[];
 }
 
 export function useLayoutConfig(layoutId: string | null) {
@@ -257,7 +268,13 @@ export function useLayoutConfig(layoutId: string | null) {
 
   const updateSensor = async (
     id: string,
-    data: { name?: string; type?: 'block_detection' | 'ir_position'; blockId?: string | null; mqttTopic?: string },
+    data: {
+      name?: string;
+      type?: 'block_detection' | 'ir_position';
+      blockId?: string | null;
+      mqttTopic?: string;
+      inService?: boolean;
+    },
   ): Promise<MutationResult<SensorRecord>> => {
     const result = await mutate<SensorRecord>(`/api/layouts/${layoutId}/sensors/${id}`, {
       method: 'PUT',
@@ -273,6 +290,16 @@ export function useLayoutConfig(layoutId: string | null) {
     if (result.ok) await refresh();
     return result;
   };
+
+  // Deliberately does NOT call `refresh()` on success — a fault is not
+  // config, and the authoritative update arrives over the WS `SENSOR_FAULTS`
+  // frame (#34). `mutate()` already surfaces the 409 body's `error` as
+  // `message`, which is exactly what the operator must see when the fault
+  // isn't armed yet or has already been cleared.
+  const acknowledgeSensorFault = async (sensorId: string): Promise<MutationResult<AcknowledgeFaultResponse>> =>
+    mutate<AcknowledgeFaultResponse>(`/api/layouts/${layoutId}/sensors/${sensorId}/acknowledge-fault`, {
+      method: 'POST',
+    });
 
   const createLoco = async (
     name: string,
@@ -359,6 +386,7 @@ export function useLayoutConfig(layoutId: string | null) {
     createSensor,
     updateSensor,
     deleteSensor,
+    acknowledgeSensorFault,
     createLoco,
     updateLoco,
     deleteLoco,

@@ -20,7 +20,13 @@ Implemented:
 - Topology validation with Safe-Stop on an invalid graph, and operator recovery via edge authoring
 - Safe-Stop on a malformed sensor payload (a message on a `sensor/*/reading` topic that
   fails Zod validation, including a non-JSON payload), naming the sensor and topic in the
-  reason, with no threshold or auto-clear
+  reason — latched per sensor (`SystemHealth.sensorFaults`, keyed so acknowledging one
+  fault never silently clears another the operator was never told about), with two
+  operator recovery paths: three consecutive valid readings arm an acknowledge, or the
+  sensor can be marked out of service — see `docs/sensor-fault-recovery.md`
+- Block occupancy is derived from every sensor registered against a block, not
+  last-write-wins — an `ir_position` sensor may raise occupancy but never clear it on its
+  own, only a `block_detection` sensor can (`domain/occupancy.ts`)
 - Route reservation and locking engine — grant/cancel/suspend/resume over an
   explicit ordered path, exclusive block/point locks with progressive
   release, Safe-Stop suspension and restart recovery — see `docs/route-locking.md`
@@ -153,7 +159,10 @@ Current automated coverage includes:
   and role-enforcement paths (logging in for real via Fastify `inject()`, not
   a bypass) and a real end-to-end authenticated WebSocket upgrade
 - backend scenario tests (`packages/backend/tests/scenario/`) covering topology Safe-Stop
-  and recovery paths, and malformed-sensor-payload Safe-Stop (#27)
+  and recovery paths, malformed-sensor-payload Safe-Stop (#27), and per-sensor fault
+  recovery — latching, premature-recovery refusal, retained-replay exclusion, arming and
+  acknowledge, out-of-service, degraded (IR/detector) operation, and the regression guard
+  that an IR `clear` cannot release a route's holds (#34)
 - Playwright tests for editor happy path, erase flow, keyboard shortcuts,
   no-scrollbar viewport regression, edge authoring, and the login screen
 
@@ -165,10 +174,14 @@ Current automated coverage includes:
 - Mode selection
 - Loco throttle with roster dropdown
 - Live block and point state display
+- Sensor-fault banner: lists every latched fault with its reason and an Acknowledge action
+  (enabled once armed — see `docs/sensor-fault-recovery.md`)
 
 ### Configure
 - CRUD for blocks, sensors, points, locos, and edges
 - Inline editing
+- Sensors tab: an In service toggle per sensor (marking a dead device out of service clears
+  its latched fault and stops the system trusting it)
 - Edge authoring: from/to block and end labels, optional point conditions, length, and an
   "also create reverse edge" shortcut; a violation banner surfaces invalid topology and
   rejected writes without discarding the operator's input
@@ -224,11 +237,19 @@ a deliberate admission-control limit on `POST .../edges` (not a physical layout 
 Westgate Hollow is ~40 edges), enforced only on create and only in `TopologyService`, not
 the database or the load path — see `docs/topology.md`.
 
-A sensor-payload Safe-Stop (#27) is latched: once tripped it is not cleared by an
-unrelated health re-evaluation (e.g. an MQTT/DCC reconnect), and there is no
-"acknowledge and clear" operator action yet — recovery today means restarting the
-backend process, which re-initialises `SystemHealth` from scratch. `websocket`/HTTP
-parse failures on operator-facing requests remain ordinary 4xx/`ERROR` responses, not a
+A sensor-payload Safe-Stop (#27) is latched per sensor: once tripped it is not cleared by
+an unrelated health re-evaluation (e.g. an MQTT/DCC reconnect). Recovery (#34) is now
+possible without a restart, but is narrow by design: an operator may acknowledge a fault
+only after `SENSOR_FAULT_CLEAR_READINGS` (default 3) consecutive valid, non-retained
+readings have armed it, or mark the sensor out of service outright for a device that will
+never publish again. Sharp edges worth knowing: faults are in-memory only and lost on
+restart, with no audit trail of what faulted when; nothing marks a sensor out of service
+automatically, however many times it faults; a sensor that goes *silent* rather than
+malformed is not a fault under this model (a device-liveness gap shared with #25, decided
+together later); and a block with no in-service sensor able to determine it reads
+`unknown` indefinitely — no route may be granted over it, and none can resume through it,
+for as long as that is true (see docs/sensor-fault-recovery.md D6). `websocket`/HTTP parse
+failures on operator-facing requests remain ordinary 4xx/`ERROR` responses, not a
 Safe-Stop — see the fail-safe rule in `docs/mqtt-contract.md`, which applies only to
 sensor and control topics.
 
@@ -244,10 +265,10 @@ Every block/point/sensor/loco create/update/delete in `useLayoutConfig.ts` now
 surfaces a failed save instead of discarding the response — matching how the Edges
 tab has always handled a rejected write (#22).
 
-The `blocks` and `sensors` `PUT` handlers still have no runtime Zod validation —
-they declare a typed body and nothing more, and that type is erased at compile
-time (#36). `edges` and `points` validate with `.strict()` schemas in
-`services/validation.ts`; those two predate the convention and are the outliers.
+The `blocks` `PUT` handler still has no runtime Zod validation — it declares a typed
+body and nothing more, and that type is erased at compile time (#36). `edges`, `points`,
+and now `sensors` validate with `.strict()` schemas in `services/validation.ts`; `blocks`
+predates the convention and is the remaining outlier.
 
 ## Next Milestones
 

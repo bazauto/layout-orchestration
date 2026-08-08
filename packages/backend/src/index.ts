@@ -117,7 +117,15 @@ async function main() {
   // port (D10).
   const stateManager = new LayoutStateManager(activeLayoutId);
   const reservationService = new ReservationService(repo, stateManager, adapterLogger);
-  const layoutService = new LayoutService(dcc, mqtt, repo, stateManager, reservationService, adapterLogger);
+  const layoutService = new LayoutService(
+    dcc,
+    mqtt,
+    repo,
+    stateManager,
+    reservationService,
+    adapterLogger,
+    config.sensors,
+  );
   const topologyService = new TopologyService(
     repo,
     () => layoutService.reloadTopology(),

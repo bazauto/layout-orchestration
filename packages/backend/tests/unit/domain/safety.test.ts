@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   evaluateSafeStop,
   evaluateSystemSafeStop,
+  oldestSensorFault,
   canIssueAutoCommand,
   canIssueManualCommand,
   canGrantRoute,
@@ -10,6 +11,7 @@ import {
   isValidSpeed,
   isValidLocoAddress,
 } from '../../../src/domain/safety';
+import { SensorFault } from '../../../src/domain/types';
 
 describe('evaluateSafeStop', () => {
   it('returns no safe-stop when both connections are healthy', () => {
@@ -36,6 +38,44 @@ describe('evaluateSafeStop', () => {
   });
 });
 
+function fault(overrides: Partial<SensorFault> = {}): SensorFault {
+  return {
+    sensorId: 's1',
+    reason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+    topic: 'layout/test/sensor/s1/reading',
+    faultedAt: new Date('2026-01-01T00:00:00.000Z'),
+    consecutiveValidReadings: 0,
+    ...overrides,
+  };
+}
+
+describe('oldestSensorFault', () => {
+  it('returns null for an empty collection', () => {
+    expect(oldestSensorFault({})).toBeNull();
+  });
+
+  it('returns the single fault when there is exactly one', () => {
+    const f = fault();
+    expect(oldestSensorFault({ s1: f })).toBe(f);
+  });
+
+  it('returns the fault with the earliest faultedAt when there are several', () => {
+    const older = fault({ sensorId: 's1', faultedAt: new Date('2026-01-01T00:00:00.000Z') });
+    const newer = fault({ sensorId: 's2', faultedAt: new Date('2026-01-02T00:00:00.000Z') });
+    expect(oldestSensorFault({ s2: newer, s1: older })).toBe(older);
+  });
+
+  it('resolves a tied faultedAt to insertion order (first-inserted wins)', () => {
+    const tiedAt = new Date('2026-01-01T00:00:00.000Z');
+    const first = fault({ sensorId: 's1', faultedAt: tiedAt });
+    const second = fault({ sensorId: 's2', faultedAt: tiedAt });
+    const faults: Record<string, SensorFault> = {};
+    faults.s1 = first;
+    faults.s2 = second;
+    expect(oldestSensorFault(faults)).toBe(first);
+  });
+});
+
 describe('evaluateSystemSafeStop', () => {
   it('returns no safe-stop when connections, topology, sensor health, and route recovery are all healthy', () => {
     const result = evaluateSystemSafeStop({
@@ -43,8 +83,7 @@ describe('evaluateSystemSafeStop', () => {
       dccConnected: true,
       topologyValid: true,
       topologyReason: null,
-      sensorFault: false,
-      sensorFaultReason: null,
+      sensorFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(false);
@@ -57,8 +96,7 @@ describe('evaluateSystemSafeStop', () => {
       dccConnected: true,
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
-      sensorFault: false,
-      sensorFaultReason: null,
+      sensorFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -73,8 +111,7 @@ describe('evaluateSystemSafeStop', () => {
       dccConnected: true,
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
-      sensorFault: false,
-      sensorFaultReason: null,
+      sensorFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -87,8 +124,7 @@ describe('evaluateSystemSafeStop', () => {
       dccConnected: true,
       topologyValid: true,
       topologyReason: null,
-      sensorFault: true,
-      sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+      sensorFaults: { s1: fault() },
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -103,8 +139,7 @@ describe('evaluateSystemSafeStop', () => {
       dccConnected: true,
       topologyValid: true,
       topologyReason: null,
-      sensorFault: true,
-      sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+      sensorFaults: { s1: fault() },
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -117,12 +152,81 @@ describe('evaluateSystemSafeStop', () => {
       dccConnected: true,
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
-      sensorFault: true,
-      sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+      sensorFaults: { s1: fault() },
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toMatch(/self-loop/i);
+  });
+
+  it('reports the OLDEST of two faults with distinct faultedAt values', () => {
+    const older = fault({
+      sensorId: 's1',
+      reason: 'Malformed sensor payload from sensor "s1" on topic "t1": older',
+      faultedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    const newer = fault({
+      sensorId: 's2',
+      reason: 'Malformed sensor payload from sensor "s2" on topic "t2": newer',
+      faultedAt: new Date('2026-01-02T00:00:00.000Z'),
+    });
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: { s2: newer, s1: older },
+      recoveredRouteCount: 0,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/older/);
+  });
+
+  it('resolves two faults with an identical faultedAt to the first-inserted (deterministic tie-break)', () => {
+    const tiedAt = new Date('2026-01-01T00:00:00.000Z');
+    const first = fault({
+      sensorId: 's1',
+      reason: 'Malformed sensor payload from sensor "s1" on topic "t1": first',
+      faultedAt: tiedAt,
+    });
+    const second = fault({
+      sensorId: 's2',
+      reason: 'Malformed sensor payload from sensor "s2" on topic "t2": second',
+      faultedAt: tiedAt,
+    });
+    const sensorFaults: Record<string, SensorFault> = {};
+    sensorFaults.s1 = first;
+    sensorFaults.s2 = second;
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults,
+      recoveredRouteCount: 0,
+    });
+    expect(result.reason).toMatch(/first/);
+  });
+
+  it('still stops with the survivor reason once one of two faults is removed', () => {
+    // s1 (which would have had an EARLIER faultedAt than s2) is deliberately
+    // absent from `sensorFaults` below — already resolved/removed, as if by
+    // acknowledgeSensorFault or an out-of-service transition.
+    const s2 = fault({
+      sensorId: 's2',
+      reason: 'Malformed sensor payload from sensor "s2" on topic "t2": s2 reason',
+      faultedAt: new Date('2026-01-02T00:00:00.000Z'),
+    });
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: { s2 }, // s1 already resolved/removed
+      recoveredRouteCount: 0,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/s2 reason/);
   });
 
   it('stops with a recovered-route reason when connections, topology, and sensor health are all healthy but routes survived a restart (D9)', () => {
@@ -131,8 +235,7 @@ describe('evaluateSystemSafeStop', () => {
       dccConnected: true,
       topologyValid: true,
       topologyReason: null,
-      sensorFault: false,
-      sensorFaultReason: null,
+      sensorFaults: {},
       recoveredRouteCount: 2,
     });
     expect(result.shouldStop).toBe(true);
@@ -145,8 +248,7 @@ describe('evaluateSystemSafeStop', () => {
       dccConnected: true,
       topologyValid: true,
       topologyReason: null,
-      sensorFault: true,
-      sensorFaultReason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+      sensorFaults: { s1: fault() },
       recoveredRouteCount: 1,
     });
     expect(result.shouldStop).toBe(true);

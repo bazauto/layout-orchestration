@@ -198,4 +198,92 @@ describe('LayoutStateManager', () => {
       expect(manager.listRoutes()).toEqual([]);
     });
   });
+
+  describe('sensor observations (see docs/sensor-fault-recovery.md)', () => {
+    it('registerSensor creates an observation with no fault and no reading', () => {
+      const created = manager.registerSensor({
+        sensorId: 's1',
+        blockId: 'b1',
+        type: 'block_detection',
+        inService: true,
+      });
+      expect(created).toEqual({
+        sensorId: 's1',
+        blockId: 'b1',
+        type: 'block_detection',
+        inService: true,
+        faulted: false,
+        lastReading: null,
+        lastReadingAt: null,
+      });
+    });
+
+    it('re-registering preserves faulted and lastReading while updating blockId/type/inService', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+      manager.recordSensorReading('s1', 'occupied', new Date('2026-01-01T00:00:00.000Z'));
+      manager.setSensorFaulted('s1', true);
+
+      const reRegistered = manager.registerSensor({
+        sensorId: 's1',
+        blockId: 'b2',
+        type: 'ir_position',
+        inService: false,
+      });
+
+      expect(reRegistered.blockId).toBe('b2');
+      expect(reRegistered.type).toBe('ir_position');
+      expect(reRegistered.inService).toBe(false);
+      expect(reRegistered.faulted).toBe(true);
+      expect(reRegistered.lastReading).toBe('occupied');
+    });
+
+    it('unregisterSensor removes the observation', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+      manager.unregisterSensor('s1');
+      expect(manager.getSensorObservation('s1')).toBeUndefined();
+    });
+
+    it('listSensorObservationsForBlock returns only that block’s sensors, [] for a block with none', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+      manager.registerSensor({ sensorId: 's2', blockId: 'b2', type: 'block_detection', inService: true });
+      expect(manager.listSensorObservationsForBlock('b1').map((o) => o.sensorId)).toEqual(['s1']);
+      expect(manager.listSensorObservationsForBlock('b3')).toEqual([]);
+    });
+
+    it('recordSensorReading sets lastReading and lastReadingAt', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+      const at = new Date('2026-01-01T00:00:00.000Z');
+      manager.recordSensorReading('s1', 'clear', at);
+      const observation = manager.getSensorObservation('s1');
+      expect(observation?.lastReading).toBe('clear');
+      expect(observation?.lastReadingAt).toBe(at);
+    });
+
+    it('clearSensorReading nulls both lastReading and lastReadingAt', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+      manager.recordSensorReading('s1', 'occupied', new Date());
+      manager.clearSensorReading('s1');
+      const observation = manager.getSensorObservation('s1');
+      expect(observation?.lastReading).toBeNull();
+      expect(observation?.lastReadingAt).toBeNull();
+    });
+
+    it('setSensorFaulted toggles faulted without touching the reading', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+      manager.recordSensorReading('s1', 'occupied', new Date());
+      manager.setSensorFaulted('s1', true);
+      expect(manager.getSensorObservation('s1')?.faulted).toBe(true);
+      expect(manager.getSensorObservation('s1')?.lastReading).toBe('occupied');
+      manager.setSensorFaulted('s1', false);
+      expect(manager.getSensorObservation('s1')?.faulted).toBe(false);
+    });
+
+    it('every mutator is a no-op on an unknown sensorId — must not throw, must not create a phantom observation', () => {
+      expect(() => manager.recordSensorReading('ghost', 'occupied', new Date())).not.toThrow();
+      expect(() => manager.clearSensorReading('ghost')).not.toThrow();
+      expect(() => manager.setSensorFaulted('ghost', true)).not.toThrow();
+      expect(() => manager.unregisterSensor('ghost')).not.toThrow();
+      expect(manager.getSensorObservation('ghost')).toBeUndefined();
+    });
+  });
 });

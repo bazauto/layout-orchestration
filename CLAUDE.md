@@ -166,6 +166,41 @@ authentication, same posture as the WebSocket driving commands. Full design reco
 `domain/routeLocking.ts`, `services/ReservationService.ts`, or the route-lock guard in
 `services/TopologyService.ts`.
 
+**Sensor-fault recovery has landed (#34).** `SystemHealth.sensorFault`/`sensorFaultReason`
+(the scalar pair #27 introduced) are gone, replaced by a keyed collection,
+`SystemHealth.sensorFaults: Record<SensorId, SensorFault>` — one latched fault per sensor,
+so acknowledging a fault the operator can see never silently clears one they were never
+told about (D2); `evaluateSystemSafeStop` reports the *oldest* fault's reason and keeps its
+existing priority order (MQTT, DCC, topology, sensor faults, then recovered routes).
+Block occupancy is now **derived**, not last-write-wins:
+`domain/occupancy.ts#deriveBlockOccupancy` computes it fresh from every sensor currently
+registered against a block, and an `ir_position` sensor may only ever raise occupancy,
+never lower it — before this, any sensor carrying a `blockId` could clear the whole block
+on its own say-so, which is exactly the "guess a train's position" failure safety rule 1
+forbids (D3). That derivation is also now the ONLY thing that feeds
+`ReservationService.onOccupancyChange` (`LayoutService.recomputeBlock`) — closing a real
+seam with route locking: an IR `clear` can no longer fire progressive release or
+un-reserve track under a train, because it never reaches the reservation engine as the
+block's occupancy in the first place (see the cross-reference in `docs/route-locking.md`
+D5 and `docs/sensor-fault-recovery.md` D6). `sensors.in_service`
+(migration `0005_dusty_iron_lad.sql`, a single `ALTER TABLE ADD COLUMN`, default `true`)
+plus `parseSensorRow` (full-row Zod, matching `parseBlockEdgeRow`/`parseUserRow`) join
+`SensorRecord`; `MqttMessageHandler` gained a third `retained` parameter (D1/D8) so a
+broker's retained replay on reconnect/subscribe can never count toward a fault's
+recovery-arming threshold. `LayoutService` gained `acknowledgeSensorFault`,
+`createSensorConfig`/`updateSensorConfig`/`deleteSensorConfig`, and `getSensorFaults`; two
+new REST routes, `POST .../sensors/:id/acknowledge-fault` (any authenticated role — the
+deliberate mirror of `POST /api/emergency-stop`'s deliberate lack of auth, since this one
+moves the system OUT of Safe-Stop rather than into it) and
+`GET .../sensor-faults`, alongside `requireAdmin` on the existing sensor config routes,
+which now delegate to `LayoutService` instead of calling the repository directly. A
+`SENSOR_FAULTS` `LayoutEvent` is forwarded over `/ws` the same way `BLOCK_STATE` etc.
+already are, and the WS `STATE_SNAPSHOT` gains `sensorFaults` (deliberately not the raw
+per-sensor observation map — diagnostic state nothing renders). Full design record
+(D1–D8, plus the Q1/Q2 additions this PR recorded) is `docs/sensor-fault-recovery.md`;
+read it before touching `domain/occupancy.ts`, `LayoutService`'s sensor-handling methods,
+or `domain/safety.ts`'s `sensorFaults` handling.
+
 Phase 3 was gated on #3 (locking semantics) alone; that gate is now clear. Pathfinding
 (#4) takes an explicit ordered edge list from `ReservationService.grant` — #3 deliberately
 does not search the graph. Per-loco braking (#6) and collision avoidance (#7) follow #4.
@@ -233,8 +268,11 @@ malformed message trips it. `SystemHealth` gained `sensorFault`/
 `topologyValid`/`topologyReason`; `evaluateSystemSafeStop`'s priority order is
 now MQTT, then DCC, then topology, then sensor fault. The fault is latched —
 nothing clears it automatically, so an unrelated MQTT/DCC reconnect can't
-silently undo it — and there is still no "acknowledge and clear" operator
-action; recovery today means restarting the backend process. Audited the
+silently undo it. (`sensorFault`/`sensorFaultReason` and the "no acknowledge and
+clear; recovery means restarting the backend" gap described here are #27's
+original shape — #34, above, replaced the scalar pair with a keyed
+`sensorFaults` collection and closed the gap with `acknowledgeSensorFault`
+and out-of-service; see `docs/sensor-fault-recovery.md`.) Audited the
 other inbound-parse warn-and-return sites while in there: `MqttAdapter`'s raw
 `JSON.parse` failure (`adapters/mqtt/`) had the *same* bug one layer up —
 malformed non-JSON on a sensor topic was dropped before it ever reached

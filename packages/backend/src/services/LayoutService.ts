@@ -33,8 +33,12 @@ import {
   RouteId,
   RouteReservation,
   RouteStatus,
+  SensorFault,
+  SensorFaultView,
+  SensorId,
   SetModeCommand,
   SystemMode,
+  SystemStatus,
   ThrottleCommand,
 } from '../domain/types';
 import { LayoutStateManager } from '../domain/layoutState';
@@ -47,14 +51,27 @@ import {
   isValidSpeed,
   SystemHealth,
 } from '../domain/safety';
+import { deriveBlockOccupancy, isSensorFaultArmed, toSensorFaultView } from '../domain/occupancy';
 import { TrackGraph } from '../domain/graph';
 import { ReservationRequest } from '../domain/routeLocking';
 import { IDccController } from '../ports/IDccController';
 import { IMqttAdapter } from '../ports/IMqttAdapter';
-import { ILayoutRepository } from '../ports/ILayoutRepository';
-import { sensorReadingSchema } from './validation';
+import { ILayoutRepository, SensorRecord } from '../ports/ILayoutRepository';
+import { SensorCreateInput, sensorReadingSchema, SensorUpdateInput } from './validation';
 import { loadTopology, TopologyLoadResult } from './topologyLoader';
 import { GrantOutcome, ReservationOutcome, ReservationService, ResumeResult } from './ReservationService';
+
+/**
+ * D1 (docs/sensor-fault-recovery.md): consecutive valid, non-retained
+ * readings a faulted sensor must publish before its fault becomes
+ * acknowledgeable. Layout-wide, not per-sensor (deferred — see the doc's
+ * Deferred section).
+ */
+export interface LayoutServiceOptions {
+  clearAfterValidReadings: number;
+}
+
+export const DEFAULT_LAYOUT_SERVICE_OPTIONS: LayoutServiceOptions = { clearAfterValidReadings: 3 };
 
 export interface LayoutServiceLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -73,6 +90,40 @@ export class PointLockedError extends Error {
   }
 }
 
+/** Thrown by sensor-config/fault-recovery methods when a sensor id does not resolve in the given layout (see docs/sensor-fault-recovery.md). */
+export class SensorNotFoundError extends Error {
+  constructor(readonly sensorId: string) {
+    super(`Sensor ${sensorId} not found`);
+    this.name = 'SensorNotFoundError';
+  }
+}
+
+/** Thrown by `acknowledgeSensorFault` when the named sensor has no fault latched. */
+export class SensorNotFaultedError extends Error {
+  constructor(readonly sensorId: string) {
+    super(`Sensor ${sensorId} has no active fault`);
+    this.name = 'SensorNotFaultedError';
+  }
+}
+
+/** Thrown by `acknowledgeSensorFault` when the fault has not yet accumulated `clearAfterValidReadings` consecutive valid readings (D1). */
+export class SensorFaultNotArmedError extends Error {
+  constructor(
+    readonly sensorId: string,
+    readonly consecutiveValidReadings: number,
+    readonly requiredValidReadings: number,
+  ) {
+    super(
+      `Sensor "${sensorId}" fault is not yet armed: ${requiredValidReadings - consecutiveValidReadings} more consecutive valid reading(s) required`,
+    );
+    this.name = 'SensorFaultNotArmedError';
+  }
+
+  get outstanding(): number {
+    return this.requiredValidReadings - this.consecutiveValidReadings;
+  }
+}
+
 export class LayoutService extends EventEmitter {
   private layoutId: LayoutId | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -81,8 +132,7 @@ export class LayoutService extends EventEmitter {
     dccConnected: false,
     topologyValid: true,
     topologyReason: null,
-    sensorFault: false,
-    sensorFaultReason: null,
+    sensorFaults: {},
     recoveredRouteCount: 0,
   };
   private graph: TrackGraph | null = null;
@@ -90,6 +140,7 @@ export class LayoutService extends EventEmitter {
    * operator has not yet cancelled or resumed. Backs `SystemHealth.recoveredRouteCount`;
    * emptying this set is what lets the D9 Safe-Stop latch clear. */
   private recoveredRouteIds = new Set<RouteId>();
+  private readonly options: LayoutServiceOptions;
 
   constructor(
     private readonly dcc: IDccController,
@@ -98,8 +149,21 @@ export class LayoutService extends EventEmitter {
     private readonly stateManager: LayoutStateManager,
     private readonly reservations: ReservationService,
     private readonly log: LayoutServiceLogger,
+    options?: Partial<LayoutServiceOptions>,
   ) {
     super();
+    this.options = { ...DEFAULT_LAYOUT_SERVICE_OPTIONS, ...options };
+    // A nonsense safety threshold must fail at boot, loudly, where it cannot
+    // move hardware — not silently fall back to a default at the first
+    // sensor fault (DD8).
+    if (
+      !Number.isInteger(this.options.clearAfterValidReadings) ||
+      this.options.clearAfterValidReadings < 1
+    ) {
+      throw new Error(
+        `[LayoutService] clearAfterValidReadings must be an integer >= 1, got ${this.options.clearAfterValidReadings}`,
+      );
+    }
   }
 
   // ─── Lifecycle ───────────────────────────────────────────────────────────────
@@ -433,6 +497,11 @@ export class LayoutService extends EventEmitter {
     return this.graph;
   }
 
+  /** The layout id this service was `start()`-ed with, or `null` before that. Used by the sensor-faults route to refuse a `:layoutId` that is not the running layout. */
+  getLayoutId(): LayoutId | null {
+    return this.layoutId;
+  }
+
   /**
    * Reloads and re-validates the track topology for the running layout,
    * applying Safe-Stop if it is invalid. Called on startup (after blocks and
@@ -512,13 +581,26 @@ export class LayoutService extends EventEmitter {
     const dbSensors = await this.repo.listSensors(layoutId);
 
     for (const sensor of dbSensors) {
-      await this.mqtt.subscribe(sensor.mqttTopic, (payload) => {
-        void this.handleSensorReading(sensor.id, sensor.blockId, sensor.mqttTopic, payload);
+      this.stateManager.registerSensor({
+        sensorId: sensor.id,
+        blockId: sensor.blockId,
+        type: sensor.type,
+        inService: sensor.inService,
+      });
+      // DD4/Q1 (docs/sensor-fault-recovery.md): an out-of-service sensor is
+      // never subscribed at all — this is the PRIMARY mechanism that makes
+      // out-of-service an escape hatch from a bad device. The registry
+      // check inside handleSensorReading below is defence in depth, for a
+      // handler that somehow still fires (e.g. a stale subscription).
+      if (!sensor.inService) continue;
+      await this.mqtt.subscribe(sensor.mqttTopic, (payload, topic, retained) => {
+        void this.handleSensorReading(sensor.id, topic, payload, retained);
       });
     }
 
     this.log.info('[LayoutService] Sensor subscriptions registered', {
-      count: dbSensors.length,
+      count: dbSensors.filter((s) => s.inService).length,
+      total: dbSensors.length,
     });
   }
 
@@ -527,55 +609,173 @@ export class LayoutService extends EventEmitter {
   /**
    * A malformed sensor payload is a Fail-Safe Trigger (mqtt-contract.md
    * §Fail-Safe Triggers item 3 / CLAUDE.md safety rule 3), not a logged
-   * warning: a sensor that has started sending garbage is indistinguishable,
-   * from the domain's point of view, from one that has silently stopped
-   * updating — and occupancy state that has silently stopped updating is
-   * indistinguishable from track that is genuinely clear. Trips immediately
-   * on the first malformed message, via the same `evaluateAndApplySafeStop`
-   * path as a connection or topology failure — no parallel mechanism, no
-   * tolerance/threshold. Block state is never touched on this path; the
-   * `return` happens before `stateManager.updateBlockOccupancy` is reached.
-   * Async because a *valid* payload continues on into
-   * `reservations.onOccupancyChange` (see docs/route-locking.md) — the
-   * malformed-payload branch below is itself fully synchronous.
+   * warning. Trips (or re-latches — DD5) a per-sensor fault via
+   * `tripSensorFault`, which is what enters Safe-Stop.
+   *
+   * The order below is load-bearing (see docs/sensor-fault-recovery.md D1/Q1):
+   *  1. Registry lookup. A subscription firing for a sensor the state
+   *     manager has never registered is a bug, not a layout hazard —
+   *     dropped defensively, no fault.
+   *  2. In-service check, BEFORE the Zod parse. An out-of-service sensor's
+   *     payload — malformed or not — never trips a fault: D1 says
+   *     out-of-service means the system stops trusting the sensor
+   *     entirely, and a sensor that can still trip the latch is still
+   *     trusted, which would make the escape hatch unusable. This is
+   *     defence in depth; `subscribeSensors` not subscribing at all is the
+   *     primary mechanism (DD4).
+   *  3. Zod parse. Failure trips/re-latches the fault (`tripSensorFault`)
+   *     and returns — block state is never touched by the parse failure
+   *     itself; the de-contribution that DOES happen is inside
+   *     `tripSensorFault` (D4), a deliberate, separate effect.
+   *  4. Fault-counter branch. A VALID reading arriving while the sensor is
+   *     ALREADY faulted counts toward D1's arming threshold (unless
+   *     retained — D1/D8) but never updates occupancy: a faulted sensor
+   *     contributes nothing (D3/DD6).
+   *  5. Occupancy path. Otherwise, record the reading and recompute the
+   *     block's derived occupancy.
    */
   private async handleSensorReading(
     sensorId: string,
-    blockId: string | null,
     topic: string,
     rawPayload: unknown,
+    retained: boolean,
   ): Promise<void> {
-    const result = sensorReadingSchema.safeParse(rawPayload);
-    if (!result.success) {
-      const reason = `Malformed sensor payload from sensor "${sensorId}" on topic "${topic}": ${result.error.message}`;
-      this.log.error('[LayoutService] Invalid sensor payload — entering Safe-Stop', {
+    const obs = this.stateManager.getSensorObservation(sensorId);
+    if (!obs) {
+      this.log.warn('[LayoutService] Sensor reading for an unregistered sensor — dropping', {
         layoutId: this.layoutId,
         sensorId,
-        blockId,
         topic,
-        error: result.error.message,
       });
-      this.health = { ...this.health, sensorFault: true, sensorFaultReason: reason };
-      await this.evaluateAndApplySafeStop();
       return;
     }
 
+    if (!obs.inService) {
+      this.log.warn(
+        '[LayoutService] Sensor reading from an out-of-service sensor — dropping before validation',
+        { layoutId: this.layoutId, sensorId, topic },
+      );
+      return;
+    }
+
+    const result = sensorReadingSchema.safeParse(rawPayload);
+    if (!result.success) {
+      await this.tripSensorFault(sensorId, topic, result.error.message);
+      return;
+    }
+
+    const fault = this.health.sensorFaults[sensorId];
+    if (fault) {
+      if (retained) {
+        // D1/D8: a retained replay is not evidence the sensor is healthy
+        // NOW — it may be the very last (possibly stale) reading from
+        // before it started publishing garbage.
+        this.log.info('[LayoutService] Valid RETAINED reading while faulted — does not count toward arming', {
+          layoutId: this.layoutId,
+          sensorId,
+        });
+        return;
+      }
+      const updatedFault: SensorFault = {
+        ...fault,
+        consecutiveValidReadings: fault.consecutiveValidReadings + 1,
+      };
+      this.health = {
+        ...this.health,
+        sensorFaults: { ...this.health.sensorFaults, [sensorId]: updatedFault },
+      };
+      this.log.info('[LayoutService] Valid reading while faulted — counted toward recovery arming', {
+        layoutId: this.layoutId,
+        sensorId,
+        consecutiveValidReadings: updatedFault.consecutiveValidReadings,
+        requiredValidReadings: this.options.clearAfterValidReadings,
+      });
+      this.emitSensorFaults();
+      return;
+    }
+
+    this.stateManager.recordSensorReading(sensorId, result.data.state, new Date());
+    await this.recomputeBlock(obs.blockId);
+  }
+
+  /**
+   * D2 + D4: latches (or re-latches) the fault, de-contributes the sensor
+   * from its block's derived occupancy, and recomputes that block. Reason
+   * text mirrors #27's original wording (naming the sensor and topic). A
+   * re-fault (DD5) keeps the ORIGINAL `faultedAt`/`reason` — the first
+   * cause — and resets `consecutiveValidReadings` to 0.
+   */
+  private async tripSensorFault(sensorId: SensorId, topic: string, parseErrorMessage: string): Promise<void> {
+    const obs = this.stateManager.getSensorObservation(sensorId);
+    const existing = this.health.sensorFaults[sensorId];
+    const reason = `Malformed sensor payload from sensor "${sensorId}" on topic "${topic}": ${parseErrorMessage}`;
+
+    const fault: SensorFault = existing
+      ? { ...existing, consecutiveValidReadings: 0 }
+      : { sensorId, reason, topic, faultedAt: new Date(), consecutiveValidReadings: 0 };
+
+    this.log.error('[LayoutService] Invalid sensor payload — entering Safe-Stop', {
+      layoutId: this.layoutId,
+      sensorId,
+      blockId: obs?.blockId ?? null,
+      topic,
+      error: parseErrorMessage,
+    });
+
+    this.health = { ...this.health, sensorFaults: { ...this.health.sensorFaults, [sensorId]: fault } };
+    this.stateManager.setSensorFaulted(sensorId, true);
+    this.stateManager.clearSensorReading(sensorId);
+
+    await this.recomputeBlock(obs?.blockId ?? null);
+    await this.evaluateAndApplySafeStop();
+    this.emitSensorFaults();
+  }
+
+  /**
+   * Recomputes a block's derived occupancy (D3, `domain/occupancy.ts`) and
+   * publishes/emits BLOCK_STATE only when it actually changed (DD2) — an IR
+   * `clear` now legitimately changes nothing, and a retained-replay storm
+   * must not spam the bus.
+   *
+   * Also the ONLY place `reservations.onOccupancyChange` is called (see
+   * docs/route-locking.md D5 and the cross-reference in
+   * docs/sensor-fault-recovery.md D6): it is fed the DERIVED occupancy, not
+   * any single sensor's raw reading. That is what stops an `ir_position`
+   * sensor's `clear` from ever reaching the reservation engine as the
+   * block's occupancy — D3 already discards it before this point — so it
+   * can never fire progressive release under a train. A fault-driven
+   * transition to `unknown` needs no special guard here either:
+   * `evaluateOccupancyChange` only acts on `occupied`, or on `clear` when
+   * the block's previous value was `occupied`; `unknown` is inert to it and
+   * is passed through faithfully, not filtered.
+   */
+  private async recomputeBlock(blockId: BlockId | null): Promise<void> {
     if (!blockId) return;
 
-    const previousOccupancy = this.stateManager.getBlock(blockId)?.occupancy ?? 'unknown';
-    const updated = this.stateManager.updateBlockOccupancy(blockId, result.data.state);
+    const derived = deriveBlockOccupancy(this.stateManager.listSensorObservationsForBlock(blockId));
+    const previous = this.stateManager.getBlock(blockId);
+    const previousOccupancy = previous?.occupancy ?? 'unknown';
+    // D4: occupancy no longer determinable -> loco identity is nulled, not
+    // carried forward as a going belief.
+    const locoAddress = derived === 'unknown' ? null : previous?.locoAddress ?? null;
+
+    if (previous && previous.occupancy === derived && previous.locoAddress === locoAddress) {
+      return;
+    }
+
+    const updated = this.stateManager.updateBlockOccupancy(blockId, derived, locoAddress);
     this.publishBlockState(updated);
     this.emit('event', { type: 'BLOCK_STATE', payload: updated } satisfies LayoutEvent);
 
     if (isBlockEffectivelyOccupied(updated.occupancy)) {
-      this.log.info('[LayoutService] Block occupied', { blockId, sensorId });
+      this.log.info('[LayoutService] Block occupied', { blockId });
     }
 
     if (this.layoutId) {
       const outcome = await this.reservations.onOccupancyChange(
         this.layoutId,
         blockId,
-        result.data.state,
+        derived,
         previousOccupancy,
       );
       this.publishReservationOutcome(outcome);
@@ -588,6 +788,200 @@ export class LayoutService extends EventEmitter {
         await this.handleRouteViolation(blockId, outcome.reservation);
       }
     }
+  }
+
+  private emitSensorFaults(): void {
+    this.emit('event', {
+      type: 'SENSOR_FAULTS',
+      payload: { faults: this.getSensorFaults() },
+    } satisfies LayoutEvent);
+  }
+
+  // ─── Public: Sensor Fault Recovery (see docs/sensor-fault-recovery.md) ────────
+
+  /** The current fault set, sorted by `faultedAt` ascending so the UI lists the first cause (D2) first. */
+  getSensorFaults(): SensorFaultView[] {
+    return Object.values(this.health.sensorFaults)
+      .map((fault) => toSensorFaultView(fault, this.options.clearAfterValidReadings))
+      .sort((a, b) => a.faultedAt.localeCompare(b.faultedAt));
+  }
+
+  /**
+   * D1/D5: accepted only once the fault has armed (`clearAfterValidReadings`
+   * consecutive valid, non-retained readings since the fault). Explicitly
+   * does NOT touch routes (D6 / docs/route-locking.md D8) — a block reads
+   * `unknown` until a further reading determines it, and any route through
+   * it stays refused/suspended until that happens and the operator resumes
+   * it separately.
+   */
+  async acknowledgeSensorFault(
+    layoutId: LayoutId,
+    sensorId: SensorId,
+  ): Promise<{
+    sensorId: SensorId;
+    cleared: true;
+    systemStatus: SystemStatus;
+    safeStopReason: string | null;
+    faults: SensorFaultView[];
+  }> {
+    if (this.layoutId !== layoutId) throw new SensorNotFoundError(sensorId);
+    const obs = this.stateManager.getSensorObservation(sensorId);
+    if (!obs) throw new SensorNotFoundError(sensorId);
+
+    const fault = this.health.sensorFaults[sensorId];
+    if (!fault) throw new SensorNotFaultedError(sensorId);
+
+    if (!isSensorFaultArmed(fault, this.options.clearAfterValidReadings)) {
+      throw new SensorFaultNotArmedError(
+        sensorId,
+        fault.consecutiveValidReadings,
+        this.options.clearAfterValidReadings,
+      );
+    }
+
+    const remaining = { ...this.health.sensorFaults };
+    delete remaining[sensorId];
+    this.health = { ...this.health, sensorFaults: remaining };
+    this.stateManager.setSensorFaulted(sensorId, false);
+
+    // Still 'unknown' unless another in-service sensor already determines
+    // the block (D6) — lastReading was nulled at trip time (DD6) and this
+    // acknowledge does not supply one.
+    await this.recomputeBlock(obs.blockId);
+    await this.evaluateAndApplySafeStop();
+    this.emitSensorFaults();
+
+    const state = this.stateManager.getState();
+    this.log.info('[LayoutService] Sensor fault acknowledged', { layoutId, sensorId });
+
+    return {
+      sensorId,
+      cleared: true,
+      systemStatus: state.systemStatus,
+      safeStopReason: state.safeStopReason,
+      faults: this.getSensorFaults(),
+    };
+  }
+
+  /**
+   * Config write path (DD12) — the route parses and delegates here, no
+   * decisions in the transport layer (safety rule 2).
+   */
+  async createSensorConfig(layoutId: LayoutId, input: SensorCreateInput): Promise<SensorRecord> {
+    const created = await this.repo.createSensor({
+      layoutId,
+      name: input.name,
+      type: input.type,
+      blockId: input.blockId,
+      mqttTopic: input.mqttTopic,
+      inService: input.inService,
+    });
+
+    this.stateManager.registerSensor({
+      sensorId: created.id,
+      blockId: created.blockId,
+      type: created.type,
+      inService: created.inService,
+    });
+
+    if (created.inService) {
+      await this.mqtt.subscribe(created.mqttTopic, (payload, topic, retained) =>
+        void this.handleSensorReading(created.id, topic, payload, retained),
+      );
+    }
+
+    await this.recomputeBlock(created.blockId);
+    this.log.info('[LayoutService] Sensor config created', { layoutId, sensorId: created.id });
+    return created;
+  }
+
+  /**
+   * Re-syncs runtime state (subscription, registry, fault) to match the
+   * persisted change, in the order documented inline below — see
+   * docs/sensor-fault-recovery.md D1/D5.
+   */
+  async updateSensorConfig(
+    layoutId: LayoutId,
+    sensorId: SensorId,
+    patch: SensorUpdateInput,
+  ): Promise<SensorRecord> {
+    const existingSensors = await this.repo.listSensors(layoutId);
+    const existing = existingSensors.find((s) => s.id === sensorId);
+    if (!existing) throw new SensorNotFoundError(sensorId);
+
+    const updated = await this.repo.updateSensor(sensorId, patch);
+    const handler = (payload: unknown, topic: string, retained: boolean) =>
+      void this.handleSensorReading(sensorId, topic, payload, retained);
+
+    // mqttTopic changed: resubscribe under the new topic (if still in
+    // service once the inService transition below is also applied).
+    if (patch.mqttTopic !== undefined && patch.mqttTopic !== existing.mqttTopic) {
+      await this.mqtt.unsubscribe(existing.mqttTopic);
+      if (existing.inService && updated.inService) {
+        await this.mqtt.subscribe(updated.mqttTopic, handler);
+      }
+    }
+
+    if (existing.inService && !updated.inService) {
+      // D1/DD4: out-of-service stops trusting this sensor entirely — clear
+      // its fault, its reading, and unsubscribe so no later payload
+      // (malformed or not) can ever reach handleSensorReading for it again.
+      await this.mqtt.unsubscribe(updated.mqttTopic);
+      this.stateManager.clearSensorReading(sensorId);
+      if (this.health.sensorFaults[sensorId]) {
+        const remaining = { ...this.health.sensorFaults };
+        delete remaining[sensorId];
+        this.health = { ...this.health, sensorFaults: remaining };
+      }
+      this.stateManager.setSensorFaulted(sensorId, false);
+    } else if (!existing.inService && updated.inService) {
+      // D5: returning to service starts with no fault and no reading — a
+      // de-serviced sensor already had both cleared, and nothing above this
+      // branch can have set either since.
+      await this.mqtt.subscribe(updated.mqttTopic, handler);
+    }
+
+    this.stateManager.registerSensor({
+      sensorId: updated.id,
+      blockId: updated.blockId,
+      type: updated.type,
+      inService: updated.inService,
+    });
+
+    await this.recomputeBlock(existing.blockId);
+    if (updated.blockId !== existing.blockId) {
+      await this.recomputeBlock(updated.blockId);
+    }
+    await this.evaluateAndApplySafeStop();
+    this.emitSensorFaults();
+
+    this.log.info('[LayoutService] Sensor config updated', { layoutId, sensorId });
+    return updated;
+  }
+
+  /** Q2 (docs/sensor-fault-recovery.md): a sensor delete clears its fault — a latch on a sensor that no longer exists could otherwise never be acknowledged. */
+  async deleteSensorConfig(layoutId: LayoutId, sensorId: SensorId): Promise<void> {
+    const existingSensors = await this.repo.listSensors(layoutId);
+    const existing = existingSensors.find((s) => s.id === sensorId);
+    if (!existing) throw new SensorNotFoundError(sensorId);
+
+    if (existing.inService) {
+      await this.mqtt.unsubscribe(existing.mqttTopic);
+    }
+    await this.repo.deleteSensor(sensorId);
+    this.stateManager.unregisterSensor(sensorId);
+
+    if (this.health.sensorFaults[sensorId]) {
+      const remaining = { ...this.health.sensorFaults };
+      delete remaining[sensorId];
+      this.health = { ...this.health, sensorFaults: remaining };
+    }
+
+    await this.recomputeBlock(existing.blockId);
+    await this.evaluateAndApplySafeStop();
+    this.emitSensorFaults();
+
+    this.log.info('[LayoutService] Sensor config deleted', { layoutId, sensorId });
   }
 
   /** D7: a manual train has entered reserved track the system did not expect it in — stop that loco and enter Safe-Stop. Scoped to reserved track; unreserved track is #7. */
@@ -688,8 +1082,31 @@ export class LayoutService extends EventEmitter {
           reason,
         },
       } satisfies LayoutEvent);
+    } else if (shouldStop && state.systemStatus === 'safe-stop' && reason !== state.safeStopReason) {
+      // Still stopped, but the underlying cause has changed — e.g. two
+      // sensor faults were latched (D2, docs/sensor-fault-recovery.md) and
+      // the oldest was just acknowledged, so a different one is now
+      // reported. No entry side effects (DCC stop, loco stop, route
+      // suspend) are re-run here: they already happened on the original
+      // transition into Safe-Stop, and re-running them for a reason that
+      // never left Safe-Stop would be pure noise. Just refresh what the
+      // operator is shown.
+      this.log.warn('[LayoutService] Safe-Stop reason changed', { reason });
+      this.stateManager.enterSafeStop(reason!);
+      this.publishSystemStatus();
+      this.emit('event', {
+        type: 'SYSTEM_STATUS',
+        payload: {
+          status: 'safe-stop',
+          mode: state.systemMode,
+          reason,
+        },
+      } satisfies LayoutEvent);
     } else if (!shouldStop && state.systemStatus === 'safe-stop') {
-      this.log.info('[LayoutService] Connections restored, clearing Safe-Stop');
+      // Renamed from "Connections restored" — a sensor fault acknowledge
+      // (or a sensor going out of service) is now a second reason this can
+      // clear, not just a connection/topology recovery.
+      this.log.info('[LayoutService] Clearing Safe-Stop', { health: this.health });
       this.stateManager.clearSafeStop();
       // D8: clearing Safe-Stop does NOT resume routes. Suspended routes
       // never auto-resume — the operator must explicitly cancel or resume

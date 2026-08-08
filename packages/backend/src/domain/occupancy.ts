@@ -1,0 +1,76 @@
+/**
+ * Block occupancy derivation from per-sensor observations (D3,
+ * docs/sensor-fault-recovery.md). Pure — imports only `./types`, same
+ * posture as `domain/topology.ts` and `domain/routeLocking.ts`.
+ *
+ * Before this module, `LayoutService` folded whatever sensor last reported
+ * straight into `BlockState.occupancy` — last write wins, regardless of
+ * sensor type. That let a single `ir_position` beam clear an entire block on
+ * its own say-so, which is exactly the "guess a train's position" failure
+ * CLAUDE.md's fail-safe rule (safety rule 1) forbids: one beam being
+ * unbroken is not evidence the whole block is empty. Occupancy is now a
+ * derived projection, computed fresh from every sensor currently registered
+ * against a block each time any one of them changes.
+ */
+
+import { Occupancy, SensorFault, SensorFaultView, SensorObservation } from './types';
+
+/**
+ * Whether an observation may contribute to a block's derived occupancy.
+ * An out-of-service or faulted sensor contributes nothing (D1/D3): the
+ * system has stopped trusting it. A sensor that has never reported (or was
+ * just de-serviced/faulted and had its reading nulled — DD6) has nothing to
+ * contribute either.
+ */
+export function isContributingSensor(o: SensorObservation): boolean {
+  return o.inService && !o.faulted && o.lastReading !== null;
+}
+
+/**
+ * Derives a block's occupancy from every sensor registered against it (D3).
+ * Callers pass ALL observations for the block; ineligible ones are filtered
+ * here, not by the caller.
+ *
+ * Three ordered clauses, deliberately in this order and no other:
+ *  1. Any eligible observation reading `occupied` wins outright — a
+ *     detector asserting occupied, an IR beam broken, or two disagreeing
+ *     detectors (one occupied, one clear) all resolve to `occupied`. This is
+ *     the fail-safe choice on conflicting evidence, not an arbitrary pick.
+ *  2. Otherwise, any eligible `block_detection` reading `clear` governs —
+ *     a whole-block monitor is entitled to assert the block is empty.
+ *  3. Otherwise `unknown`. This is what makes an IR `clear` a no-op rather
+ *     than a fallback: clause 2 only looks at `block_detection` sensors, so
+ *     a block with only an IR sensor (or an IR sensor plus a faulted
+ *     detector) reporting `clear` falls through to `unknown` rather than
+ *     being read as clear. An IR beam being unbroken says nothing about the
+ *     rest of the block — do not "simplify" this back to last-write-wins.
+ */
+export function deriveBlockOccupancy(observations: readonly SensorObservation[]): Occupancy {
+  const eligible = observations.filter(isContributingSensor);
+
+  if (eligible.some((o) => o.lastReading === 'occupied')) {
+    return 'occupied';
+  }
+  if (eligible.some((o) => o.type === 'block_detection' && o.lastReading === 'clear')) {
+    return 'clear';
+  }
+  return 'unknown';
+}
+
+/** D1's arming rule, in one place so no caller re-implements it. */
+export function isSensorFaultArmed(fault: SensorFault, requiredValidReadings: number): boolean {
+  return fault.consecutiveValidReadings >= requiredValidReadings;
+}
+
+/** Projection for the wire (DD10). Pure — takes the threshold, calls no clock. */
+export function toSensorFaultView(fault: SensorFault, requiredValidReadings: number): SensorFaultView {
+  return {
+    sensorId: fault.sensorId,
+    reason: fault.reason,
+    topic: fault.topic,
+    faultedAt: fault.faultedAt.toISOString(),
+    consecutiveValidReadings: fault.consecutiveValidReadings,
+    requiredValidReadings,
+    armed: isSensorFaultArmed(fault, requiredValidReadings),
+  };
+}

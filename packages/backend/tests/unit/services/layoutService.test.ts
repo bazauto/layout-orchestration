@@ -1,10 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
-import { LayoutService, PointLockedError } from '../../../src/services/LayoutService';
+import {
+  LayoutService,
+  PointLockedError,
+  SensorFaultNotArmedError,
+  SensorNotFaultedError,
+  SensorNotFoundError,
+} from '../../../src/services/LayoutService';
 import { ReservationService } from '../../../src/services/ReservationService';
 import { LayoutStateManager } from '../../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../../src/adapters/mqtt/SimulatedMqttAdapter';
-import { ILayoutRepository, LocoRecord } from '../../../src/ports/ILayoutRepository';
+import { ILayoutRepository, LocoRecord, SensorRecord } from '../../../src/ports/ILayoutRepository';
 import { BlockEdgeRowInvalidError } from '../../../src/services/validation';
 import { BlockEdge, RouteHoldKind, RouteReservation, RouteStatus } from '../../../src/domain/types';
 
@@ -36,11 +42,22 @@ const EDGE_WITH_POINT: BlockEdge = {
 // LayoutService's route-locking tests exercise a genuine ReservationService,
 // which needs create/get/update/markReleased to actually round-trip.
 
+const SENSOR_S1: SensorRecord = {
+  id: 's1',
+  layoutId: 'test',
+  name: 'Sensor 1',
+  type: 'block_detection',
+  blockId: 'b1',
+  mqttTopic: 'layout/test/sensor/s1/reading',
+  inService: true,
+};
+
 function makeRepo(): ILayoutRepository {
   const reservations = new Map<
     string,
     { row: Omit<RouteReservation, 'holds'>; holds: Map<string, RouteReservation['holds'][number]> }
   >();
+  let sensors: SensorRecord[] = [SENSOR_S1];
 
   function toReservation(id: string): RouteReservation {
     const entry = reservations.get(id)!;
@@ -67,18 +84,26 @@ function makeRepo(): ILayoutRepository {
     createPoint: vi.fn(),
     updatePoint: vi.fn(),
     deletePoint: vi.fn(),
-    listSensors: vi.fn().mockResolvedValue([
-      {
-        id: 's1',
-        layoutId: 'test',
-        name: 'Sensor 1',
-        type: 'block_detection',
-        blockId: 'b1',
-        mqttTopic: 'layout/test/sensor/s1/reading',
-      },
-    ]),
-    createSensor: vi.fn(),
-    deleteSensor: vi.fn(),
+    listSensors: vi.fn().mockImplementation(async (layoutId: string) =>
+      sensors.filter((s) => s.layoutId === layoutId),
+    ),
+    createSensor: vi.fn().mockImplementation(async (data: Omit<SensorRecord, 'id'>) => {
+      const created: SensorRecord = { id: `sensor-${sensors.length + 1}`, ...data };
+      sensors = [...sensors, created];
+      return created;
+    }),
+    updateSensor: vi
+      .fn()
+      .mockImplementation(async (id: string, data: Partial<Omit<SensorRecord, 'id' | 'layoutId'>>) => {
+        const index = sensors.findIndex((s) => s.id === id);
+        if (index === -1) throw new Error(`Sensor ${id} not found after update`);
+        const updated = { ...sensors[index], ...data };
+        sensors = sensors.map((s, i) => (i === index ? updated : s));
+        return updated;
+      }),
+    deleteSensor: vi.fn().mockImplementation(async (id: string) => {
+      sensors = sensors.filter((s) => s.id !== id);
+    }),
     listGridTiles: vi.fn().mockResolvedValue([]),
     upsertGridTile: vi.fn(),
     deleteTile: vi.fn().mockResolvedValue(undefined),
@@ -396,7 +421,11 @@ describe('LayoutService — sensor-driven block state', () => {
     await service.stop();
   });
 
-  it('does not un-mutate an already-tracked block on a later malformed reading for the same sensor', async () => {
+  it('de-contributes the faulted sensor so its block falls back to unknown (D4)', async () => {
+    // Per D4 (docs/sensor-fault-recovery.md), a faulted sensor stops
+    // contributing to its block IMMEDIATELY — its last reading is not
+    // retained as a going belief. This inverts the pre-#34 assertion
+    // ("the last known-good occupancy survives") which is now wrong.
     const { service, mqtt, stateManager } = await buildStartedService();
 
     mqtt.simulateIncoming('layout/test/sensor/s1/reading', {
@@ -409,12 +438,275 @@ describe('LayoutService — sensor-driven block state', () => {
     mqtt.simulateIncoming('layout/test/sensor/s1/reading', { badField: 'nonsense' });
     await new Promise((r) => setImmediate(r));
 
-    // The last known-good occupancy must survive the malformed message.
-    expect(stateManager.getBlock('b1')?.occupancy).toBe('occupied');
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('unknown');
+    expect(stateManager.getBlock('b1')?.locoAddress).toBeNull();
     expect(service.getSystemStatus().status).toBe('safe-stop');
 
     await service.stop();
   });
+});
+
+describe('LayoutService — sensor fault recovery (see docs/sensor-fault-recovery.md)', () => {
+  const SENSOR_TOPIC = 'layout/test/sensor/s1/reading';
+
+  function validReading(): { state: 'occupied' | 'clear'; updatedAt: string } {
+    return { state: 'occupied', updatedAt: new Date().toISOString() };
+  }
+
+  async function faultSensor(mqtt: SimulatedMqttAdapter) {
+    mqtt.simulateIncoming(SENSOR_TOPIC, { garbage: true });
+    await new Promise((r) => setImmediate(r));
+  }
+
+  it('constructor throws for a non-integer clearAfterValidReadings', () => {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    const stateManager = new LayoutStateManager('test');
+    const reservations = new ReservationService(repo, stateManager, silentLogger);
+    expect(
+      () =>
+        new LayoutService(dcc, mqtt, repo, stateManager, reservations, silentLogger, {
+          clearAfterValidReadings: 0,
+        }),
+    ).toThrow(/clearAfterValidReadings/);
+  });
+
+  it('counts each valid, non-retained reading toward the arming threshold', async () => {
+    const { service, mqtt } = await buildStartedService();
+    await faultSensor(mqtt);
+
+    mqtt.simulateIncoming(SENSOR_TOPIC, validReading());
+    await new Promise((r) => setImmediate(r));
+
+    const [fault] = service.getSensorFaults();
+    expect(fault.consecutiveValidReadings).toBe(1);
+    expect(fault.armed).toBe(false);
+    await service.stop();
+  });
+
+  it('does not count a retained valid reading toward arming', async () => {
+    const { service, mqtt } = await buildStartedService();
+    await faultSensor(mqtt);
+
+    mqtt.simulateIncoming(SENSOR_TOPIC, validReading(), true);
+    await new Promise((r) => setImmediate(r));
+
+    expect(service.getSensorFaults()[0].consecutiveValidReadings).toBe(0);
+    await service.stop();
+  });
+
+  it('resets an in-progress arming count to 0 on a later malformed reading', async () => {
+    const { service, mqtt } = await buildStartedService();
+    await faultSensor(mqtt);
+    mqtt.simulateIncoming(SENSOR_TOPIC, validReading());
+    await new Promise((r) => setImmediate(r));
+    expect(service.getSensorFaults()[0].consecutiveValidReadings).toBe(1);
+
+    await faultSensor(mqtt);
+
+    expect(service.getSensorFaults()[0].consecutiveValidReadings).toBe(0);
+    await service.stop();
+  });
+
+  it('a re-fault keeps the original faultedAt and reason (DD5)', async () => {
+    const { service, mqtt } = await buildStartedService();
+    await faultSensor(mqtt);
+    const first = service.getSensorFaults()[0];
+
+    await new Promise((r) => setTimeout(r, 5));
+    mqtt.simulateIncoming(SENSOR_TOPIC, { garbage: true, second: true });
+    await new Promise((r) => setImmediate(r));
+
+    const second = service.getSensorFaults()[0];
+    expect(second.faultedAt).toBe(first.faultedAt);
+    expect(second.reason).toBe(first.reason);
+    await service.stop();
+  });
+
+  it('acknowledge before the threshold throws SensorFaultNotArmedError with the correct outstanding count', async () => {
+    const { service, mqtt } = await buildStartedService();
+    await faultSensor(mqtt);
+    mqtt.simulateIncoming(SENSOR_TOPIC, validReading());
+    await new Promise((r) => setImmediate(r));
+
+    await expect(service.acknowledgeSensorFault('test', 's1')).rejects.toThrow(
+      SensorFaultNotArmedError,
+    );
+    try {
+      await service.acknowledgeSensorFault('test', 's1');
+      throw new Error('expected rejection');
+    } catch (err) {
+      expect(err).toBeInstanceOf(SensorFaultNotArmedError);
+      expect((err as SensorFaultNotArmedError).outstanding).toBe(2);
+    }
+    expect(service.getSystemStatus().status).toBe('safe-stop');
+    await service.stop();
+  });
+
+  it('acknowledge at the threshold clears the fault and Safe-Stop, and leaves the block unknown until a further reading (D6)', async () => {
+    const { service, mqtt, stateManager } = await buildStartedService();
+    await faultSensor(mqtt);
+    for (let i = 0; i < 3; i++) {
+      mqtt.simulateIncoming(SENSOR_TOPIC, validReading());
+      await new Promise((r) => setImmediate(r));
+    }
+
+    const result = await service.acknowledgeSensorFault('test', 's1');
+    expect(result.cleared).toBe(true);
+    expect(result.systemStatus).toBe('online');
+    expect(result.faults).toEqual([]);
+    expect(service.getSystemStatus().status).toBe('online');
+    // D6: the acknowledge itself supplies no reading — unknown until a real one arrives.
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('unknown');
+
+    mqtt.simulateIncoming(SENSOR_TOPIC, validReading());
+    await new Promise((r) => setImmediate(r));
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('occupied');
+
+    await service.stop();
+  });
+
+  it('acknowledge with no fault latched throws SensorNotFaultedError', async () => {
+    const { service } = await buildStartedService();
+    await expect(service.acknowledgeSensorFault('test', 's1')).rejects.toThrow(
+      SensorNotFaultedError,
+    );
+  });
+
+  it('acknowledge for an unknown sensor throws SensorNotFoundError', async () => {
+    const { service } = await buildStartedService();
+    await expect(service.acknowledgeSensorFault('test', 'ghost')).rejects.toThrow(
+      SensorNotFoundError,
+    );
+    await service.stop();
+  });
+
+  it('with two faults, acknowledging one leaves Safe-Stop latched on the other', async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.listSensors).mockResolvedValue([
+      SENSOR_S1,
+      { ...SENSOR_S1, id: 's2', mqttTopic: 'layout/test/sensor/s2/reading', blockId: 'b1' },
+    ]);
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const stateManager = new LayoutStateManager('test');
+    const reservations = new ReservationService(repo, stateManager, silentLogger);
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, reservations, silentLogger);
+    await service.start('test');
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', { garbage: true });
+    await new Promise((r) => setImmediate(r));
+    mqtt.simulateIncoming('layout/test/sensor/s2/reading', { garbage: true });
+    await new Promise((r) => setImmediate(r));
+
+    for (let i = 0; i < 3; i++) {
+      mqtt.simulateIncoming('layout/test/sensor/s1/reading', validReading());
+      await new Promise((r) => setImmediate(r));
+    }
+    await service.acknowledgeSensorFault('test', 's1');
+
+    expect(service.getSystemStatus().status).toBe('safe-stop');
+    expect(service.getSensorFaults().map((f) => f.sensorId)).toEqual(['s2']);
+
+    await service.stop();
+  });
+
+  it('out-of-service clears the fault and Safe-Stop, and unsubscribes the sensor', async () => {
+    const { service, mqtt } = await buildStartedService();
+    await faultSensor(mqtt);
+    expect(service.getSystemStatus().status).toBe('safe-stop');
+
+    await service.updateSensorConfig('test', 's1', { inService: false });
+
+    expect(service.getSystemStatus().status).toBe('online');
+    expect(service.getSensorFaults()).toEqual([]);
+
+    // A malformed payload on the (now unsubscribed) topic must not re-trip.
+    mqtt.simulateIncoming(SENSOR_TOPIC, { garbage: true });
+    await new Promise((r) => setImmediate(r));
+    expect(service.getSystemStatus().status).toBe('online');
+
+    await service.stop();
+  });
+
+  it('an IR fault with the detector in service leaves occupancy unaffected', async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.listSensors).mockResolvedValue([
+      SENSOR_S1,
+      {
+        id: 's-ir',
+        layoutId: 'test',
+        name: 'IR 1',
+        type: 'ir_position',
+        blockId: 'b1',
+        mqttTopic: 'layout/test/sensor/s-ir/reading',
+        inService: true,
+      },
+    ]);
+    const { service, mqtt, stateManager } = await buildStartedServiceFrom(repo);
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', validReading());
+    await new Promise((r) => setImmediate(r));
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('occupied');
+
+    mqtt.simulateIncoming('layout/test/sensor/s-ir/reading', { garbage: true });
+    await new Promise((r) => setImmediate(r));
+
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('occupied');
+    expect(service.getSystemStatus().status).toBe('safe-stop'); // the fault itself still trips Safe-Stop
+
+    await service.stop();
+  });
+
+  it('a detector fault with the IR in service yields unknown — IR cannot assert clear', async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.listSensors).mockResolvedValue([
+      SENSOR_S1,
+      {
+        id: 's-ir',
+        layoutId: 'test',
+        name: 'IR 1',
+        type: 'ir_position',
+        blockId: 'b1',
+        mqttTopic: 'layout/test/sensor/s-ir/reading',
+        inService: true,
+      },
+    ]);
+    const { mqtt, stateManager } = await buildStartedServiceFrom(repo);
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', validReading());
+    await new Promise((r) => setImmediate(r));
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('occupied');
+
+    // The IR sensor is in service and reporting — a 'clear' from it must
+    // still be discarded for occupancy purposes (D3 clause 3), so the block
+    // stays 'occupied' on the detector's word alone at this point.
+    mqtt.simulateIncoming('layout/test/sensor/s-ir/reading', {
+      state: 'clear',
+      updatedAt: new Date().toISOString(),
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('occupied');
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', { garbage: true });
+    await new Promise((r) => setImmediate(r));
+
+    // With the detector faulted, only the in-service IR's 'clear' remains —
+    // and D3 clause 2 only ever looks at block_detection sensors, so it
+    // cannot rescue the block. Fail-safe 'unknown', not 'clear'.
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('unknown');
+  });
+
+  async function buildStartedServiceFrom(repo: ILayoutRepository) {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const stateManager = new LayoutStateManager('test');
+    const reservations = new ReservationService(repo, stateManager, silentLogger);
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, reservations, silentLogger);
+    await service.start('test');
+    return { service, dcc, mqtt, repo, stateManager, reservations };
+  }
 });
 
 describe('LayoutService — topology', () => {

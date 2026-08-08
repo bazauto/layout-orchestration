@@ -18,7 +18,7 @@ import {
   GridTileRecord,
 } from '../../ports/ILayoutRepository';
 import { BlockEdge, RouteHoldKind, RouteId, RouteReservation, RouteStatus } from '../../domain/types';
-import { parseBlockEdgeRow, parseReservationRow } from '../../services/validation';
+import { parseBlockEdgeRow, parseReservationRow, parseSensorRow } from '../../services/validation';
 import {
   layouts,
   locos,
@@ -169,14 +169,15 @@ export class DrizzleRepository implements ILayoutRepository {
   // ─── Sensors ────────────────────────────────────────────────────────────────
 
   async listSensors(layoutId: string): Promise<SensorRecord[]> {
-    return this.db.select().from(sensors).where(eq(sensors.layoutId, layoutId)).all() as SensorRecord[];
+    const rows = this.db.select().from(sensors).where(eq(sensors.layoutId, layoutId)).all();
+    return rows.map(parseSensorRow);
   }
 
   async createSensor(data: Omit<SensorRecord, 'id'>): Promise<SensorRecord> {
     const id = randomUUID();
     const record = { id, ...data };
     this.db.insert(sensors).values(record).run();
-    return record as SensorRecord;
+    return parseSensorRow(record);
   }
 
   async updateSensor(
@@ -186,7 +187,7 @@ export class DrizzleRepository implements ILayoutRepository {
     this.db.update(sensors).set(data).where(eq(sensors.id, id)).run();
     const rows = this.db.select().from(sensors).where(eq(sensors.id, id)).all();
     if (!rows.length) throw new Error(`Sensor ${id} not found after update`);
-    return rows[0] as SensorRecord;
+    return parseSensorRow(rows[0]);
   }
 
   async deleteSensor(id: string): Promise<void> {

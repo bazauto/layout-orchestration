@@ -1,0 +1,1 @@
+ALTER TABLE `sensors` ADD `in_service` integer DEFAULT true NOT NULL;

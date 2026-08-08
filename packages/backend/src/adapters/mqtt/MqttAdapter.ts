@@ -5,7 +5,7 @@
  * Connects to a Mosquitto broker and handles reconnection automatically.
  */
 
-import mqtt, { IClientOptions, MqttClient } from 'mqtt';
+import mqtt, { IClientOptions, IPublishPacket, MqttClient } from 'mqtt';
 import { IMqttAdapter, MqttMessageHandler, PublishOptions } from '../../ports/IMqttAdapter';
 
 export interface MqttAdapterLogger {
@@ -90,7 +90,7 @@ export class MqttAdapter implements IMqttAdapter {
         this.log.error('[MQTT] Error', { error: err.message });
       });
 
-      this.client.on('message', (topic, rawPayload) => {
+      this.client.on('message', (topic, rawPayload, packet: IPublishPacket) => {
         let payload: unknown;
         try {
           payload = JSON.parse(rawPayload.toString());
@@ -104,15 +104,22 @@ export class MqttAdapter implements IMqttAdapter {
           // Deliver the raw string through instead of returning early, so the
           // subscriber's own schema validation sees it, fails, and reacts the
           // same way it would for a structurally-valid-but-wrong-shape payload.
+          // Applies to a retained non-JSON payload too — it is still retained.
           this.log.warn('[MQTT] Received non-JSON payload; forwarding raw for the subscriber to validate', {
             topic,
           });
           payload = rawPayload.toString();
         }
 
+        // `packet.retain === true` when the broker delivered this because it
+        // was retained (subscribe-time or reconnect replay), not because it
+        // was just published live — see the doc comment on
+        // `MqttMessageHandler` for why the subscriber needs to know this.
+        const retained = packet.retain === true;
+
         for (const [pattern, handler] of this.subscriptions) {
           if (this.topicMatchesPattern(topic, pattern)) {
-            handler(payload, topic);
+            handler(payload, topic, retained);
           }
         }
       });

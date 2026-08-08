@@ -67,11 +67,14 @@ export class SimulatedMqttAdapter implements IMqttAdapter {
       this.retained.set(topic, payload);
     }
 
-    // Deliver to all matching subscribers
+    // Deliver to all matching subscribers. `retained: false` here
+    // regardless of `options.retain` — the retain flag on a LIVE delivery
+    // is always false in MQTT; only a broker's replay-on-subscribe (below)
+    // sets it. See the doc comment on `MqttMessageHandler`.
     for (const [pattern, handler] of this.subscriptions) {
       if (topicMatchesPattern(topic, pattern)) {
         // Deliver asynchronously to match real broker behaviour
-        setImmediate(() => handler(payload, topic));
+        setImmediate(() => handler(payload, topic, false));
       }
     }
   }
@@ -79,10 +82,11 @@ export class SimulatedMqttAdapter implements IMqttAdapter {
   async subscribe(topic: string, handler: MqttMessageHandler): Promise<void> {
     this.subscriptions.set(topic, handler);
 
-    // Deliver any retained messages that match this subscription
+    // Deliver any retained messages that match this subscription — this IS
+    // the broker replay D1 requires the `retained` flag for.
     for (const [retainedTopic, payload] of this.retained) {
       if (topicMatchesPattern(retainedTopic, topic)) {
-        setImmediate(() => handler(payload, retainedTopic));
+        setImmediate(() => handler(payload, retainedTopic, true));
       }
     }
   }
@@ -91,11 +95,16 @@ export class SimulatedMqttAdapter implements IMqttAdapter {
     this.subscriptions.delete(topic);
   }
 
-  /** Simulate an incoming message from an external device (e.g., a sensor). */
-  simulateIncoming(topic: string, payload: unknown): void {
+  /**
+   * Simulate an incoming message from an external device (e.g., a sensor).
+   * `retained` defaults to `false` (an ordinary live message) — pass `true`
+   * to exercise the reconnect-replay case with no broker (CLAUDE.md safety
+   * rule 5: everything testable without hardware).
+   */
+  simulateIncoming(topic: string, payload: unknown, retained = false): void {
     for (const [pattern, handler] of this.subscriptions) {
       if (topicMatchesPattern(topic, pattern)) {
-        handler(payload, topic);
+        handler(payload, topic, retained);
       }
     }
   }
