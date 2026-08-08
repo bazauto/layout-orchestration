@@ -10,8 +10,8 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { LayoutService } from '../../../services/LayoutService';
-import { RouteNotFoundError } from '../../../services/ReservationService';
+import { LayoutService, RouteNotFaultedError } from '../../../services/LayoutService';
+import { RequestedPath, RouteNotFoundError } from '../../../services/ReservationService';
 import { describeRejections } from '../../../domain/routeLocking';
 import { routeCancelSchema, routeRequestSchema } from '../../../services/validation';
 
@@ -35,7 +35,22 @@ export async function routeRoutes(
           .send({ error: 'Invalid route request', details: parsed.error.flatten() });
       }
 
-      const outcome = await layoutService.requestRoute(parsed.data);
+      // The schema guarantees exactly one of edgeIds / destinationBlockId,
+      // so this maps the wire shape onto `RequestedPath` without deciding
+      // anything — the exactly-one rule lives in the schema, not here.
+      const { locoAddress, authority, startBlockId, edgeIds, destinationBlockId, startExitEnd } =
+        parsed.data;
+      const path: RequestedPath =
+        edgeIds !== undefined
+          ? { kind: 'edges', edgeIds }
+          : { kind: 'destination', destinationBlockId: destinationBlockId as string, startExitEnd };
+
+      const outcome = await layoutService.requestRoute({
+        locoAddress,
+        authority,
+        startBlockId,
+        path,
+      });
       if (!outcome.granted) {
         return reply
           .status(422)
@@ -84,6 +99,47 @@ export async function routeRoutes(
         }
         throw err;
       }
+    },
+  );
+
+  /**
+   * Clears a latched route fault (#4), releasing the Safe-Stop it holds.
+   *
+   * Deliberately no `preHandler`, exactly like the sensor-fault acknowledge
+   * it mirrors: still authenticated (the global onRequest hook covers every
+   * route) but any role, since it is a driving-adjacent recovery action
+   * rather than config authoring. 404 when no such fault is latched — there
+   * is no "not armed" case here, because unlike a sensor a route cannot
+   * prove itself; see `LayoutService.acknowledgeRouteFault`.
+   */
+  fastify.post<{ Params: { layoutId: string; routeId: string } }>(
+    '/api/layouts/:layoutId/routes/:routeId/acknowledge-fault',
+    async (req, reply) => {
+      try {
+        const result = await layoutService.acknowledgeRouteFault(
+          req.params.layoutId,
+          req.params.routeId,
+        );
+        return reply.status(200).send(result);
+      } catch (err) {
+        if (err instanceof RouteNotFaultedError) {
+          return reply.status(404).send({ error: err.message, routeId: err.routeId });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // Authenticated, any role — a read, like GET .../routes above.
+  fastify.get<{ Params: { layoutId: string } }>(
+    '/api/layouts/:layoutId/route-faults',
+    async (req, reply) => {
+      if (req.params.layoutId !== layoutService.getLayoutId()) {
+        return reply
+          .status(404)
+          .send({ error: `Layout ${req.params.layoutId} is not the running layout` });
+      }
+      return { faults: layoutService.getRouteFaults() };
     },
   );
 }

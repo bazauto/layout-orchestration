@@ -112,7 +112,7 @@ describe('scenario: route locking', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: [e1, e2],
+      path: { kind: 'edges', edgeIds: [e1, e2] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
@@ -128,7 +128,7 @@ describe('scenario: route locking', () => {
       locoAddress: 7,
       authority: 'manual',
       startBlockId: 'b4',
-      edgeIds: [e3],
+      path: { kind: 'edges', edgeIds: [e3] },
     });
     expect(conflicting.granted).toBe(false);
     if (conflicting.granted) throw new Error('expected rejection');
@@ -155,7 +155,7 @@ describe('scenario: route locking', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: [e1, e2],
+      path: { kind: 'edges', edgeIds: [e1, e2] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
@@ -190,7 +190,7 @@ describe('scenario: route locking', () => {
       locoAddress: 3,
       authority: 'auto',
       startBlockId: 'b1',
-      edgeIds: [e1],
+      path: { kind: 'edges', edgeIds: [e1] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
@@ -223,7 +223,7 @@ describe('scenario: route locking', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: [e1, e2],
+      path: { kind: 'edges', edgeIds: [e1, e2] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
@@ -275,7 +275,7 @@ describe('scenario: route locking', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: [e1],
+      path: { kind: 'edges', edgeIds: [e1] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
@@ -323,7 +323,7 @@ describe('scenario: route locking', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: [e1],
+      path: { kind: 'edges', edgeIds: [e1] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
@@ -399,7 +399,7 @@ describe('scenario: route locking', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: [e1, e2],
+      path: { kind: 'edges', edgeIds: [e1, e2] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
@@ -434,7 +434,7 @@ describe('scenario: route locking', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: [e1],
+      path: { kind: 'edges', edgeIds: [e1] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');

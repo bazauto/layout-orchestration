@@ -3,6 +3,7 @@ import {
   evaluateSafeStop,
   evaluateSystemSafeStop,
   oldestSensorFault,
+  oldestRouteFault,
   canIssueAutoCommand,
   canIssueManualCommand,
   canGrantRoute,
@@ -11,7 +12,7 @@ import {
   isValidSpeed,
   isValidLocoAddress,
 } from '../../../src/domain/safety';
-import { SensorFault } from '../../../src/domain/types';
+import { RouteFault, SensorFault } from '../../../src/domain/types';
 
 describe('evaluateSafeStop', () => {
   it('returns no safe-stop when both connections are healthy', () => {
@@ -49,6 +50,30 @@ function fault(overrides: Partial<SensorFault> = {}): SensorFault {
   };
 }
 
+function routeFault(overrides: Partial<RouteFault> = {}): RouteFault {
+  return {
+    routeId: 'r1',
+    kind: 'unexpected-occupancy',
+    reason: 'Route r1 violated: unexpected occupancy in block b3',
+    blockId: 'b3',
+    locoAddress: 3,
+    faultedAt: new Date('2026-01-01T00:00:00.000Z'),
+    ...overrides,
+  };
+}
+
+describe('oldestRouteFault', () => {
+  it('returns null for an empty collection', () => {
+    expect(oldestRouteFault({})).toBeNull();
+  });
+
+  it('returns the fault with the earliest faultedAt', () => {
+    const older = routeFault({ routeId: 'r1', faultedAt: new Date('2026-01-01T00:00:00.000Z') });
+    const newer = routeFault({ routeId: 'r2', faultedAt: new Date('2026-01-02T00:00:00.000Z') });
+    expect(oldestRouteFault({ r2: newer, r1: older })).toBe(older);
+  });
+});
+
 describe('oldestSensorFault', () => {
   it('returns null for an empty collection', () => {
     expect(oldestSensorFault({})).toBeNull();
@@ -84,6 +109,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: {},
+      routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(false);
@@ -97,6 +123,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
       sensorFaults: {},
+      routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -112,6 +139,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
       sensorFaults: {},
+      routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -125,6 +153,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s1: fault() },
+      routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -140,6 +169,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s1: fault() },
+      routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -153,6 +183,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
       sensorFaults: { s1: fault() },
+      routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -176,6 +207,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s2: newer, s1: older },
+      routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -203,6 +235,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults,
+      routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.reason).toMatch(/first/);
@@ -223,10 +256,78 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s2 }, // s1 already resolved/removed
+      routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toMatch(/s2 reason/);
+  });
+
+  // ── Route faults (#4) ──────────────────────────────────────────────────
+
+  it('stops with the route-fault reason when everything above it is healthy', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      routeFaults: { r1: routeFault() },
+      recoveredRouteCount: 0,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/unexpected occupancy in block b3/);
+  });
+
+  it('lets a sensor fault win over a route fault — the sensor is usually the cause, the route the symptom', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: { s1: fault() },
+      routeFaults: { r1: routeFault() },
+      recoveredRouteCount: 0,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/Malformed sensor payload/);
+  });
+
+  it('lets a route fault win over recovered routes', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      routeFaults: { r1: routeFault() },
+      recoveredRouteCount: 3,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/unexpected occupancy in block b3/);
+  });
+
+  it('reports the OLDEST route fault when several are latched (the first cause)', () => {
+    const older = routeFault({
+      routeId: 'r1',
+      reason: 'older route fault',
+      faultedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    const newer = routeFault({
+      routeId: 'r2',
+      reason: 'newer route fault',
+      faultedAt: new Date('2026-01-02T00:00:00.000Z'),
+    });
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      routeFaults: { r2: newer, r1: older },
+      recoveredRouteCount: 0,
+    });
+    expect(result.reason).toBe('older route fault');
   });
 
   it('stops with a recovered-route reason when connections, topology, and sensor health are all healthy but routes survived a restart (D9)', () => {
@@ -236,6 +337,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: {},
+      routeFaults: {},
       recoveredRouteCount: 2,
     });
     expect(result.shouldStop).toBe(true);
@@ -249,6 +351,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s1: fault() },
+      routeFaults: {},
       recoveredRouteCount: 1,
     });
     expect(result.shouldStop).toBe(true);

@@ -22,15 +22,19 @@
 
 import { randomUUID } from 'crypto';
 import {
+  checkPathIndependentPreconditions,
   evaluateOccupancyChange,
   planReservation,
   ReservationRequest,
   ReservationView,
 } from '../domain/routeLocking';
+import { PathfindingFailure, findPath } from '../domain/pathfinding';
 import { LayoutStateManager } from '../domain/layoutState';
 import { TrackGraph } from '../domain/graph';
 import {
+  Authority,
   BlockEdgeId,
+  BlockEndLabel,
   BlockId,
   BlockState,
   LayoutId,
@@ -63,6 +67,27 @@ export type GrantOutcome =
   | { granted: true; reservation: RouteReservation; changedBlocks: BlockState[]; changedPoints: PointState[] }
   | { granted: false; rejections: RouteRejection[] };
 
+/**
+ * How a caller specifies the track a route should take (#4).
+ *
+ * `edges` is the original #3 form and remains first-class: an explicit,
+ * ordered edge list, useful when an operator has chosen a specific road and
+ * for tests that need a path the search would not pick. `destination` asks
+ * the pathfinder for one. Both end up in the same `planReservation` call —
+ * a searched path gets no more trust than a hand-supplied one.
+ */
+export type RequestedPath =
+  | { kind: 'edges'; edgeIds: BlockEdgeId[] }
+  | { kind: 'destination'; destinationBlockId: BlockId; startExitEnd?: BlockEndLabel };
+
+/** A route request as the service layer takes it — `ReservationRequest` (the domain form) is what it resolves to once the path is known. */
+export interface GrantRequest {
+  locoAddress: LocoAddress;
+  authority: Authority;
+  startBlockId: BlockId;
+  path: RequestedPath;
+}
+
 export interface OccupancyOutcome extends ReservationOutcome {
   /** True when this occupancy reading was a D7 route violation (occupancy in
    * a reserved block that was not the route's next expected step) — the
@@ -70,11 +95,39 @@ export interface OccupancyOutcome extends ReservationOutcome {
    * this returns; the caller (`LayoutService`) still owns stopping the
    * loco and entering Safe-Stop, since this service has no DCC/MQTT access. */
   unexpectedOccupancy: boolean;
+  /**
+   * Set to the block id when a block this route still holds stopped being
+   * determinable (#4). Unlike `unexpectedOccupancy`, the route is left
+   * exactly as it was — status and locks untouched — because Safe-Stop holds
+   * locks rather than releasing them (D8), and `LayoutService`'s Safe-Stop
+   * is what will move it to `suspended`. This service only reports the fact.
+   */
+  occupancyUnknownBlockId: BlockId | null;
 }
 
 export type ResumeResult =
   | { resumed: true; reservation: RouteReservation; pointsToRecommand: RouteHold[] }
   | { resumed: false; reason: string };
+
+/**
+ * Maps a `PathfindingFailure` onto the `RouteRejection` union, so a refused
+ * grant has one rejection vocabulary whether the refusal came from the search
+ * or from the planner. A point-position conflict fans out to one rejection
+ * per conflicting point, matching how `planReservation` reports the same
+ * condition when it is handed an explicit path.
+ */
+function toRejections(failure: PathfindingFailure, destinationBlockId: BlockId): RouteRejection[] {
+  switch (failure.kind) {
+    case 'unknown-block':
+      return [{ kind: 'unknown-block', blockId: failure.blockId }];
+    case 'destination-is-start':
+      return [{ kind: 'destination-is-start', blockId: failure.blockId }];
+    case 'point-position-conflict':
+      return failure.pointIds.map((pointId) => ({ kind: 'point-position-conflict', pointId }));
+    case 'no-path':
+      return [{ kind: 'no-path', destinationBlockId, blockers: failure.blockers }];
+  }
+}
 
 /** Thrown when a route id does not resolve to a reservation in the given layout. */
 export class RouteNotFoundError extends Error {
@@ -93,15 +146,44 @@ export class ReservationService implements IRouteLockView {
 
   // ─── Grant ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Resolves `request.path` to an ordered edge list — searching the graph
+   * when the caller named a destination (#4) — then plans, persists, and
+   * commits the grant.
+   *
+   * The search happens *before* `planReservation`, against the same `view`,
+   * and its output is then validated by `planReservation` like any other
+   * edge list. That redundancy is deliberate (P6, docs/pathfinding.md): the
+   * pathfinder is an optimiser over the graph, and the planner remains the
+   * single authority on what may be reserved. If the two ever disagree, the
+   * planner wins and the grant is refused — which is the fail-safe direction.
+   */
   async grant(
     layoutId: LayoutId,
-    request: Omit<ReservationRequest, 'layoutId'>,
+    request: GrantRequest,
     graph: TrackGraph | null,
   ): Promise<GrantOutcome> {
     const routeId = randomUUID();
     const now = new Date();
     const view = await this.buildView(layoutId, graph);
-    const fullRequest: ReservationRequest = { layoutId, ...request };
+
+    const resolved = this.resolvePath(request, view);
+    if (!resolved.ok) {
+      this.log.warn('[ReservationService] Grant rejected — no path', {
+        layoutId,
+        locoAddress: request.locoAddress,
+        rejections: resolved.rejections,
+      });
+      return { granted: false, rejections: resolved.rejections };
+    }
+
+    const fullRequest: ReservationRequest = {
+      layoutId,
+      locoAddress: request.locoAddress,
+      authority: request.authority,
+      startBlockId: request.startBlockId,
+      edgeIds: resolved.edgeIds,
+    };
 
     const result = planReservation(fullRequest, view, routeId, now);
     if (!result.granted) {
@@ -256,23 +338,30 @@ export class ReservationService implements IRouteLockView {
       );
 
     if (!route) {
-      return { reservation: null, changedBlocks: [], changedPoints: [], unexpectedOccupancy: false };
+      return {
+        reservation: null,
+        changedBlocks: [],
+        changedPoints: [],
+        unexpectedOccupancy: false,
+        occupancyUnknownBlockId: null,
+      };
     }
 
     const effect = evaluateOccupancyChange(route, blockId, occupancy, previous);
+    const quiet = { unexpectedOccupancy: false, occupancyUnknownBlockId: null };
 
     switch (effect.kind) {
       case 'progress': {
         const outcome = await this.releaseAndPersist(route.id, [], {
           confirmedIndex: effect.confirmedIndex,
         });
-        return { ...outcome, unexpectedOccupancy: false };
+        return { ...outcome, ...quiet };
       }
       case 'release': {
         const outcome = await this.releaseAndPersist(route.id, effect.releasable, {
           confirmedIndex: effect.confirmedIndex,
         });
-        return { ...outcome, unexpectedOccupancy: false };
+        return { ...outcome, ...quiet };
       }
       case 'complete': {
         const unreleased = route.holds.filter((h) => !h.released);
@@ -282,7 +371,7 @@ export class ReservationService implements IRouteLockView {
           confirmedIndex: route.path.length - 1,
         });
         this.log.info('[ReservationService] Route completed', { layoutId, routeId: route.id });
-        return { ...outcome, unexpectedOccupancy: false };
+        return { ...outcome, ...quiet };
       }
       case 'unexpected-occupancy': {
         const unreleased = route.holds.filter((h) => !h.released);
@@ -296,11 +385,29 @@ export class ReservationService implements IRouteLockView {
           routeId: route.id,
           blockId,
         });
-        return { ...outcome, unexpectedOccupancy: true };
+        return { ...outcome, unexpectedOccupancy: true, occupancyUnknownBlockId: null };
+      }
+      case 'occupancy-unknown': {
+        // Deliberately no `releaseAndPersist`: the route keeps its status and
+        // every lock it holds. Safe-Stop holds locks, it does not release
+        // them (D8), and `LayoutService` is what suspends it. Reporting the
+        // block is all this service can do without DCC/MQTT access.
+        this.log.warn('[ReservationService] Route block occupancy became unknown', {
+          layoutId,
+          routeId: route.id,
+          blockId,
+        });
+        return {
+          reservation: route,
+          changedBlocks: [],
+          changedPoints: [],
+          unexpectedOccupancy: false,
+          occupancyUnknownBlockId: blockId,
+        };
       }
       case 'ignore':
       default:
-        return { reservation: route, changedBlocks: [], changedPoints: [], unexpectedOccupancy: false };
+        return { reservation: route, changedBlocks: [], changedPoints: [], ...quiet };
     }
   }
 
@@ -383,6 +490,52 @@ export class ReservationService implements IRouteLockView {
   }
 
   // ─── Private ────────────────────────────────────────────────────────────────
+
+  /**
+   * Turns a `RequestedPath` into the ordered edge list `planReservation`
+   * takes. An `edges` request passes straight through — #3's behaviour,
+   * unchanged. A `destination` request runs the pathfinder.
+   *
+   * On a search failure this returns the path rejections **together with**
+   * the path-independent ones (`checkPathIndependentPreconditions`), because
+   * `planReservation` will never run to report them. Without that, an
+   * operator whose system is Safe-Stopped *and* whose destination is blocked
+   * would be told only about the blockage, fix it, and be refused again —
+   * D14 exists precisely to prevent that.
+   */
+  private resolvePath(
+    request: GrantRequest,
+    view: ReservationView,
+  ): { ok: true; edgeIds: BlockEdgeId[] } | { ok: false; rejections: RouteRejection[] } {
+    if (request.path.kind === 'edges') {
+      return { ok: true, edgeIds: request.path.edgeIds };
+    }
+
+    const { destinationBlockId, startExitEnd } = request.path;
+
+    if (view.graph === null) {
+      // `planReservation` would report this too, but it cannot run without a
+      // path and the search cannot run without a graph.
+      return { ok: false, rejections: checkPathIndependentPreconditions(request.locoAddress, view) };
+    }
+
+    const result = findPath(
+      { startBlockId: request.startBlockId, destinationBlockId, startExitEnd },
+      { graph: view.graph, blocks: view.blocks, points: view.points },
+    );
+
+    if (result.found) {
+      return { ok: true, edgeIds: result.edgeIds };
+    }
+
+    return {
+      ok: false,
+      rejections: [
+        ...checkPathIndependentPreconditions(request.locoAddress, view),
+        ...toRejections(result.reason, destinationBlockId),
+      ],
+    };
+  }
 
   private async buildView(layoutId: LayoutId, graph: TrackGraph | null): Promise<ReservationView> {
     const state = this.stateManager.getState();

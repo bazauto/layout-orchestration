@@ -7,8 +7,9 @@ This repository contains a local-first control stack for a DCC-based layout:
 - A React frontend for operating the layout, editing topology, and configuring blocks, sensors, points, locos, and track tiles
 
 The project is currently in the layout-definition and operator tooling phase. Route
-reservation and locking has landed (see Current Status); pathfinding, driving a granted
-route, and automation are planned next.
+reservation, locking, and pathfinding have landed (see Current Status); a granted route
+reserves its track and sets its points, but driving the train along it is still manual.
+Braking models, collision avoidance, and scheduling are planned next.
 
 ## Current Status
 
@@ -30,6 +31,15 @@ Implemented:
 - Route reservation and locking engine — grant/cancel/suspend/resume over an
   explicit ordered path, exclusive block/point locks with progressive
   release, Safe-Stop suspension and restart recovery — see `docs/route-locking.md`
+- Route pathfinding — a direction-aware shortest-path search over the block graph
+  (state is *block plus the end entered by*, so no path can require a reversal), which
+  will not route over a block that is occupied, unknown, or held by another route, nor
+  over a point another route holds. A granted route then has its points thrown; a point
+  command the DCC adapter rejects invalidates the whole route and Safe-Stops — see
+  `docs/pathfinding.md`
+- Latched route faults (`SystemHealth.routeFaults`) with per-route operator acknowledge,
+  covering an unexpected occupancy, a rejected point command, and a reserved block whose
+  occupancy stops being determinable mid-route
 - WebSocket state streaming to the frontend
 - Local username/password authentication with role-based access (`admin` /
   `operator`) — see `docs/auth.md` for the scheme and its threat model
@@ -41,7 +51,7 @@ Implemented:
 - GitHub Actions CI
 
 Planned next:
-- Pathfinding and driving a granted route (issuing point/throttle commands) — #4
+- Per-loco braking model (#6) and collision avoidance (#7) — driving a granted route
 - Automation engine / schedules
 
 ## Workspace Layout
@@ -162,7 +172,11 @@ Current automated coverage includes:
   and recovery paths, malformed-sensor-payload Safe-Stop (#27), and per-sensor fault
   recovery — latching, premature-recovery refusal, retained-replay exclusion, arming and
   acknowledge, out-of-service, degraded (IR/detector) operation, and the regression guard
-  that an IR `clear` cannot release a route's holds (#34)
+  that an IR `clear` cannot release a route's holds (#34); and pathfinding — a grant by
+  destination that sets its points, routing around an occupied block, an unreachable
+  destination, a conflicting request, a DCC-rejected point command, a reserved block going
+  unknown mid-route, and the regression guard that a route Safe-Stop is latched and does
+  not clear on an unrelated health evaluation (#4)
 - Playwright tests for editor happy path, erase flow, keyboard shortcuts,
   no-scrollbar viewport regression, edge authoring, and the login screen
 
@@ -176,6 +190,10 @@ Current automated coverage includes:
 - Live block and point state display
 - Sensor-fault banner: lists every latched fault with its reason and an Acknowledge action
   (enabled once armed — see `docs/sensor-fault-recovery.md`)
+- Routes panel: request a route by loco, start block, and destination (the backend finds
+  the path); live routes with their progress along the path, Cancel, and Resume; latched
+  route faults with Acknowledge. A refused request shows the backend's reason — "no route
+  exists to block 4 — block b2 is occupied" — and leaves the form populated
 
 ### Configure
 - CRUD for blocks, sensors, points, locos, and edges
@@ -310,7 +328,7 @@ and `points` `POST` were the remaining outliers and now carry `blockCreateSchema
 
 ## Next Milestones
 
-1. Pathfinding and driving a granted route (#4)
+1. Per-loco braking model (#6) and collision avoidance (#7)
 2. Point position confirmation (#25)
 3. Automation engine / schedules
 4. Link grid tiles to the topology graph, so tile placement can derive edges

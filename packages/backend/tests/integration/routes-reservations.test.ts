@@ -313,6 +313,128 @@ describe('Route reservation routes', () => {
     expect(res.statusCode).toBe(201);
   });
 
+  // ── Pathfinding (#4) ──────────────────────────────────────────────────────
+
+  it('POST with a destinationBlockId returns 201 and a searched path', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/routes`,
+      payload: { locoAddress: 3, authority: 'manual', startBlockId: 'b1', destinationBlockId: 'b2' },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.path.map((s: { blockId: string }) => s.blockId)).toEqual(['b1', 'b2']);
+  });
+
+  it('POST with neither edgeIds nor destinationBlockId returns 400', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/routes`,
+      payload: { locoAddress: 3, authority: 'manual', startBlockId: 'b1' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('POST with BOTH edgeIds and destinationBlockId returns 400 rather than silently favouring one', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/routes`,
+      payload: {
+        locoAddress: 3,
+        authority: 'manual',
+        startBlockId: 'b1',
+        edgeIds: ['e1'],
+        destinationBlockId: 'b2',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('POST with startExitEnd alongside edgeIds returns 400 — it applies only to a searched path', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/routes`,
+      payload: {
+        locoAddress: 3,
+        authority: 'manual',
+        startBlockId: 'b1',
+        edgeIds: ['e1'],
+        startExitEnd: 'east',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('POST to an unreachable destination returns 422 with a no-path rejection', async () => {
+    // b2 is occupied by something else, so there is no clear road to it.
+    state.updateBlockOccupancy('b2', 'occupied');
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/routes`,
+      payload: { locoAddress: 3, authority: 'manual', startBlockId: 'b1', destinationBlockId: 'b2' },
+    });
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body);
+    expect(body.rejections).toContainEqual(
+      expect.objectContaining({ kind: 'no-path', destinationBlockId: 'b2' }),
+    );
+    // The human-readable summary names what is in the way.
+    expect(body.error).toMatch(/block b2 is occupied/);
+  });
+
+  it('POST to a destination that is the start block returns 422', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/routes`,
+      payload: { locoAddress: 3, authority: 'manual', startBlockId: 'b1', destinationBlockId: 'b1' },
+    });
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body).rejections).toContainEqual({
+      kind: 'destination-is-start',
+      blockId: 'b1',
+    });
+  });
+
+  // ── Route faults (#4) ─────────────────────────────────────────────────────
+
+  it('GET /api/layouts/:layoutId/route-faults returns an empty list when nothing is faulted', async () => {
+    const res = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/route-faults` });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ faults: [] });
+  });
+
+  it('GET .../route-faults for a layout that is not the running one returns 404', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/layouts/other-layout/route-faults' });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('POST .../acknowledge-fault on a route with no latched fault returns 404', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/routes/no-such-route/acknowledge-fault`,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  // The acknowledge is deliberately not `requireAdmin` (it mirrors the
+  // sensor-fault acknowledge — see the route's doc comment), so an operator
+  // must reach the handler and get its 404, never a 403. The fault lifecycle
+  // itself — latching, Safe-Stop, clearing — is covered end to end in
+  // tests/scenario/pathfinding.scenario.test.ts.
+  it('an operator reaches the acknowledge-fault handler rather than being refused by role', async () => {
+    await authenticateAsOperator(app);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/routes/no-such-route/acknowledge-fault`,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('an operator may read route-faults', async () => {
+    await authenticateAsOperator(app);
+    const res = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/route-faults` });
+    expect(res.statusCode).toBe(200);
+  });
 });
 
 describe('Route reservation routes — unauthenticated', () => {

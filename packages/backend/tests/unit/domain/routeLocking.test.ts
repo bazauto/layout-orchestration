@@ -450,6 +450,34 @@ describe('evaluateOccupancyChange', () => {
     expect(effect).toEqual({ kind: 'ignore' });
   });
 
+  // ── occupancy-unknown (#4) ────────────────────────────────────────────
+
+  it('reports occupancy-unknown when a block ahead of the train stops being determinable', () => {
+    const r = existingReservation({ confirmedIndex: 0 });
+    const effect = evaluateOccupancyChange(r, 'b2', 'unknown', 'clear');
+    expect(effect).toEqual({ kind: 'occupancy-unknown', blockId: 'b2' });
+  });
+
+  it('reports occupancy-unknown for the block the train is confirmed in as well', () => {
+    // Losing sight of the train itself is no less serious than losing sight
+    // of the road ahead.
+    const r = existingReservation({ confirmedIndex: 1 });
+    const effect = evaluateOccupancyChange(r, 'b2', 'unknown', 'occupied');
+    expect(effect).toEqual({ kind: 'occupancy-unknown', blockId: 'b2' });
+  });
+
+  it('ignores unknown -> unknown, so an already-faulted route is not re-faulted on every recompute', () => {
+    const r = existingReservation({ confirmedIndex: 0 });
+    const effect = evaluateOccupancyChange(r, 'b2', 'unknown', 'unknown');
+    expect(effect).toEqual({ kind: 'ignore' });
+  });
+
+  it('ignores unknown on a block outside the route', () => {
+    const r = existingReservation({ confirmedIndex: 0 });
+    const effect = evaluateOccupancyChange(r, 'b-unrelated', 'unknown', 'clear');
+    expect(effect).toEqual({ kind: 'ignore' });
+  });
+
   it('ignores a clear reading on a block that never went occupied (detection dropout is not evidence of clearance)', () => {
     const r = existingReservation({ confirmedIndex: 1 });
     const effect = evaluateOccupancyChange(r, 'b1', 'clear', 'unknown');

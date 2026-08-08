@@ -28,7 +28,9 @@ const INITIAL_SNAPSHOT: StateSnapshot = {
   blocks: {},
   points: {},
   locos: {},
+  routes: {},
   sensorFaults: [],
+  routeFaults: [],
 };
 
 const WS_URL =
@@ -80,10 +82,11 @@ export function useLayoutSocket() {
       if (unmounted.current) return;
       setConnectionState('disconnected');
       // Deliberately spread `s` rather than reset to INITIAL_SNAPSHOT: a
-      // sensor fault is latched on the backend, not on this connection, so a
-      // drop must not clear `sensorFaults` — that would show the operator an
-      // all-clear that isn't true. A reconnect's STATE_SNAPSHOT replaces the
-      // list with the authoritative current set (#34).
+      // sensor fault (#34) or route fault (#4) is latched on the backend, not
+      // on this connection, so a drop must not clear `sensorFaults` /
+      // `routeFaults` — that would show the operator an all-clear that isn't
+      // true. A reconnect's STATE_SNAPSHOT replaces both lists with the
+      // authoritative current sets.
       setSnapshot((s) => ({ ...s, systemStatus: 'offline' }));
       const delay = reconnectDelay.current;
       reconnectDelay.current = Math.min(delay * 2, MAX_RECONNECT_MS);
@@ -143,6 +146,18 @@ function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
     case 'SENSOR_FAULTS':
       // Always the complete current set, never a delta — replace wholesale.
       return { ...prev, sensorFaults: msg.payload.faults };
+
+    case 'ROUTE_STATE': {
+      // Unlike the fault lists, this IS a delta: one reservation at whatever
+      // status it just reached. Terminal statuses stay in the map so the
+      // panel can show what happened to a route that just ended, rather than
+      // having it vanish; the panel filters what it lists.
+      const r = msg.payload;
+      return { ...prev, routes: { ...prev.routes, [r.id]: r } };
+    }
+
+    case 'ROUTE_FAULTS':
+      return { ...prev, routeFaults: msg.payload.faults };
 
     default:
       return prev;

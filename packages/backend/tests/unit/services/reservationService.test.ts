@@ -153,7 +153,7 @@ async function grantThreeBlockRoute(service: ReservationService, stateManager: L
   const graph = threeBlockGraph();
   return service.grant(
     LAYOUT,
-    { locoAddress: 3, authority: 'manual', startBlockId: 'b1', edgeIds: ['e1', 'e2'] },
+    { locoAddress: 3, authority: 'manual', startBlockId: 'b1', path: { kind: 'edges', edgeIds: ['e1', 'e2'] } },
     graph,
   );
 }
@@ -204,7 +204,7 @@ describe('ReservationService — grant', () => {
     const graph = threeBlockGraph();
     const outcome = await service.grant(
       LAYOUT,
-      { locoAddress: 3, authority: 'manual', startBlockId: 'b1', edgeIds: ['e1', 'e2'] },
+      { locoAddress: 3, authority: 'manual', startBlockId: 'b1', path: { kind: 'edges', edgeIds: ['e1', 'e2'] } },
       graph,
     );
 
@@ -230,7 +230,7 @@ describe('ReservationService — grant', () => {
     const graph = threeBlockGraph();
     const second = await service.grant(
       LAYOUT,
-      { locoAddress: 3, authority: 'manual', startBlockId: 'b1', edgeIds: ['e1'] },
+      { locoAddress: 3, authority: 'manual', startBlockId: 'b1', path: { kind: 'edges', edgeIds: ['e1'] } },
       graph,
     );
     expect(second.granted).toBe(false);
@@ -286,7 +286,7 @@ describe('ReservationService — suspendAll / suspendAuto', () => {
     const graph = threeBlockGraph();
     const manualOutcome = await service.grant(
       LAYOUT,
-      { locoAddress: 3, authority: 'manual', startBlockId: 'b1', edgeIds: ['e1', 'e2'] },
+      { locoAddress: 3, authority: 'manual', startBlockId: 'b1', path: { kind: 'edges', edgeIds: ['e1', 'e2'] } },
       graph,
     );
     if (!manualOutcome.granted) throw new Error('expected grant');

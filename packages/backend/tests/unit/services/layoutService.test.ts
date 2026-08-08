@@ -266,7 +266,7 @@ describe('LayoutService — throttle commands', () => {
       locoAddress: 3,
       authority: 'auto',
       startBlockId: 'b1',
-      edgeIds: ['e1'],
+      path: { kind: 'edges', edgeIds: ['e1'] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
@@ -284,7 +284,7 @@ describe('LayoutService — throttle commands', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: ['e1'],
+      path: { kind: 'edges', edgeIds: ['e1'] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
@@ -330,7 +330,7 @@ describe('LayoutService — point commands', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: ['e1'],
+      path: { kind: 'edges', edgeIds: ['e1'] },
     });
     expect(grant.granted).toBe(true);
 
@@ -346,7 +346,7 @@ describe('LayoutService — point commands', () => {
       locoAddress: 3,
       authority: 'auto',
       startBlockId: 'b1',
-      edgeIds: ['e1'],
+      path: { kind: 'edges', edgeIds: ['e1'] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
@@ -373,7 +373,7 @@ describe('LayoutService — point commands', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: ['e1'],
+      path: { kind: 'edges', edgeIds: ['e1'] },
     });
     expect(grant.granted).toBe(true);
 
@@ -832,7 +832,7 @@ describe('LayoutService — safe-stop on connection loss', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: ['e1'],
+      path: { kind: 'edges', edgeIds: ['e1'] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');

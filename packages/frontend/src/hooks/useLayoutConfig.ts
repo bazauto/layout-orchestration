@@ -14,6 +14,8 @@ import {
   LocoRecord,
   PointCondition,
   PointRecord,
+  RouteFaultView,
+  RouteReservation,
   SensorFaultView,
   SensorRecord,
   SystemStatus,
@@ -130,6 +132,15 @@ export interface DeleteBlockResult {
 export interface DeletePointResult {
   ok: boolean;
   message?: string;
+}
+
+/** Response of `POST /routes/:routeId/acknowledge-fault` (#4) — see `docs/pathfinding.md` P8. */
+export interface AcknowledgeRouteFaultResponse {
+  routeId: string;
+  cleared: true;
+  systemStatus: SystemStatus;
+  safeStopReason: string | null;
+  faults: RouteFaultView[];
 }
 
 /** Response of `POST /sensors/:id/acknowledge-fault` (#34) — see `docs/sensor-fault-recovery.md` D1/D5. */
@@ -301,6 +312,43 @@ export function useLayoutConfig(layoutId: string | null) {
       method: 'POST',
     });
 
+  // ── Routes (#4, see docs/pathfinding.md) ────────────────────────────────
+  //
+  // No `refresh()` on success: route state arrives over the WebSocket
+  // (`ROUTE_STATE` / `ROUTE_FAULTS`), which is authoritative and live. Re-
+  // fetching config here would do nothing useful and would race the socket.
+  // These are here rather than in a separate hook only because `mutate`'s
+  // error extraction — which surfaces the backend's rendered
+  // `describeRejections` string — is exactly what a refused grant needs.
+
+  /** `POST .../routes` with a destination; the backend searches for the path (P6). */
+  const requestRoute = async (req: {
+    locoAddress: number;
+    startBlockId: string;
+    destinationBlockId: string;
+  }): Promise<MutationResult<RouteReservation>> =>
+    mutate<RouteReservation>(`/api/layouts/${layoutId}/routes`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...req, authority: 'manual' }),
+    });
+
+  const cancelRoute = async (routeId: string): Promise<MutationResult<null>> =>
+    mutate<null>(`/api/layouts/${layoutId}/routes/${routeId}`, { method: 'DELETE' });
+
+  const resumeRoute = async (routeId: string): Promise<MutationResult<RouteReservation>> =>
+    mutate<RouteReservation>(`/api/layouts/${layoutId}/routes/${routeId}/resume`, {
+      method: 'POST',
+    });
+
+  const acknowledgeRouteFault = async (
+    routeId: string,
+  ): Promise<MutationResult<AcknowledgeRouteFaultResponse>> =>
+    mutate<AcknowledgeRouteFaultResponse>(
+      `/api/layouts/${layoutId}/routes/${routeId}/acknowledge-fault`,
+      { method: 'POST' },
+    );
+
   const createLoco = async (
     name: string,
     address: number,
@@ -387,6 +435,10 @@ export function useLayoutConfig(layoutId: string | null) {
     updateSensor,
     deleteSensor,
     acknowledgeSensorFault,
+    requestRoute,
+    cancelRoute,
+    resumeRoute,
+    acknowledgeRouteFault,
     createLoco,
     updateLoco,
     deleteLoco,

@@ -6,6 +6,7 @@ import { StatusBar } from './components/StatusBar';
 import { LoginScreen } from './components/LoginScreen';
 import { ThrottlePanel } from './components/ThrottlePanel';
 import { LayoutPanel } from './components/LayoutPanel';
+import { RoutesPanel } from './components/RoutesPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { GridEditor } from './components/GridEditor';
 import { SensorFaultBanner } from './components/SensorFaultBanner';
@@ -38,7 +39,8 @@ function AuthenticatedApp({
   onLogout: () => void;
 }) {
   const { snapshot, connectionState, send } = useLayoutSocket();
-  const { systemStatus, systemMode, safeStopReason, blocks, points, locos, sensorFaults } = snapshot;
+  const { systemStatus, systemMode, safeStopReason, blocks, points, locos, routes, sensorFaults, routeFaults } =
+    snapshot;
   const [appTab, setAppTab] = useState<AppTab>('operate');
   const [layoutId, setLayoutId] = useState<string | null>(null);
 
@@ -124,6 +126,30 @@ function AuthenticatedApp({
               pointRecords={layoutConfig.config.points}
               disabled={isDisabled}
               send={send as (msg: ClientMessage) => void}
+            />
+            <RoutesPanel
+              routes={routes}
+              routeFaults={routeFaults}
+              blocks={blocks}
+              blockRecords={layoutConfig.config.blocks}
+              locoRecords={layoutConfig.config.locos}
+              disabled={isDisabled}
+              onRequest={async (req) => {
+                const r = await layoutConfig.requestRoute(req);
+                return { ok: r.ok, message: r.message };
+              }}
+              onCancel={async (routeId) => {
+                const r = await layoutConfig.cancelRoute(routeId);
+                return { ok: r.ok, message: r.message };
+              }}
+              onResume={async (routeId) => {
+                const r = await layoutConfig.resumeRoute(routeId);
+                return { ok: r.ok, message: r.message };
+              }}
+              onAcknowledgeFault={async (routeId) => {
+                const r = await layoutConfig.acknowledgeRouteFault(routeId);
+                return { ok: r.ok, message: r.message };
+              }}
             />
           </>
         )}
