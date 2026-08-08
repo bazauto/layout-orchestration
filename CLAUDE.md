@@ -13,6 +13,9 @@ style preferences.
 |---|---|
 | `docs/project-plan.md` | Phase roadmap (0–3) |
 | `docs/mqtt-contract.md` | **Binding** MQTT topics, payloads, QoS, retention |
+| `docs/topology.md` | Track graph: `block_edges`, validation, deferred items |
+| `docs/auth.md` | Auth scheme and the pre-TLS threat model |
+| `docs/sensor-fault-recovery.md` | Sensor-fault latch recovery and the per-sensor occupancy model |
 | `docs/claude-review.md`, `docs/gpt-review.md` | Open design questions |
 | `docs/topology.md` | Track graph (`block_edges`) decision record |
 | `docs/route-locking.md` | Route reservation and locking (D1–D14) decision record |
