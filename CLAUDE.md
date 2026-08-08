@@ -148,9 +148,13 @@ release logic (`planReservation`, `evaluateOccupancyChange`, `holdsReleasableAt`
 `route_reservations`/`route_holds` (migration `0004_redundant_tana_nile.sql`) persist
 reservations with DB-level exclusivity (partial unique indexes, #11's posture — no two
 routes may hold the same block/point, at most one active/suspended reservation per loco);
-`ReservationService` (`grant`/`cancel`/`suspendAll`/`suspendAuto`/`resume`/
+`ReservationService` (`grant`/`cancel`/`suspendAll`/`suspendAuto`/`suspendOne`/`resume`/
 `onOccupancyChange`/`loadOnStartup`) owns the lifecycle, with no MQTT/DCC access of its
-own — `LayoutService` calls in and reacts to the outcomes. `TopologyService` gained a
+own — `LayoutService` calls in and reacts to the outcomes. Because the service has no DCC
+access, `resume` returning `resumed: true` is **provisional**: D8 requires every held
+point to be re-commanded, so `LayoutService.resumeRoute` issues those commands *before*
+treating the resume as successful, and rolls the route back to `suspended` (`suspendOne`,
+locks retained) without clearing D9's restart latch if any is rejected. `TopologyService` gained a
 fourth constructor argument, `lockView: IRouteLockView` (implemented by
 `ReservationService`), closing the deferred edge-writes-vs-reservations note in
 `docs/topology.md`: an edge/block/point held by an active or suspended route now refuses
