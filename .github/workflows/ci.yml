@@ -52,3 +52,27 @@ jobs:
 
       - name: Run e2e tests
         run: npm run test:e2e
+
+      # `always()`, not the default: the run this evidence exists for is the
+      # one that just failed, and the default `success()` would discard it
+      # precisely then.
+      #
+      # `playwright-report/` only, deliberately. The HTML reporter copies every
+      # attachment into `playwright-report/data/`, so `test-results/` is a
+      # byte-for-byte duplicate of the same traces, videos and screenshots —
+      # uploading both doubles the artifact and adds nothing. Path is
+      # gitignored, so none of this is ever committed.
+      #
+      # To read it: download the artifact, then `npx playwright show-report
+      # <dir>`. Serving it is required rather than fussiness — opening
+      # index.html over file:// cannot fetch the trace archives.
+      - name: Upload Playwright evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-evidence
+          path: playwright-report/
+          retention-days: 14
+          # A run that fails before Playwright executes (lint, unit tests)
+          # leaves nothing to upload; that is expected, not a CI error.
+          if-no-files-found: ignore

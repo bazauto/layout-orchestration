@@ -209,6 +209,42 @@ GitHub Actions currently runs:
 - backend build
 - Playwright browser install
 - Playwright end-to-end tests
+- upload of the Playwright evidence artifact (runs even when the job fails)
+
+### Playwright evidence
+
+Every e2e run captures a trace, a screenshot, and a video for **every test**,
+passing or failing, so a green build leaves a visual record of what the operator
+UI actually rendered rather than only proving nothing threw. A failing test
+additionally gets `error-context.md`, a YAML snapshot of the page at the moment
+of failure, and the `github` reporter annotates the failing line inline on the
+pull request.
+
+CI uploads these as the `playwright-evidence` artifact, retained 14 days. To
+read one:
+
+```powershell
+# download and unzip the artifact from the run's Summary page, then:
+npx playwright show-report <unzipped-dir>
+```
+
+Serving the report is required rather than optional — opening `index.html`
+directly over `file://` cannot fetch the trace archives.
+
+Only `playwright-report/` is uploaded. The HTML reporter copies every attachment
+into `playwright-report/data/`, so `test-results/` holds a duplicate of the same
+traces, videos, and screenshots; uploading both would double the artifact for no
+extra information. Both directories are gitignored.
+
+`retries` is deliberately **0**. A test that only passes on a second attempt
+would be reported as flaky-but-green, and this suite covers the operator UI of a
+system that moves physical hardware — an intermittent failure is a finding, not
+noise to be retried away. That is also why `trace` is `'on'` rather than
+`'on-first-retry'`, which with no retries would capture nothing at all.
+
+If artifact storage becomes a problem, drop `video` to `'retain-on-failure'`
+first: a trace already carries a DOM snapshot and screenshot for every action,
+so video on a passing test is the most expensive and least additive of the three.
 
 ## Safety Notes
 
