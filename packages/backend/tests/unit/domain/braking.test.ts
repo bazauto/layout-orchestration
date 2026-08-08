@@ -2,10 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   BRAKING_SAFETY_FLOOR_MM,
   BRAKING_SAFETY_MARGIN,
-  BRAKING_STEP_DECREMENT,
   BRAKING_TICK_MS,
   MIN_STOPPING_DISTANCE_MM,
-  REFERENCE_STOPPING_DISTANCE_MM,
   buildStopExpectation,
   isBrakingOverrun,
   planBrakingSchedule,
