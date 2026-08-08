@@ -313,6 +313,80 @@ describe('scenario: route locking', () => {
     await restartedService.stop();
   });
 
+  it('5b. a resume whose held point rejects its re-command is rolled back — the route returns to suspended with locks retained, and the restart Safe-Stop is NOT cleared', async () => {
+    const h = createScenarioHarness();
+    await seedAndStart(h);
+    await h.sensorReports('s1', 'occupied');
+
+    const e1 = await edgeId(h, 'b1', 'b2');
+    const grant = await h.service.requestRoute({
+      locoAddress: 3,
+      authority: 'manual',
+      startBlockId: 'b1',
+      edgeIds: [e1],
+    });
+    expect(grant.granted).toBe(true);
+    if (!grant.granted) throw new Error('expected grant');
+    const routeId = grant.reservation.id;
+    // e1 carries `p1=normal`, so the route holds a point to re-command.
+    expect(grant.reservation.holds.some((hd) => hd.kind === 'point' && hd.targetId === 'p1')).toBe(true);
+
+    await h.service.stop();
+
+    const restartedState = new LayoutStateManager(LAYOUT_ID);
+    const restartedReservations = new ReservationService(h.repo, restartedState, silent);
+    const restartedDcc = new SimulatedDccAdapter(silent);
+    const restartedService = new LayoutService(
+      restartedDcc,
+      new SimulatedMqttAdapter(),
+      h.repo,
+      restartedState,
+      restartedReservations,
+      silent,
+    );
+    await restartedService.start(LAYOUT_ID);
+    expect(restartedService.getSystemStatus().status).toBe('safe-stop');
+
+    // Satisfy D8's *block* preconditions directly, so the only thing left
+    // standing between this route and a successful resume is the point.
+    // Without this the resume would be refused for the wrong reason and the
+    // re-command path would never be reached.
+    restartedState.updateBlockOccupancy('b1', 'occupied');
+    restartedState.updateBlockOccupancy('b2', 'clear');
+
+    // The DCC adapter rejects the re-command: a serial write failing, a
+    // servo driver reporting a fault. Per #25 there is no position feedback
+    // channel, so a rejected command is the only evidence available that the
+    // road is not set — which is exactly why it must not be swallowed.
+    restartedDcc.setPoint = () => Promise.reject(new Error('DCC EX rejected: point 10 unreachable'));
+
+    const refused = await restartedService.resumeRoute(routeId);
+    expect(refused.resumed).toBe(false);
+    if (refused.resumed) throw new Error('expected the resume to be refused');
+    expect(refused.reason).toMatch(/p1/);
+    expect(refused.reason).toMatch(/unreachable/);
+
+    // The route is back to suspended, never left sitting `active` while a
+    // point it holds is known not to have taken its command.
+    expect(restartedService.listRoutes(['suspended']).map((r) => r.id)).toContain(routeId);
+    expect(restartedService.listRoutes(['active']).map((r) => r.id)).not.toContain(routeId);
+
+    // Locks retained through the rollback (D8).
+    expect(restartedState.getBlock('b1')?.lockedByRoute).toBe(routeId);
+    expect(restartedState.getPoint('p1')?.lockedByRoute).toBe(routeId);
+
+    // The D9 latch still holds: this route is not resolved, so the restart
+    // Safe-Stop must not have been cleared by the failed resume.
+    expect(restartedService.getSystemStatus().status).toBe('safe-stop');
+    expect(restartedService.getSystemStatus().reason).toMatch(/survived a restart/i);
+
+    // And the operator's other route out still works.
+    await restartedService.cancelRoute(routeId, 'operator cleared recovered route');
+    expect(restartedService.getSystemStatus().status).toBe('online');
+
+    await restartedService.stop();
+  });
+
   it("6. unexpected occupancy in a reserved block that is not the route's next expected step cancels the route, stops its loco, and enters Safe-Stop", async () => {
     const h = createScenarioHarness();
     await seedAndStart(h);

@@ -356,28 +356,57 @@ export class LayoutService extends EventEmitter {
       return result;
     }
 
-    this.emit('event', { type: 'ROUTE_STATE', payload: result.reservation } satisfies LayoutEvent);
-    if (this.recoveredRouteIds.delete(routeId)) {
-      this.health = { ...this.health, recoveredRouteCount: this.recoveredRouteIds.size };
-      await this.evaluateAndApplySafeStop();
-    }
-
+    // D8 refuses a resume unless every held point is re-commanded to its
+    // required position, so the commands are issued *before* this resume is
+    // treated as successful — before the ROUTE_STATE event, and before the
+    // D9 restart latch is cleared. A route must never sit `active` while a
+    // point it holds is known not to have accepted its command, and a
+    // restart Safe-Stop must never be cleared by a resume that then failed.
     const points = await this.repo.listPoints(this.layoutId);
+    const failures: string[] = [];
     for (const hold of result.pointsToRecommand) {
       if (!hold.requiredPosition) continue;
       const pointRecord = points.find((p) => p.id === hold.targetId);
-      if (!pointRecord) continue;
+      if (!pointRecord) {
+        // A hold referencing a point that no longer exists is an
+        // inconsistency, not a no-op to skip past.
+        failures.push(`point ${hold.targetId} is held by the route but no longer exists`);
+        continue;
+      }
       try {
         await this.dcc.setPoint(pointRecord.dccAddress, hold.requiredPosition);
         const updated = this.stateManager.updatePointPosition(hold.targetId, hold.requiredPosition);
         this.publishPointState(updated);
         this.emit('event', { type: 'POINT_STATE', payload: updated } satisfies LayoutEvent);
       } catch (err) {
-        this.log.error('[LayoutService] Failed to re-command point on resume', {
-          pointId: hold.targetId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        failures.push(
+          `point ${hold.targetId} rejected ${hold.requiredPosition}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
       }
+    }
+
+    if (failures.length > 0) {
+      const reason = `resume refused — ${failures.length} point command(s) failed: ${failures.join('; ')}`;
+      this.log.error('[LayoutService] Resume rolled back — point re-command failed', {
+        layoutId: this.layoutId,
+        routeId,
+        failures,
+      });
+      const outcome = await this.reservations.suspendOne(this.layoutId, routeId, reason);
+      if (outcome?.reservation) {
+        this.emit('event', { type: 'ROUTE_STATE', payload: outcome.reservation } satisfies LayoutEvent);
+      }
+      // The D9 latch is deliberately left intact: this route is not resolved,
+      // so `recoveredRouteCount` must not drop and Safe-Stop must not clear.
+      return { resumed: false, reason };
+    }
+
+    this.emit('event', { type: 'ROUTE_STATE', payload: result.reservation } satisfies LayoutEvent);
+    if (this.recoveredRouteIds.delete(routeId)) {
+      this.health = { ...this.health, recoveredRouteCount: this.recoveredRouteIds.size };
+      await this.evaluateAndApplySafeStop();
     }
 
     this.log.info('[LayoutService] Route resumed', { routeId });

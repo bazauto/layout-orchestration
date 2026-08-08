@@ -166,15 +166,39 @@ export class ReservationService implements IRouteLockView {
   }
 
   /**
+   * One `active` route -> `suspended`, locks retained. Used to undo a resume
+   * whose point re-commanding failed (see `resume`), so a route can never sit
+   * `active` while a point it holds is known not to have accepted its
+   * command. Returns `null` when the route is not currently `active` — a
+   * caller undoing its own resume has already established that it is.
+   */
+  async suspendOne(
+    layoutId: LayoutId,
+    routeId: RouteId,
+    reason: string,
+  ): Promise<ReservationOutcome | null> {
+    const outcomes = await this.suspendMatching(layoutId, reason, (r) => r.id === routeId);
+    return outcomes[0] ?? null;
+  }
+
+  /**
    * D8's resume preconditions: every remaining (unconfirmed) block in the
    * path reads `clear`, the train's current confirmed block reads
    * `occupied`, and (any `unknown` anywhere refuses, since both prior
    * checks already fail on `unknown`). This service has no DCC access, so
    * it cannot itself re-command the held points D8 also requires — it
-   * returns them as `pointsToRecommand` for `LayoutService` to issue,
-   * best-effort, after this call flips the route back to `active`. A point
-   * lock is an authority lock, not a physical position guarantee (D11), so
-   * this ordering does not weaken the guarantee resume is making.
+   * returns them as `pointsToRecommand` for `LayoutService` to issue after
+   * this call flips the route back to `active`.
+   *
+   * That re-commanding is **not** best-effort, so this method's success is
+   * provisional: D8 refuses a resume unless *every* held point is
+   * re-commanded, which means `LayoutService.resumeRoute` must call
+   * `suspendOne` to put the route straight back to `suspended` if any
+   * command is rejected, and must not clear a restart Safe-Stop (D9) until
+   * they have all succeeded. A point lock is an authority lock rather than a
+   * physical position guarantee (D11) — which is precisely why a *rejected*
+   * command must not be swallowed. It is the only evidence available today
+   * that the road is not set.
    */
   async resume(layoutId: LayoutId, routeId: RouteId): Promise<ResumeResult> {
     const reservation = await this.mustGetReservation(layoutId, routeId);

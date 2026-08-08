@@ -249,12 +249,31 @@ are, as far as anyone knows, still standing on it. So:
   `unknown` anywhere refuses outright — both prior checks already fail
   closed on `unknown`, since neither `clear` nor `occupied` matches it).
   `ReservationService.resume` has no DCC access, so it cannot itself
-  re-command the held points D8 also calls for; on success it flips the
-  route back to `active` and returns the point holds needing a physical
-  re-command, which `LayoutService.resumeRoute` issues afterward,
-  best-effort. This does not weaken the guarantee resume is making, because
-  a point lock was never a physical position guarantee to begin with — see
-  D11.
+  re-command the held points D8 also calls for; it flips the route back to
+  `active` and returns the point holds needing a physical re-command, which
+  `LayoutService.resumeRoute` issues afterward.
+
+  **That re-commanding is not best-effort, and its ordering is
+  load-bearing.** `resume` returning `resumed: true` is *provisional*: the
+  commands are issued before the resume is treated as successful — before
+  the `ROUTE_STATE` event and before D9's restart latch is cleared. If any
+  command is rejected, or a hold names a point that no longer exists, the
+  route goes straight back to `suspended` via
+  `ReservationService.suspendOne` (locks retained), `recoveredRouteCount` is
+  left untouched so a restart Safe-Stop does **not** clear, and the caller
+  gets `resumed: false` with every failure named.
+
+  It would be easy to read D11 as licence to swallow these failures — a
+  point lock is an authority guarantee, not a physical position guarantee,
+  so the system cannot promise the point is where it should be either way.
+  That reading is backwards. Precisely *because* there is no position
+  feedback channel (#25), a command the DCC adapter **rejects** is the only
+  evidence available that the road is not set, and resume is the exact
+  moment an operator is asserting it is safe to proceed. Discarding the one
+  signal we have, at the one moment it matters most, is not a neutral
+  simplification. This is the same criterion #4 applies to a granted
+  route — a rejected point command invalidates it — arriving early on the
+  recovery path.
 
 A runtime Safe-Stop does **not** latch on suspended routes by itself — the
 system may return to `online` with routes still suspended, which is safe
