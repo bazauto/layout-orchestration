@@ -5,7 +5,7 @@ import {
   TopologyRejectedError,
   TopologyService,
 } from '../../../services/TopologyService';
-import { pointUpdateSchema } from '../../../services/validation';
+import { pointCreateSchema, pointUpdateSchema } from '../../../services/validation';
 import { requireAdmin } from '../auth/hook';
 
 export async function pointRoutes(
@@ -23,18 +23,26 @@ export async function pointRoutes(
   // Defining a point (its DCC address, block assignment) is topology
   // config — admin-only. Throwing an existing point (POINT_COMMAND over
   // WebSocket) is driving, not gated by role.
-  fastify.post<{
-    Params: { layoutId: string };
-    Body: { name: string; dccAddress: number; blockId?: string };
-  }>('/api/layouts/:layoutId/points', { preHandler: requireAdmin }, async (req, reply) => {
-    const point = await repo.createPoint({
-      layoutId: req.params.layoutId,
-      name: req.body.name,
-      dccAddress: req.body.dccAddress,
-      blockId: req.body.blockId ?? null,
-    });
-    return reply.status(201).send(point);
-  });
+  fastify.post<{ Params: { layoutId: string }; Body: unknown }>(
+    '/api/layouts/:layoutId/points',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const parsed = pointCreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ error: 'Invalid point payload', details: parsed.error.flatten() });
+      }
+
+      const point = await repo.createPoint({
+        layoutId: req.params.layoutId,
+        name: parsed.data.name,
+        dccAddress: parsed.data.dccAddress,
+        blockId: parsed.data.blockId,
+      });
+      return reply.status(201).send(point);
+    },
+  );
 
   // Same admin-only posture as create. Delegates to
   // TopologyService#updatePoint for the layoutId ownership check — see its

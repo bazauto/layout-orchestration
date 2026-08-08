@@ -169,13 +169,55 @@ export const edgeUpdateSchema = edgeCreateSchema.partial().strict();
 
 export type EdgeUpdateInput = z.infer<typeof edgeUpdateSchema>;
 
+// ─── Blocks ─────────────────────────────────────────────────────────────
+
+/**
+ * Write schema for creating a block (`POST .../blocks`). A block row is only
+ * a name, but it is the substrate the topology graph and — since #4 — route
+ * reservation are built on, so it gets the same `.strict()` posture as its
+ * siblings: `id` and `layoutId` are path/server-owned and a body carrying
+ * either is a 400, not a silently ignored field.
+ */
+export const blockCreateSchema = z
+  .object({
+    name: z.string().min(1),
+  })
+  .strict();
+
+export type BlockCreateInput = z.infer<typeof blockCreateSchema>;
+
+/** Write schema for a partial block update. Same `.strict()` posture as create. */
+export const blockUpdateSchema = blockCreateSchema.partial().strict();
+
+export type BlockUpdateInput = z.infer<typeof blockUpdateSchema>;
+
 // ─── Points ─────────────────────────────────────────────────────────────
+
+/**
+ * Write schema for creating a point (`POST .../points`). `dccAddress` is the
+ * reason this matters more than it looks: it is the accessory address a
+ * physical point motor is thrown on, so the string `"3"` reaching Drizzle
+ * unchecked is bad config driving real hardware.
+ */
+export const pointCreateSchema = z
+  .object({
+    name: z.string().min(1),
+    dccAddress: z.number().int().positive(),
+    blockId: z.string().min(1).nullable().default(null),
+  })
+  .strict();
+
+export type PointCreateInput = z.infer<typeof pointCreateSchema>;
 
 /**
  * Write schema for a point update (`PUT .../points/:id`). Every field is
  * optional — a partial update — but `.strict()` so an unexpected field (e.g.
  * a client posting `id` or `layoutId`, both path/server-owned) is a 400, not
  * a silently ignored write. Same posture as `edgeUpdateSchema`.
+ *
+ * Deliberately not `pointCreateSchema.partial()`: that would carry create's
+ * `.default(null)` on `blockId` into the update path, turning an omitted
+ * `blockId` into an explicit "unassign this point from its block".
  */
 export const pointUpdateSchema = z
   .object({
