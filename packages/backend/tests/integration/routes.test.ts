@@ -224,6 +224,61 @@ describe('Block routes', () => {
     expect(repo.updateBlock).toHaveBeenCalledWith('b1', { name: 'Renamed' });
   });
 
+  // #36 — these two routes carried a Fastify `Body` generic and nothing
+  // else, so the declared shape was erased at compile time and the parsed
+  // JSON reached Drizzle unchecked. The `.strict()` cases below are the ones
+  // a TypeScript type could never have caught.
+  it('POST /api/layouts/:layoutId/blocks returns 400 for a missing name', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts/layout-1/blocks',
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repo.createBlock).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/layouts/:layoutId/blocks returns 400 for a wrong-typed name', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts/layout-1/blocks',
+      payload: { name: 42 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repo.createBlock).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/layouts/:layoutId/blocks returns 400 for an unknown field', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts/layout-1/blocks',
+      // .strict() — `layoutId` comes from the path, never the body.
+      payload: { name: 'Platform 1', layoutId: 'other-layout' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repo.createBlock).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/layouts/:layoutId/blocks/:id returns 400 for a wrong-typed name', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/layouts/layout-1/blocks/b1',
+      payload: { name: null },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repo.updateBlock).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/layouts/:layoutId/blocks/:id returns 400 for an unknown field', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/layouts/layout-1/blocks/b1',
+      payload: { name: 'Renamed', id: 'sneaky' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repo.updateBlock).not.toHaveBeenCalled();
+  });
+
   it('DELETE /api/layouts/:layoutId/blocks/:id deletes the block and its edges, returning 200 with removedEdges', async () => {
     const res = await app.inject({ method: 'DELETE', url: '/api/layouts/layout-1/blocks/b1' });
     expect(res.statusCode).toBe(200);
@@ -241,6 +296,45 @@ describe('Point routes', () => {
   beforeEach(async () => {
     repo = makeRepo();
     app = await buildTestServer(repo);
+  });
+
+  // The POST handler had the same erased-`Body` gap the blocks routes did
+  // (#36's "audit the POST handlers while in there"). `dccAddress` is the
+  // accessory address a physical point motor is thrown on, so the string
+  // "3" reaching config unchecked is bad config driving real hardware.
+  it('POST /api/layouts/:layoutId/points creates a point', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts/layout-1/points',
+      payload: { name: 'Point A', dccAddress: 3 },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(repo.createPoint).toHaveBeenCalledWith({
+      layoutId: 'layout-1',
+      name: 'Point A',
+      dccAddress: 3,
+      blockId: null,
+    });
+  });
+
+  it('POST /api/layouts/:layoutId/points returns 400 for a string dccAddress', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts/layout-1/points',
+      payload: { name: 'Point A', dccAddress: '3' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repo.createPoint).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/layouts/:layoutId/points returns 400 for an unknown field', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts/layout-1/points',
+      payload: { name: 'Point A', dccAddress: 3, id: 'sneaky' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repo.createPoint).not.toHaveBeenCalled();
   });
 
   it('PUT /api/layouts/:layoutId/points/:id updates a point', async () => {

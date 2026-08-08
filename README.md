@@ -301,10 +301,12 @@ Every block/point/sensor/loco create/update/delete in `useLayoutConfig.ts` now
 surfaces a failed save instead of discarding the response — matching how the Edges
 tab has always handled a rejected write (#22).
 
-The `blocks` `PUT` handler still has no runtime Zod validation — it declares a typed
-body and nothing more, and that type is erased at compile time (#36). `edges`, `points`,
-and now `sensors` validate with `.strict()` schemas in `services/validation.ts`; `blocks`
-predates the convention and is the remaining outlier.
+Every config write route now validates its body with a `.strict()` Zod schema in
+`services/validation.ts` before anything reaches the repository (#36). The gap was
+that a Fastify `Body` generic is erased at compile time, so a route declaring a
+typed body and nothing more validated nothing at runtime — `blocks` `POST`/`PUT`
+and `points` `POST` were the remaining outliers and now carry `blockCreateSchema`,
+`blockUpdateSchema`, and `pointCreateSchema`.
 
 ## Next Milestones
 
