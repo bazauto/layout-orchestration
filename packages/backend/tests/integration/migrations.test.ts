@@ -23,13 +23,14 @@ describe('migrations', () => {
   let tempDir: string;
   let dbPath: string;
   let sqlite: Database.Database;
+  let repo: DrizzleRepository;
 
   beforeAll(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'layout-orchestrator-migrations-'));
     dbPath = join(tempDir, `${randomUUID()}.db`);
     // openDatabase applies all pending migrations before returning.
     const db = openDatabase(dbPath, MIGRATIONS_FOLDER);
-    new DrizzleRepository(db);
+    repo = new DrizzleRepository(db);
     sqlite = new Database(dbPath);
   });
 
@@ -44,6 +45,40 @@ describe('migrations', () => {
     } catch {
       // ignore — OS temp directory, cleaned up eventually regardless
     }
+  });
+
+  // ── sensors.in_service (see docs/sensor-fault-recovery.md DD9) ────────────
+
+  describe('sensors.in_service', () => {
+    it('exists, is NOT NULL, and defaults to 1 (true)', () => {
+      const columns = sqlite.prepare('PRAGMA table_info(sensors)').all() as Array<{
+        name: string;
+        notnull: number;
+        dflt_value: string | null;
+      }>;
+      const inService = columns.find((c) => c.name === 'in_service');
+      expect(inService).toBeDefined();
+      expect(inService?.notnull).toBe(1);
+      expect(inService?.dflt_value).toBe('true');
+    });
+
+    it('an existing sensor row reads inService: true through DrizzleRepository', async () => {
+      const layout = await repo.createLayout({
+        name: 'Sensors Migration Layout',
+        description: null,
+      });
+      const sensor = await repo.createSensor({
+        layoutId: layout.id,
+        name: 'Detector 1',
+        type: 'block_detection',
+        blockId: null,
+        mqttTopic: `layout/${layout.id}/sensor/detector-1/reading`,
+        inService: true,
+      });
+      expect(sensor.inService).toBe(true);
+      const [reloaded] = await repo.listSensors(layout.id);
+      expect(reloaded.inService).toBe(true);
+    });
   });
 
   it('creates the block_edges table', () => {

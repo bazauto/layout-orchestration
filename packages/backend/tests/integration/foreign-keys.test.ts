@@ -55,6 +55,7 @@ describe('foreign key enforcement', () => {
         type: 'block_detection',
         blockId: null,
         mqttTopic: 'layout/sensor/dangling',
+        inService: true,
       });
     } catch (err) {
       caught = err;

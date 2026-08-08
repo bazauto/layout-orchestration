@@ -33,6 +33,7 @@ describe('scenario: malformed sensor payload triggers Safe-Stop', () => {
         type: 'block_detection',
         blockId: 'b1',
         mqttTopic: `layout/${LAYOUT_ID}/sensor/s1/reading`,
+        inService: true,
       },
     ]);
 
@@ -69,9 +70,12 @@ describe('scenario: malformed sensor payload triggers Safe-Stop', () => {
     expect(status.reason).toMatch(/s1/);
     expect(status.reason).toMatch(new RegExp(`sensor/s1/reading`));
 
-    // Block state is exactly what the last VALID reading set it to — the
-    // malformed message must never reach stateManager.updateBlockOccupancy.
-    expect(h.service.getAllState().blocks.get('b1')?.occupancy).toBe('clear');
+    // Per D4 (docs/sensor-fault-recovery.md), the faulted sensor is
+    // de-contributed immediately — block state is no longer "exactly what
+    // the last valid reading set it to". With its only sensor faulted, the
+    // block falls back to 'unknown', and identity is nulled with it.
+    expect(h.service.getAllState().blocks.get('b1')?.occupancy).toBe('unknown');
+    expect(h.service.getAllState().blocks.get('b1')?.locoAddress).toBeNull();
 
     // Automated movement has halted: Safe-Stop stops every loco.
     expect(h.service.getAllState().locos.get(3)?.speed).toBe(0);
@@ -95,6 +99,7 @@ describe('scenario: malformed sensor payload triggers Safe-Stop', () => {
         type: 'block_detection',
         blockId: 'b1',
         mqttTopic: `layout/${LAYOUT_ID}/sensor/s1/reading`,
+        inService: true,
       },
     ]);
 

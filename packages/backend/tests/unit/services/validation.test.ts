@@ -9,6 +9,8 @@ import {
   UserRowInvalidError,
   parseSessionRow,
   SessionRowInvalidError,
+  parseSensorRow,
+  SensorRowInvalidError,
 } from '../../../src/services/validation';
 
 describe('parsePointConditions', () => {
@@ -196,5 +198,49 @@ describe('parseSessionRow', () => {
     const rowWithoutUserId: Record<string, unknown> = { ...validSessionRow };
     delete rowWithoutUserId.userId;
     expect(() => parseSessionRow(rowWithoutUserId)).toThrow(SessionRowInvalidError);
+  });
+});
+
+const validSensorRow = {
+  id: 's1',
+  layoutId: 'layout-1',
+  name: 'Sensor 1',
+  type: 'block_detection',
+  blockId: 'b1',
+  mqttTopic: 'layout/layout-1/sensor/s1/reading',
+  inService: true,
+};
+
+describe('parseSensorRow', () => {
+  it('parses a valid row into a SensorRecord', () => {
+    expect(parseSensorRow(validSensorRow)).toEqual(validSensorRow);
+  });
+
+  it('parses a NULL blockId to null', () => {
+    expect(parseSensorRow({ ...validSensorRow, blockId: null }).blockId).toBeNull();
+  });
+
+  it('throws SensorRowInvalidError for an invalid type such as "magnetic"', () => {
+    expect(() => parseSensorRow({ ...validSensorRow, type: 'magnetic' })).toThrow(
+      SensorRowInvalidError,
+    );
+  });
+
+  it('throws SensorRowInvalidError for a null inService — the column is NOT NULL and must never be read as "safe"', () => {
+    expect(() => parseSensorRow({ ...validSensorRow, inService: null })).toThrow(
+      SensorRowInvalidError,
+    );
+  });
+
+  it('throws SensorRowInvalidError for an empty mqttTopic', () => {
+    expect(() => parseSensorRow({ ...validSensorRow, mqttTopic: '' })).toThrow(
+      SensorRowInvalidError,
+    );
+  });
+
+  it('never coerces — a row missing a required column throws rather than defaulting', () => {
+    const rowWithoutInService: Record<string, unknown> = { ...validSensorRow };
+    delete rowWithoutInService.inService;
+    expect(() => parseSensorRow(rowWithoutInService)).toThrow(SensorRowInvalidError);
   });
 });

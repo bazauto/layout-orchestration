@@ -38,10 +38,10 @@ const BLOCKS = [
 ];
 const POINTS = [{ id: 'p1', layoutId: LAYOUT_ID, name: 'Point 1', dccAddress: 10, blockId: 'b1' }];
 const SENSORS = [
-  { id: 's1', layoutId: LAYOUT_ID, name: 'Sensor 1', type: 'block_detection' as const, blockId: 'b1', mqttTopic: `layout/${LAYOUT_ID}/sensor/s1/reading` },
-  { id: 's2', layoutId: LAYOUT_ID, name: 'Sensor 2', type: 'block_detection' as const, blockId: 'b2', mqttTopic: `layout/${LAYOUT_ID}/sensor/s2/reading` },
-  { id: 's3', layoutId: LAYOUT_ID, name: 'Sensor 3', type: 'block_detection' as const, blockId: 'b3', mqttTopic: `layout/${LAYOUT_ID}/sensor/s3/reading` },
-  { id: 's4', layoutId: LAYOUT_ID, name: 'Sensor 4', type: 'block_detection' as const, blockId: 'b4', mqttTopic: `layout/${LAYOUT_ID}/sensor/s4/reading` },
+  { id: 's1', layoutId: LAYOUT_ID, name: 'Sensor 1', type: 'block_detection' as const, blockId: 'b1', mqttTopic: `layout/${LAYOUT_ID}/sensor/s1/reading`, inService: true },
+  { id: 's2', layoutId: LAYOUT_ID, name: 'Sensor 2', type: 'block_detection' as const, blockId: 'b2', mqttTopic: `layout/${LAYOUT_ID}/sensor/s2/reading`, inService: true },
+  { id: 's3', layoutId: LAYOUT_ID, name: 'Sensor 3', type: 'block_detection' as const, blockId: 'b3', mqttTopic: `layout/${LAYOUT_ID}/sensor/s3/reading`, inService: true },
+  { id: 's4', layoutId: LAYOUT_ID, name: 'Sensor 4', type: 'block_detection' as const, blockId: 'b4', mqttTopic: `layout/${LAYOUT_ID}/sensor/s4/reading`, inService: true },
 ];
 
 const silent = { info: () => undefined, warn: () => undefined, error: () => undefined };

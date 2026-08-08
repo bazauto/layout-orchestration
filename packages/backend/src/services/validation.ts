@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { BlockEdge, PointCondition, RouteHold, RoutePathStep, RouteReservation } from '../domain/types';
 import { SessionRecord, UserRecord } from '../ports/IAuthRepository';
+import { SensorRecord } from '../ports/ILayoutRepository';
 
 export const sensorReadingSchema = z.object({
   state: z.enum(['occupied', 'clear']),
@@ -185,6 +186,77 @@ export const pointUpdateSchema = z
   .strict();
 
 export type PointUpdateInput = z.infer<typeof pointUpdateSchema>;
+
+// ─── Sensors (see docs/sensor-fault-recovery.md) ───────────────────────────
+
+export const sensorTypeSchema = z.enum(['block_detection', 'ir_position']);
+
+/**
+ * Full-row schema for a `sensors` DB row — every column, matching the
+ * posture of `blockEdgeRowSchema`/`userRowSchema`: `listSensors` used to do
+ * a bare `as SensorRecord[]` cast, so `type` had never actually been
+ * validated even though it now decides whether a `clear` reading may empty
+ * a block (D3) — see DD9 in docs/sensor-fault-recovery.md.
+ */
+export const sensorRowSchema = z.object({
+  id: z.string().min(1),
+  layoutId: z.string().min(1),
+  name: z.string().min(1),
+  type: sensorTypeSchema,
+  blockId: z.string().min(1).nullable(),
+  mqttTopic: z.string().min(1),
+  inService: z.boolean(),
+});
+
+/** Thrown by `parseSensorRow` when a `sensors` row fails validation. */
+export class SensorRowInvalidError extends Error {
+  readonly rowId: string;
+  readonly issues: z.ZodIssue[];
+
+  constructor(rowId: string, issues: z.ZodIssue[]) {
+    super(`sensors row ${rowId} failed validation: ${issues.map((i) => i.message).join('; ')}`);
+    this.name = 'SensorRowInvalidError';
+    this.rowId = rowId;
+    this.issues = issues;
+  }
+}
+
+/**
+ * Parses a raw `sensors` DB row into a `SensorRecord`. Same posture as
+ * `parseBlockEdgeRow`/`parseUserRow`: no coercion, no defaults — a row
+ * already in the database is either valid or it is corruption, and
+ * corruption must throw.
+ */
+export function parseSensorRow(row: unknown): SensorRecord {
+  const parsed = sensorRowSchema.safeParse(row);
+  if (!parsed.success) {
+    throw new SensorRowInvalidError(extractRowId(row), parsed.error.issues);
+  }
+  return parsed.data;
+}
+
+/**
+ * Write schema for creating a sensor. `.strict()` so a body carrying `id` or
+ * `layoutId` — both path/server-owned — is a 400, not a silently ignored
+ * field. `inService` defaults to `true` (DD9) — the create form has no
+ * in-service toggle; that is set later via the update route.
+ */
+export const sensorCreateSchema = z
+  .object({
+    name: z.string().min(1),
+    type: sensorTypeSchema,
+    blockId: z.string().min(1).nullable().default(null),
+    mqttTopic: z.string().min(1),
+    inService: z.boolean().default(true),
+  })
+  .strict();
+
+export type SensorCreateInput = z.infer<typeof sensorCreateSchema>;
+
+/** Write schema for a partial sensor update. Same `.strict()` posture as create, matching `pointUpdateSchema`. */
+export const sensorUpdateSchema = sensorCreateSchema.partial().strict();
+
+export type SensorUpdateInput = z.infer<typeof sensorUpdateSchema>;
 
 // ─── Route Reservations ────────────────────────────────────────────────────
 //

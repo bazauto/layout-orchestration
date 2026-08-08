@@ -28,6 +28,7 @@ const INITIAL_SNAPSHOT: StateSnapshot = {
   blocks: {},
   points: {},
   locos: {},
+  sensorFaults: [],
 };
 
 const WS_URL =
@@ -78,6 +79,11 @@ export function useLayoutSocket() {
     ws.onclose = () => {
       if (unmounted.current) return;
       setConnectionState('disconnected');
+      // Deliberately spread `s` rather than reset to INITIAL_SNAPSHOT: a
+      // sensor fault is latched on the backend, not on this connection, so a
+      // drop must not clear `sensorFaults` — that would show the operator an
+      // all-clear that isn't true. A reconnect's STATE_SNAPSHOT replaces the
+      // list with the authoritative current set (#34).
       setSnapshot((s) => ({ ...s, systemStatus: 'offline' }));
       const delay = reconnectDelay.current;
       reconnectDelay.current = Math.min(delay * 2, MAX_RECONNECT_MS);
@@ -133,6 +139,10 @@ function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
       const s = msg.payload as { status: SystemStatus; mode: SystemMode; reason: string | null };
       return { ...prev, systemStatus: s.status, systemMode: s.mode, safeStopReason: s.reason };
     }
+
+    case 'SENSOR_FAULTS':
+      // Always the complete current set, never a delta — replace wholesale.
+      return { ...prev, sensorFaults: msg.payload.faults };
 
     default:
       return prev;

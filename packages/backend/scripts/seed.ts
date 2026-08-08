@@ -105,6 +105,7 @@ async function seed() {
         type: s.type,
         blockId: blockMap[s.blockName] ?? null,
         mqttTopic: s.mqttTopic,
+        inService: true,
       });
       console.log(`[Seed]   Sensor: ${s.name} → ${s.mqttTopic} (${sensor.id})`);
     } else {

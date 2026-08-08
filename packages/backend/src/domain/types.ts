@@ -104,6 +104,60 @@ export type TopologyViolation =
   | { kind: 'unknown-point'; edgeId: BlockEdgeId; pointId: PointId }
   | { kind: 'duplicate-connection'; edgeId: BlockEdgeId; conflictingEdgeId: BlockEdgeId };
 
+// ─── Sensors (see docs/sensor-fault-recovery.md) ──────────────────────────────
+
+/**
+ * `block_detection` is a whole-block current-sensing detector; `ir_position`
+ * is a beam at one specific spot. They are not interchangeable evidence — a
+ * detector's reading governs its block outright, an IR sensor may only ever
+ * raise occupancy, never lower it (D3, `domain/occupancy.ts`).
+ */
+export type SensorType = 'block_detection' | 'ir_position';
+
+/**
+ * One sensor's latest contribution to its block's derived occupancy.
+ * Runtime state, held in `LayoutRuntimeState.sensors` — never persisted;
+ * rebuilt from `sensors.in_service` and readings on each startup, same
+ * posture as blocks/points.
+ */
+export interface SensorObservation {
+  sensorId: SensorId;
+  blockId: BlockId | null;
+  type: SensorType;
+  /** Mirror of `sensors.in_service`. An out-of-service sensor contributes nothing. */
+  inService: boolean;
+  /** Latched by a malformed payload; cleared only by acknowledge or out-of-service. */
+  faulted: boolean;
+  /** Latest validated reading, or null (never read, faulted, or de-serviced). */
+  lastReading: 'occupied' | 'clear' | null;
+  lastReadingAt: Date | null;
+}
+
+/**
+ * A latched fault on one sensor (D2). `reason`/`faultedAt` are the FIRST
+ * cause and do not move on a re-fault (DD5) — only `consecutiveValidReadings`
+ * resets. Held in `SystemHealth.sensorFaults`, keyed by `sensorId`.
+ */
+export interface SensorFault {
+  sensorId: SensorId;
+  reason: string;
+  topic: string;
+  faultedAt: Date;
+  /** Consecutive valid, non-retained readings since the fault (or the last malformed one) — D1's arming counter. */
+  consecutiveValidReadings: number;
+}
+
+/** Wire projection of `SensorFault` (DD10). Dates as ISO 8601; `armed`/`requiredValidReadings` precomputed by `toSensorFaultView`. */
+export interface SensorFaultView {
+  sensorId: SensorId;
+  reason: string;
+  topic: string;
+  faultedAt: string;
+  consecutiveValidReadings: number;
+  requiredValidReadings: number;
+  armed: boolean;
+}
+
 // ─── Runtime State ────────────────────────────────────────────────────────────
 
 export interface BlockState {
@@ -145,6 +199,8 @@ export interface LayoutRuntimeState {
   points: Map<PointId, PointState>;
   locos: Map<LocoAddress, LocoState>;
   routes: Map<RouteId, RouteReservation>;
+  /** Per-sensor observations feeding block occupancy derivation (D3). Diagnostic runtime state — deliberately not part of the WebSocket snapshot (DD10). */
+  sensors: Map<SensorId, SensorObservation>;
 }
 
 // ─── Route Reservations (see docs/route-locking.md) ───────────────────────────
@@ -273,7 +329,8 @@ export type LayoutEvent =
   | {
       type: 'SYSTEM_STATUS';
       payload: { status: SystemStatus; mode: SystemMode; reason: string | null };
-    };
+    }
+  | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } };
 
 // ─── WebSocket Message Shapes ─────────────────────────────────────────────────
 

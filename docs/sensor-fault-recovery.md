@@ -66,6 +66,17 @@ Rules on the counter, each of which is a way to get this wrong:
   override is a plausible later refinement and deliberately deferred — there
   is no evidence yet that different sensors on this layout want different
   thresholds, and the column is cheap to add when there is.
+- **Out-of-service is checked before validation, not after (Q1).** A sensor
+  marked out of service is dropped in `handleSensorReading` *before* its
+  payload ever reaches `sensorReadingSchema` — not merely excluded from
+  arming. The alternative (still Zod-validating an out-of-service sensor's
+  payload, and letting a malformed one trip a fresh fault) would mean a
+  sensor the operator has explicitly told the system to stop trusting can
+  still hold the whole layout in Safe-Stop, which contradicts D3 outright
+  and makes the escape hatch this decision exists to provide unusable. The
+  primary mechanism is `LayoutService` never subscribing to an out-of-service
+  sensor's topic at all; the in-service check inside `handleSensorReading`
+  is defence in depth for a handler that somehow still fires.
 
 ## D2 — The fault is per sensor
 
@@ -166,6 +177,13 @@ resurrect the old fault — a sensor coming back into service starts with no
 fault and no reading, so its block reads `unknown` until it actually publishes
 something. That is the correct starting position, not a regression.
 
+**Deleting a sensor clears its fault too (Q2).** `LayoutService.deleteSensorConfig`
+unregisters the observation, unsubscribes, and drops any latched fault before
+recomputing the block and re-evaluating Safe-Stop. Any other answer leaves a
+latch that can never be acknowledged, because the sensor it names no longer
+exists — the exact restart-only-recovery bug #34 exists to close, reopened by
+a different door.
+
 ## D6 — No change to `docs/route-locking.md` D8, and out-of-service does not unblock reserved movement
 
 D8 holds unchanged when the Safe-Stop being cleared is a sensor fault: on
@@ -191,6 +209,26 @@ in service":
   sensor out of service buys manual driving anywhere and automated routes
   anywhere **except through that block**. That is the feature limitation, and
   it is a consequence of fail-safe, not a bug to be worked around later.
+
+**A second interaction with `docs/route-locking.md`, this one load-bearing rather
+than merely sequential:** D3's derivation is not only the *reporting* layer's
+concern — `LayoutService.recomputeBlock` is also the ONLY call site left for
+`ReservationService.onOccupancyChange`, and it feeds that call the DERIVED
+occupancy, never a raw per-sensor reading. Before this decision,
+`handleSensorReading` passed straight through whatever a single sensor just
+reported, so an `ir_position` sensor's `clear` reached the reservation engine
+as if it were the block's occupancy — and route-locking.md D5's progressive
+release fires on exactly that kind of `clear` transition. One unbroken IR
+beam could therefore release a block's hold, and un-reserve track, while a
+train already confirmed further up the route was still standing in it. Routing
+`onOccupancyChange` through the derived value closes that: D3 already
+discards an IR `clear` before `recomputeBlock` ever calls in, so it can never
+fire progressive release or an unexpected-occupancy violation. A fault-driven
+transition to `unknown` needs no equivalent guard — `evaluateOccupancyChange`
+only ever acts on `occupied`, or on `clear` arriving from a previous `occupied`,
+so `unknown` is simply inert to it and is passed through faithfully rather
+than filtered out. See the cross-reference this note is answered by in
+`docs/route-locking.md` D5.
 
 ## D7 — Identity is out of scope, and stays out until RFID is designed
 
@@ -244,3 +282,16 @@ without a broker.
 - **Automatic out-of-service** — nothing marks a sensor out of service on the
   system's own initiative, however many times it faults. That decision stays
   with the operator, deliberately.
+- **No DB CHECK constraint on `sensors.in_service`** — the schema adds
+  `in_service INTEGER NOT NULL DEFAULT 1` with no accompanying CHECK,
+  deliberately deviating from #11's usual "domain check plus DB invariant"
+  posture (e.g. `block_edges`, `route_holds`). A CHECK added to an *existing*
+  SQLite table forces drizzle-kit to emit a table-rebuild migration
+  (`CREATE TABLE ... AS SELECT`, not a plain `ALTER TABLE ADD COLUMN`) on the
+  live `sensors` table, and the payoff — guarding a boolean column Zod
+  (`parseSensorRow`) already validates on every read — is small next to that
+  risk. The half that IS worth having, and landed here, is full-row Zod on
+  the read path (`listSensors`/`createSensor`/`updateSensor` now go through
+  `parseSensorRow` instead of a bare `as SensorRecord[]` cast) — `type` had
+  never actually been validated before, despite now deciding whether a
+  `clear` reading may govern a block (D3).

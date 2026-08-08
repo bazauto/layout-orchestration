@@ -62,6 +62,14 @@ export const config = {
     /** Only DCC is simulated — connects to a real MQTT broker. */
     dccOnly: process.env.DCC_SIMULATOR === 'true',
   },
+  sensors: {
+    /**
+     * D1 (docs/sensor-fault-recovery.md): consecutive valid, non-retained
+     * readings a faulted sensor must publish before an operator may
+     * acknowledge (clear) the fault.
+     */
+    clearAfterValidReadings: parseInt(process.env.SENSOR_FAULT_CLEAR_READINGS ?? '3', 10),
+  },
   log: {
     level: process.env.LOG_LEVEL ?? 'info',
   },

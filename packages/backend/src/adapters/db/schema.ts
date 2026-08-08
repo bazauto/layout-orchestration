@@ -70,6 +70,18 @@ export const sensors = sqliteTable('sensors', {
   blockId: text('block_id').references(() => blocks.id, { onDelete: 'set null' }),
   /** The full MQTT topic this sensor publishes its reading to */
   mqttTopic: text('mqtt_topic').notNull(),
+  /**
+   * Out-of-service means the system stops trusting this sensor entirely
+   * (D3, docs/sensor-fault-recovery.md): its payloads are never subscribed
+   * to, it contributes nothing to its block's derived occupancy, and any
+   * fault latched against it is cleared. Defaults to `true` — every sensor
+   * in the live DB is trusted today, and defaulting new/existing rows to
+   * `false` would turn every block `unknown` and refuse every route on
+   * deploy. Deliberately no CHECK constraint (DD9) — a CHECK on an existing
+   * SQLite table forces a table-rebuild migration on a live layout, and the
+   * payoff (a boolean column) is small; see docs/sensor-fault-recovery.md.
+   */
+  inService: integer('in_service', { mode: 'boolean' }).notNull().default(true),
 });
 
 // ─── Block Edges (track graph) ────────────────────────────────────────────────

@@ -141,6 +141,19 @@ blocks. Blocks *ahead* of the train are never released early:
 `evaluateOccupancyChange` checks `confirmedIndex` against the block's own
 (last) path index before considering release at all.
 
+**What "the block transitioned `occupied` -> `clear`" means is settled by
+#34, not here.** `evaluateOccupancyChange` is fed a block's *derived*
+occupancy — the fusion of every in-service, non-faulted sensor on that block,
+in which an `ir_position` sensor may raise occupancy but never lower it. See
+`docs/sensor-fault-recovery.md` D3 and D6. This matters for condition 2
+above: before #34 the raw reading of whichever sensor last spoke was passed
+straight through, so a single IR beam reporting `clear` could satisfy it and
+release a hold on track a train was still standing on. `recomputeBlock` in
+`LayoutService` is the only caller of `onOccupancyChange`, and it passes the
+derived value precisely to keep that impossible. A fault-driven `unknown`
+reaches this function too, and is inert to it by construction — neither
+branch here acts on `unknown`.
+
 A point (or edge) hold releases with the **last path step whose edge**
 mentions it — a plain index computation over the ordered path
 (`holdsReleasableAt`), with no second occupancy condition. `releaseAfterIndex`

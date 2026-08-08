@@ -6,7 +6,7 @@
  * to any transport or infrastructure concerns.
  */
 
-import { Occupancy, SystemMode, SystemStatus } from './types';
+import { Occupancy, SensorFault, SensorId, SystemMode, SystemStatus } from './types';
 
 // ─── Connection Health ────────────────────────────────────────────────────────
 
@@ -21,27 +21,42 @@ export interface ConnectionHealth {
  * per the fail-safe rule. `topologyReason` carries the Safe-Stop reason
  * (from `describeViolations`) when `topologyValid` is false.
  *
- * `sensorFault` is the same shape for a malformed sensor payload (mqtt-contract.md
- * §Fail-Safe Triggers item 3): required, not optional-defaulting-to-false, and
- * latched — nothing in this module clears it once set. A dropped/corrupted
- * reading means occupancy for that block is no longer trustworthy, and per the
- * fail-safe rule that requires explicit operator recovery, not a quiet
- * self-clear the next time an unrelated connection event re-evaluates health.
+ * `sensorFaults` is a keyed collection — one `SensorFault` per faulted
+ * sensor (D2, docs/sensor-fault-recovery.md), required, not
+ * optional-defaulting-to-`{}` — and latched — nothing in this module clears
+ * an entry once set. A scalar cannot express "sensor A faulted, sensor B is
+ * fine": acknowledging what the operator can see must not silently clear a
+ * fault on a sensor they were never told about, so the system stays in
+ * Safe-Stop until every entry is individually resolved (`LayoutService`'s
+ * `acknowledgeSensorFault`, or a sensor going out of service — see D1/D5).
  *
  * `recoveredRouteCount` is likewise required, not optional (same posture as
  * `topologyValid`): the number of route reservations that survived a
  * restart and still await an operator's explicit cancel or resume (D9). It
- * is folded into `evaluateSystemSafeStop` LAST — after the sensor fault
- * check — and — like the topology and sensor-fault latches — does not clear
- * on its own: `LayoutService` decrements it only as `ReservationService`
- * reports each recovered route resolved.
+ * is folded into `evaluateSystemSafeStop` LAST — after sensor faults — and
+ * — like the topology and sensor-fault latches — does not clear on its own:
+ * `LayoutService` decrements it only as `ReservationService` reports each
+ * recovered route resolved.
  */
 export interface SystemHealth extends ConnectionHealth {
   topologyValid: boolean;
   topologyReason: string | null;
-  sensorFault: boolean;
-  sensorFaultReason: string | null;
+  sensorFaults: Record<SensorId, SensorFault>;
   recoveredRouteCount: number;
+}
+
+/**
+ * The first cause (D2). Earliest `faultedAt` wins; ties resolve to
+ * insertion order — `Object.values` walks a string-keyed object in
+ * insertion order, and `<` (strictly less than) leaves the earliest-seen
+ * fault in place on a tie rather than letting a later one overwrite it.
+ */
+export function oldestSensorFault(faults: Record<SensorId, SensorFault>): SensorFault | null {
+  const all = Object.values(faults);
+  if (all.length === 0) return null;
+  return all.reduce((oldest, candidate) =>
+    candidate.faultedAt.getTime() < oldest.faultedAt.getTime() ? candidate : oldest,
+  );
 }
 
 /**
@@ -64,11 +79,14 @@ export function evaluateSafeStop(health: ConnectionHealth): {
 /**
  * Determines whether a Safe-Stop should be triggered based on connection
  * health, topology health, sensor-payload health, and restart-recovered
- * routes. Check order is MQTT, then DCC, then topology, then a latched
- * sensor fault, then recovered routes — a connection failure reason always
- * wins over a topology reason, which wins over a sensor fault, which wins
- * over a recovered-route reason, so an operator investigating a Safe-Stop
- * sees the more systemic, more actionable cause first.
+ * routes. Check order is MQTT, then DCC, then topology, then the oldest
+ * latched sensor fault, then recovered routes — a connection failure reason
+ * always wins over a topology reason, which wins over a sensor fault, which
+ * wins over a recovered-route reason, so an operator investigating a
+ * Safe-Stop sees the more systemic, more actionable cause first. With
+ * several sensor faults latched at once, only the oldest's reason is
+ * reported here (D2 — "the first cause"); the rest are visible via
+ * `LayoutService.getSensorFaults()` / `GET .../sensor-faults`.
  */
 export function evaluateSystemSafeStop(health: SystemHealth): {
   shouldStop: boolean;
@@ -81,8 +99,9 @@ export function evaluateSystemSafeStop(health: SystemHealth): {
   if (!health.topologyValid) {
     return { shouldStop: true, reason: health.topologyReason };
   }
-  if (health.sensorFault) {
-    return { shouldStop: true, reason: health.sensorFaultReason };
+  const oldest = oldestSensorFault(health.sensorFaults);
+  if (oldest) {
+    return { shouldStop: true, reason: oldest.reason };
   }
   if (health.recoveredRouteCount > 0) {
     return {

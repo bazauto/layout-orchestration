@@ -19,6 +19,9 @@ import {
   RouteId,
   RouteReservation,
   RouteStatus,
+  SensorId,
+  SensorObservation,
+  SensorType,
   SystemMode,
 } from './types';
 
@@ -35,6 +38,7 @@ export class LayoutStateManager {
       points: new Map(),
       locos: new Map(),
       routes: new Map(),
+      sensors: new Map(),
     };
   }
 
@@ -230,5 +234,66 @@ export class LayoutStateManager {
 
   removeRoute(routeId: RouteId): void {
     this.state.routes.delete(routeId);
+  }
+
+  // ─── Sensor Observations (see docs/sensor-fault-recovery.md) ─────────────────
+  //
+  // Storage only, same posture as blocks/points/routes above: `LayoutService`
+  // owns the policy (when to fault, de-service, or recompute a block's
+  // derived occupancy); this class just holds whatever it is told.
+
+  /** Upsert of config fields. Preserves `faulted`, `lastReading`, `lastReadingAt` for an already-registered sensor — only `LayoutService` decides to change those. A no-op... it always creates/updates; never throws. */
+  registerSensor(config: {
+    sensorId: SensorId;
+    blockId: BlockId | null;
+    type: SensorType;
+    inService: boolean;
+  }): SensorObservation {
+    const existing = this.state.sensors.get(config.sensorId);
+    const updated: SensorObservation = {
+      sensorId: config.sensorId,
+      blockId: config.blockId,
+      type: config.type,
+      inService: config.inService,
+      faulted: existing?.faulted ?? false,
+      lastReading: existing?.lastReading ?? null,
+      lastReadingAt: existing?.lastReadingAt ?? null,
+    };
+    this.state.sensors.set(config.sensorId, updated);
+    return updated;
+  }
+
+  unregisterSensor(sensorId: SensorId): void {
+    this.state.sensors.delete(sensorId);
+  }
+
+  getSensorObservation(sensorId: SensorId): SensorObservation | undefined {
+    return this.state.sensors.get(sensorId);
+  }
+
+  /** Every sensor observation registered against `blockId`, in no particular order. `[]` for a block with none. */
+  listSensorObservationsForBlock(blockId: BlockId): SensorObservation[] {
+    return [...this.state.sensors.values()].filter((s) => s.blockId === blockId);
+  }
+
+  /** No-op for an unknown `sensorId` — mirrors `lockBlock`'s "must not rely on this to validate anything" posture. */
+  recordSensorReading(sensorId: SensorId, reading: 'occupied' | 'clear', at: Date): void {
+    const existing = this.state.sensors.get(sensorId);
+    if (!existing) return;
+    this.state.sensors.set(sensorId, { ...existing, lastReading: reading, lastReadingAt: at });
+  }
+
+  /** Nulls the reading (DD6) — a faulted or de-serviced sensor's last reading is not retained as a going belief. No-op for an unknown `sensorId`. */
+  clearSensorReading(sensorId: SensorId): void {
+    const existing = this.state.sensors.get(sensorId);
+    if (!existing) return;
+    this.state.sensors.set(sensorId, { ...existing, lastReading: null, lastReadingAt: null });
+  }
+
+  /** Deliberately does NOT also clear the reading — that is `LayoutService`'s call (DD6), so this storage layer holds no policy about when a fault and a reading are cleared together. No-op for an unknown `sensorId`. */
+  setSensorFaulted(sensorId: SensorId, faulted: boolean): void {
+    const existing = this.state.sensors.get(sensorId);
+    if (!existing) return;
+    this.state.sensors.set(sensorId, { ...existing, faulted });
   }
 }

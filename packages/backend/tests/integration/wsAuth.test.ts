@@ -125,4 +125,31 @@ describe('WebSocket upgrade auth', () => {
     expect(ws.readyState).toBe(ws.OPEN);
     ws.close();
   });
+
+  // See docs/sensor-fault-recovery.md DD10: the initial STATE_SNAPSHOT gains
+  // a sensorFaults field — present and empty here, since this server's
+  // LayoutService is never start()-ed (no fault could have been latched).
+  // The message listener is attached via `onOpen`, the earliest hook
+  // `injectWS` exposes — the server sends the snapshot the instant the
+  // connection handler runs, so a listener attached only after `injectWS`
+  // resolves can already be too late to observe it.
+  it('the initial STATE_SNAPSHOT payload includes sensorFaults: []', async () => {
+    const cookie = await loginCookie(app, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD);
+    const messages: string[] = [];
+    const ws = await app.injectWS(
+      '/ws',
+      { headers: { cookie } },
+      { onOpen: (socket: { on: (event: string, cb: (data: Buffer) => void) => void }) =>
+          socket.on('message', (data: Buffer) => messages.push(data.toString())) },
+    );
+    // Let any already-buffered frame finish draining through the parser.
+    await new Promise((r) => setImmediate(r));
+
+    expect(messages.length).toBeGreaterThan(0);
+    const snapshot = JSON.parse(messages[0]);
+    expect(snapshot.type).toBe('STATE_SNAPSHOT');
+    expect(snapshot.payload.sensorFaults).toEqual([]);
+
+    ws.close();
+  });
 });

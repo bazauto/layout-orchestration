@@ -76,7 +76,7 @@ export async function buildServer(
   await locoRoutes(fastify, repo);
   await blockRoutes(fastify, repo, topologyService);
   await pointRoutes(fastify, repo, topologyService);
-  await sensorRoutes(fastify, repo);
+  await sensorRoutes(fastify, repo, layoutService);
   await gridRoutes(fastify, repo);
   await edgeRoutes(fastify, topologyService);
   await topologyRoutes(fastify, layoutService, topologyService);

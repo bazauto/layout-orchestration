@@ -8,6 +8,7 @@ import { ThrottlePanel } from './components/ThrottlePanel';
 import { LayoutPanel } from './components/LayoutPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { GridEditor } from './components/GridEditor';
+import { SensorFaultBanner } from './components/SensorFaultBanner';
 import { apiFetch, API_BASE } from './api';
 import { ClientMessage, Role, SystemMode } from './types';
 
@@ -37,7 +38,7 @@ function AuthenticatedApp({
   onLogout: () => void;
 }) {
   const { snapshot, connectionState, send } = useLayoutSocket();
-  const { systemStatus, systemMode, safeStopReason, blocks, points, locos } = snapshot;
+  const { systemStatus, systemMode, safeStopReason, blocks, points, locos, sensorFaults } = snapshot;
   const [appTab, setAppTab] = useState<AppTab>('operate');
   const [layoutId, setLayoutId] = useState<string | null>(null);
 
@@ -64,6 +65,11 @@ function AuthenticatedApp({
   };
   const handleModeChange = (mode: SystemMode) => send({ type: 'SET_MODE', payload: { mode } });
 
+  // Sensor id → name, so the fault banner can name the sensor rather than a
+  // bare id (#34). Falls back to the id inside SensorFaultBanner itself if a
+  // sensor's config hasn't loaded yet (or was deleted after the fault fired).
+  const sensorNames = Object.fromEntries(layoutConfig.config.sensors.map((s) => [s.id, s.name]));
+
   return (
     <div style={styles.root}>
       <StatusBar
@@ -73,6 +79,15 @@ function AuthenticatedApp({
         connectionState={connectionState}
         onEmergencyStop={handleEmergencyStop}
         onModeChange={handleModeChange}
+      />
+
+      <SensorFaultBanner
+        faults={sensorFaults}
+        sensorNames={sensorNames}
+        onAcknowledge={async (sensorId) => {
+          const result = await layoutConfig.acknowledgeSensorFault(sensorId);
+          return { ok: result.ok, message: result.message };
+        }}
       />
 
       <nav style={styles.nav}>

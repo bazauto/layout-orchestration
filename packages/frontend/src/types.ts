@@ -35,6 +35,23 @@ export interface SensorRecord {
   type: 'block_detection' | 'ir_position';
   blockId: string | null;
   mqttTopic: string;
+  /** Mirrors `sensors.in_service` (#34). An out-of-service sensor is unsubscribed and contributes nothing. */
+  inService: boolean;
+}
+
+/**
+ * Wire projection of the backend's `SensorFault` (#34, `domain/types.ts`).
+ * `faultedAt` is ISO 8601; `armed`/`requiredValidReadings` are precomputed
+ * server-side so the frontend never re-implements D1's arming rule.
+ */
+export interface SensorFaultView {
+  sensorId: string;
+  reason: string;
+  topic: string;
+  faultedAt: string;
+  consecutiveValidReadings: number;
+  requiredValidReadings: number;
+  armed: boolean;
 }
 
 export interface LocoRecord {
@@ -145,6 +162,8 @@ export interface StateSnapshot {
   blocks: Record<string, BlockState>;
   points: Record<string, PointState>;
   locos: Record<number, LocoState>;
+  /** #34: current per-sensor faults, always the complete set, never a delta. */
+  sensorFaults: SensorFaultView[];
 }
 
 // ─── Server → Client messages ─────────────────────────────────────────────────
@@ -155,6 +174,7 @@ export type ServerMessage =
   | { type: 'POINT_STATE'; payload: PointState }
   | { type: 'LOCO_STATE'; payload: LocoState }
   | { type: 'SYSTEM_STATUS'; payload: { status: SystemStatus; mode: SystemMode; reason: string | null } }
+  | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } };
 
 // ─── Client → Server messages ─────────────────────────────────────────────────
