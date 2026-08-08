@@ -14,6 +14,8 @@ layout/{layoutId}/loco/{address}/state
 layout/{layoutId}/sensor/{sensorId}/reading
 layout/{layoutId}/point/{pointId}/command
 layout/{layoutId}/point/{pointId}/state
+layout/{layoutId}/point/{pointId}/reading
+layout/{layoutId}/point/{pointId}/query
 layout/{layoutId}/block/{blockId}/state
 layout/{layoutId}/system/status
 layout/{layoutId}/system/heartbeat
@@ -30,12 +32,24 @@ layout/{layoutId}/system/heartbeat
 | `sensor/{sensorId}/reading` | Sensor HW → Backend | 1 | YES | Sensor occupancy change |
 | `point/{pointId}/command` | Backend → DCC | 1 | **NO** | Point position command |
 | `point/{pointId}/state` | Backend → Subscribers | 1 | YES | Broadcast current point state |
+| `point/{pointId}/reading` | Point Controller → Backend | 1 | **NO** | Physical position as observed by the point controller |
+| `point/{pointId}/query` | Backend → Point Controller | 1 | **NO** | Request an immediate `reading` for this point |
 | `block/{blockId}/state` | Backend → Subscribers | 1 | YES | Block occupancy broadcast |
 | `system/status` | Backend → Subscribers | 1 | YES | System status (also used as LWT) |
 | `system/heartbeat` | Backend → Subscribers | 0 | NO | Liveness pulse every 5 seconds |
 
 > **Critical — Retention Policy for Control Topics:**
 > `loco/*/command` and `point/*/command` MUST NOT be retained. A retained throttle command would trigger a ghost movement immediately on any new subscriber connecting to the broker (e.g., after an ESP controller reboot). This is a safety requirement.
+>
+> **`point/*/reading` is also NOT retained**, for a different reason from the
+> control topics. Occupancy is continuously re-asserted by a live sensor and
+> self-corrects on the next movement, which is why `sensor/*/reading` **is**
+> retained. A point's position is re-asserted by nothing, and it can change while
+> its controller is offline — hand-thrown during a shutdown, power lost
+> mid-travel, a linkage dropped. A retained point reading is therefore a
+> confident assertion with no correction path, and believing a stale point
+> position is the direct cause of a wrong-route movement. Restart recovery is
+> provided instead by `point/*/query`, which recovers position **live**.
 
 ---
 
@@ -122,18 +136,72 @@ Sent by the backend to set a point position. NOT retained.
 
 ---
 
+### `point/{pointId}/reading`
+Published by the point controller whenever its observed position changes, and in
+response to a `point/{pointId}/query`. NOT retained — see the retention callout.
+
+```json
+{
+  "pointId": "p1",
+  "position": "normal",
+  "source": "sensor",
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `pointId` | string | Must equal the `{pointId}` topic segment. A mismatch is a Fail-Safe Trigger. |
+| `position` | `"normal"` \| `"reverse"` \| `"unknown"` | Observed position. `"unknown"` = cannot determine (no sensor, both sensors open, mid-travel). Unlike `command`, a reading MAY be `"unknown"`. |
+| `source` | `"sensor"` \| `"driver"` | `"sensor"` = independently sensed. `"driver"` = the controller believes it drove the motor there, with no independent sensing — a delivery acknowledgement, not a position confirmation. A `"driver"` reading never confirms a point configured as requiring feedback. |
+| `updatedAt` | ISO 8601 string | Timestamp on the controller. Advisory — the backend timestamps from its own clock. |
+
+---
+
+### `point/{pointId}/query`
+Sent by the backend on startup, on broker reconnect, and on operator request, for
+every point configured as requiring position feedback. NOT retained. The
+controller SHOULD respond with a `point/{pointId}/reading`. The backend remains
+correct if no response ever arrives — the point simply remains at position
+"unknown", and every edge gated on it is untraversable until it reports.
+
+```json
+{ "requestedAt": "2026-01-01T00:00:00.000Z" }
+```
+
+---
+
 ### `point/{pointId}/state`
 Published by the backend after confirming or issuing a point command. Retained.
 
 ```json
 {
   "pointId": "p1",
-  "position": "normal",
+  "commandedPosition": "normal",
+  "confirmedPosition": "normal",
+  "confirmation": "confirmed",
+  "positionFeedback": "required",
   "locked": false,
   "lockedByRoute": null,
   "updatedAt": "2026-01-01T00:00:00.000Z"
 }
 ```
+
+| Field | Type | Description |
+|---|---|---|
+| `pointId` | string | Point identifier |
+| `commandedPosition` | `"normal"` \| `"reverse"` \| `null` | Last position the backend commanded this session. `null` = never commanded. NOT a confirmation of physical position. |
+| `confirmedPosition` | `"normal"` \| `"reverse"` \| `"unknown"` | Last position the point controller reported. `"unknown"` until a reading lands, and again after a confirmation timeout. |
+| `confirmation` | `"unreported"` \| `"pending"` \| `"confirmed"` \| `"mismatch"` \| `"indeterminate"` \| `"timed-out"` | Confirmation status of `commandedPosition` against `confirmedPosition`. See `docs/point-feedback.md` for the full state model. |
+| `positionFeedback` | `"none"` \| `"required"` | Whether this point is configured to require a confirmed reading. |
+| `locked` | boolean | Whether a route currently holds this point |
+| `lockedByRoute` | string \| null | Route ID that holds this point, if any |
+| `updatedAt` | ISO 8601 string | Timestamp of last change |
+
+> **Breaking change (2026-08):** the previous `position` field is replaced by
+> `commandedPosition` + `confirmedPosition` + `confirmation`. A single `position`
+> field could not distinguish a point that threw from one that failed to, which
+> is the defect this amendment removes.
 
 ---
 
@@ -185,6 +253,7 @@ Published by the backend on startup and on any status change. Also configured as
 | Backend restarts | Retained `system/status` LWT publishes `"offline"` automatically. On reconnect, backend publishes `"online"`. |
 | ESP controller restarts | It receives NO retained throttle command (non-retained), so no ghost movement. It reads retained `loco/*/state` to recover last known state. |
 | Sensor hardware restarts | Backend receives the retained `sensor/*/reading` on subscribe and re-validates block state. |
+| Point controller restarts | The backend receives NO retained point reading. Every point configured `positionFeedback: "required"` remains or becomes `"unknown"` until it answers a live `point/*/query`. |
 | New frontend client connects | Receives all retained `block/*/state`, `point/*/state`, `loco/*/state`, and `system/status` immediately without needing a REST poll. |
 
 ---
@@ -195,4 +264,7 @@ The following MQTT conditions MUST trigger a Safe-Stop in the backend:
 
 1. MQTT broker disconnection (detected via client `close` event) lasting more than 5 seconds.
 2. Receiving `system/status` with `status: "offline"` from another orchestrator instance on the same broker.
-3. Receiving a malformed payload that fails Zod validation on a sensor or control topic.
+3. Receiving a malformed payload that fails Zod validation on a sensor,
+   feedback, or control topic.
+4. Receiving a `point/{pointId}/reading` whose payload `pointId` does not match
+   the `{pointId}` topic segment.
