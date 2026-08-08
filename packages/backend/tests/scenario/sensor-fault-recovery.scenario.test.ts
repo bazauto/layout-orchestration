@@ -273,7 +273,7 @@ describe('scenario: sensor-fault recovery', () => {
       locoAddress: 3,
       authority: 'manual',
       startBlockId: 'b1',
-      edgeIds: [e1, e2],
+      path: { kind: 'edges', edgeIds: [e1, e2] },
     });
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');

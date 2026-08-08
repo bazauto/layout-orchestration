@@ -21,9 +21,20 @@ export async function installMockAuth(page: Page) {
 /**
  * Install a fake WebSocket before the app loads so frontend logic sees a
  * connected backend without needing a real backend process in e2e tests.
+ *
+ * `options.snapshot` is delivered as a `STATE_SNAPSHOT` frame immediately
+ * after open. Callers that only need the socket to *exist* (most of them —
+ * the Configure and Track Editor screens do not read system status) can omit
+ * it and get the previous behaviour: no frame, so `systemStatus` stays
+ * `'offline'`. Anything exercising the Operate screen needs it, because the
+ * throttle, point, and route controls are all deliberately disabled until
+ * the system reports itself online.
  */
-export async function installMockWebSocket(page: Page) {
-  await page.addInitScript(() => {
+export async function installMockWebSocket(
+  page: Page,
+  options: { snapshot?: Record<string, unknown> } = {},
+) {
+  await page.addInitScript((snapshot) => {
     class MockWebSocket {
       static OPEN = 1;
       static CLOSED = 3;
@@ -40,6 +51,13 @@ export async function installMockWebSocket(page: Page) {
         // Simulate async open like a real browser WebSocket.
         queueMicrotask(() => {
           this.onopen?.(new Event('open'));
+          if (snapshot) {
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({ type: 'STATE_SNAPSHOT', payload: snapshot }),
+              }),
+            );
+          }
         });
       }
 
@@ -69,5 +87,5 @@ export async function installMockWebSocket(page: Page) {
       writable: true,
       value: MockWebSocket,
     });
-  });
+  }, options.snapshot);
 }

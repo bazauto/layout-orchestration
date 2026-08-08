@@ -15,6 +15,7 @@ style preferences.
 | `docs/mqtt-contract.md` | **Binding** MQTT topics, payloads, QoS, retention |
 | `docs/topology.md` | Track graph (`block_edges`): validation, deferred items |
 | `docs/route-locking.md` | Route reservation and locking (D1–D14) decision record |
+| `docs/pathfinding.md` | Pathfinding, setting the road, and route faults (P1–P8) |
 | `docs/auth.md` | Local authentication scheme and the pre-TLS threat model |
 | `docs/sensor-fault-recovery.md` | Sensor-fault latch recovery and the per-sensor occupancy model |
 | `docs/claude-review.md`, `docs/gpt-review.md` | Open design questions |
@@ -171,7 +172,8 @@ authentication, same posture as the WebSocket driving commands. Full design reco
 `SystemHealth.sensorFaults: Record<SensorId, SensorFault>` — one latched fault per sensor,
 so acknowledging a fault the operator can see never silently clears one they were never
 told about (D2); `evaluateSystemSafeStop` reports the *oldest* fault's reason and keeps its
-existing priority order (MQTT, DCC, topology, sensor faults, then recovered routes).
+existing priority order (MQTT, DCC, topology, sensor faults, then recovered routes — #4
+later inserted route faults between the last two).
 Block occupancy is now **derived**, not last-write-wins:
 `domain/occupancy.ts#deriveBlockOccupancy` computes it fresh from every sensor currently
 registered against a block, and an `ir_position` sensor may only ever raise occupancy,
@@ -201,14 +203,52 @@ per-sensor observation map — diagnostic state nothing renders). Full design re
 read it before touching `domain/occupancy.ts`, `LayoutService`'s sensor-handling methods,
 or `domain/safety.ts`'s `sensorFaults` handling.
 
-Phase 3 was gated on #3 (locking semantics) alone; that gate is now clear. Pathfinding
-(#4) takes an explicit ordered edge list from `ReservationService.grant` — #3 deliberately
-does not search the graph. Per-loco braking (#6) and collision avoidance (#7) follow #4.
-Two limits #3 records rather than closes: a point lock is an authority guarantee ("no
+**Pathfinding and setting the road have landed (#4).** `domain/pathfinding.ts#findPath`
+is a pure, direction-aware Dijkstra whose search state is **(block, end entered by)**, not
+block — that is what makes the no-reversal rule structural rather than a post-filter (P1).
+Cost is `BlockEdge.lengthMm`, with `DEFAULT_EDGE_LENGTH_MM` (1,000) for unmeasured track,
+so a layout with no lengths recorded degrades to fewest-hops (P2); ties break
+deterministically by node key then edge id, so the same request cannot return different
+paths between runs. The search ignores current point *positions* — setting the road is
+what a route is — but refuses a point another route *holds*, and refuses any block that is
+not positively `clear` and unlocked, via the shared `isBlockEffectivelyOccupied` (P3).
+`ReservationService.grant` now takes `GrantRequest.path`, either
+`{ kind: 'edges', edgeIds }` (#3's form, unchanged and still first-class) or
+`{ kind: 'destination', destinationBlockId, startExitEnd? }`; a searched path is then
+handed to `planReservation` exactly like a supplied one — **the pathfinder proposes, the
+planner disposes** (P6). `checkPathIndependentPreconditions` was extracted from
+`planReservation` so a search failure still reports the system/roster/graph rejections
+D14 requires. `LayoutService.requestRoute` **throws the points** after the locks are
+committed (D3's ordering, now exercised); a command the DCC adapter *rejects* invalidates
+the whole route — cancelled, locks released, Safe-Stop — and is reported as
+`granted: false` (P7). `commandPointHolds` is shared with D8's resume path.
+
+**`SystemHealth.routeFaults: Record<RouteId, RouteFault>`** (P8) closes a live bug: a
+route violation used to call `stateManager.enterSafeStop` directly, bypassing
+`SystemHealth`, so the next unrelated health evaluation cleared a Safe-Stop caused by a
+train being somewhere it should not be. Three kinds — `unexpected-occupancy` and
+`point-command-rejected` (route cancelled) and `occupancy-unknown` (route **suspended**,
+locks retained per D8). That last one is new behaviour: `evaluateOccupancyChange` used to
+ignore `unknown` entirely, which was safe when the cause was a sensor fault (that
+Safe-Stops on its own) but not when a sensor was taken out of service or deleted
+mid-route. Priority in `evaluateSystemSafeStop` is now MQTT, DCC, topology, sensor faults,
+**route faults**, recovered routes. REST: `POST .../routes/:routeId/acknowledge-fault`
+(any authenticated role, mirroring the sensor equivalent; no arming threshold — a route
+cannot prove itself) and `GET .../route-faults`. A `ROUTE_FAULTS` `LayoutEvent` is
+forwarded over `/ws` and the `STATE_SNAPSHOT` gains `routeFaults`. Frontend: a Routes
+panel on the Operate screen (loco + start + destination, live routes with Cancel/Resume,
+latched faults with Acknowledge). Full design record is `docs/pathfinding.md` — read it
+before touching `domain/pathfinding.ts`, `ReservationService.resolvePath`, or
+`LayoutService`'s `requestRoute` / `commandPointHolds` / route-fault methods.
+
+Phase 3's remaining work is per-loco braking (#6) and collision avoidance (#7); driving a
+granted route is still manual — #4 sets and reserves the road, it does not drive the
+train. Limits recorded rather than closed: a point lock is an authority guarantee ("no
 other authority will command this point"), not a physical position guarantee — there is
-still no point-position feedback channel (#25) — and the locking model does not catch two
+still no point-position feedback channel (#25); the locking model does not catch two
 routes fouling at a plain (non-switched) diamond crossing, since neither shares a block or
-a point (#26; Westgate Hollow has none today).
+a point (#26; Westgate Hollow has none today); and the pathfinder does not search around a
+point-position conflict, so a path can exist that it will not find (P5).
 
 The three security findings against the original topology commit — #10 (Safe-Stop on
 invalid topology rather than a bare throw), #11 (DB-level graph invariants), #12 (Zod

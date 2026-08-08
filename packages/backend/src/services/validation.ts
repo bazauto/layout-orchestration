@@ -421,15 +421,43 @@ export function parseReservationRow(row: unknown, holdRows: readonly unknown[]):
 // a client posting `layoutId`, which is path/server-owned) is a 400, not a
 // silently ignored field.
 
-/** `POST /api/layouts/:layoutId/routes`. Pathfinding (#4) is out of scope for #3 — `edgeIds` is an explicit ordered path, not searched for. */
+/**
+ * `POST /api/layouts/:layoutId/routes`.
+ *
+ * Two mutually exclusive ways to specify the track (#4): an explicit ordered
+ * `edgeIds` list (#3's original form, still first-class), or a
+ * `destinationBlockId` for the pathfinder to search for. A `.refine()`
+ * rather than a `z.discriminatedUnion` because there is no discriminant
+ * field on the wire — the client sends one shape or the other, and adding a
+ * `kind` tag purely to satisfy the parser would be API noise. The refinement
+ * enforces exactly-one, so sending both (which would silently favour one) or
+ * neither is a 400.
+ *
+ * `startExitEnd` constrains which end of the start block the train leaves
+ * by. Meaningful only with `destinationBlockId` — an explicit edge list
+ * already fixes the first edge — and rejected alongside `edgeIds` rather
+ * than ignored.
+ */
 export const routeRequestSchema = z
   .object({
     locoAddress: z.number().int().min(1).max(9999),
     authority: z.enum(['manual', 'auto']),
     startBlockId: z.string().min(1),
-    edgeIds: z.array(z.string().min(1)),
+    edgeIds: z.array(z.string().min(1)).optional(),
+    destinationBlockId: z.string().min(1).optional(),
+    startExitEnd: z.string().trim().toLowerCase().pipe(blockEndLabelSchema).optional(),
   })
-  .strict();
+  .strict()
+  .refine((body) => (body.edgeIds === undefined) !== (body.destinationBlockId === undefined), {
+    message: 'exactly one of edgeIds or destinationBlockId is required',
+    path: ['edgeIds'],
+  })
+  .refine((body) => body.startExitEnd === undefined || body.edgeIds === undefined, {
+    message: 'startExitEnd applies only to a destinationBlockId request',
+    path: ['startExitEnd'],
+  });
+
+export type RouteRequestInput = z.infer<typeof routeRequestSchema>;
 
 /** `DELETE /api/layouts/:layoutId/routes/:routeId`. `reason` is optional — a body-less DELETE defaults to a generic operator-cancel reason in the route handler. */
 export const routeCancelSchema = z

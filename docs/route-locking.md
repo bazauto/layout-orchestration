@@ -14,6 +14,22 @@ and the guards that consume it. It does **not** deliver pathfinding — that is
 takes as an explicit request. Every decision below is testable without a
 pathfinder.
 
+> **Update — #4 has landed.** Pathfinding and setting the road are now
+> implemented; see **`docs/pathfinding.md`** (P1–P8) for that decision record.
+> Everything below still holds, with three amendments made there rather than
+> repeated here:
+>
+> - `ReservationService.grant` now accepts *either* an explicit `edgeIds` list
+>   (unchanged, still first-class) *or* a `destinationBlockId` for the search
+>   to resolve. A searched path is validated by `planReservation` exactly like
+>   a supplied one — the planner remains the single authority (P6).
+> - A granted route now has its points **thrown** (P7), the half D3's ordering
+>   note was written in anticipation of.
+> - Route-level Safe-Stops are latched in `SystemHealth.routeFaults` (P8).
+>   D7's violation path previously called `enterSafeStop` directly and left no
+>   latch, so an unrelated health evaluation cleared it — that was a bug, and
+>   it is fixed.
+
 ## D1 — A lock is held on blocks *and* points; edges are route membership, not a third lock namespace
 
 Blocks alone let a point be thrown under a train; points alone let two routes
@@ -294,6 +310,16 @@ because those blocks remain locked and nothing new can take them. Only
 **restart-recovered** routes latch the system in Safe-Stop until resolved —
 see D9.
 
+> **#4 amendment.** A Safe-Stop caused by the *route itself* now does latch,
+> in `SystemHealth.routeFaults`, and needs an explicit acknowledge
+> (`POST .../routes/:routeId/acknowledge-fault`). That is not a reversal of
+> the paragraph above: a route suspended because MQTT dropped still clears
+> when MQTT returns. What latches is a route fault — a violation (D7), a
+> rejected point command while setting the road, or a reserved block ceasing
+> to be determinable. See `docs/pathfinding.md` P8, including why a block
+> going `unknown` mid-route suspends rather than cancels, which is this
+> section's rule applied to a cause D8 did not originally enumerate.
+
 ## D9 — Locks are persisted; a restart revives them as `suspended` and Safe-Stops
 
 The argument for in-memory-only reservations is that after a restart every
@@ -424,11 +450,15 @@ early return — matching `validateTopology`'s existing posture in
 ## Out of scope
 
 Restated here from the issue, because it is easy to accidentally reach for
-one of these while implementing #4/#6/#7 against this PR's surface:
+one of these while implementing #4/#6/#7 against this PR's surface. The first
+two have since landed with #4 — see `docs/pathfinding.md`:
 
-- **Pathfinding** (#4). This PR takes an explicit ordered edge list.
-- **Driving a granted route** — issuing point commands for automation,
-  throttle control, speed profiles (#4, #7).
+- ~~**Pathfinding** (#4). This PR takes an explicit ordered edge list.~~
+  **Landed (#4).** An explicit edge list is still accepted; a destination is
+  now accepted too.
+- ~~**Driving a granted route** — issuing point commands~~ **Point commands
+  landed (#4)**; throttle control and speed profiles remain out of scope
+  (#6/#7).
 - **Braking model / stopping distances** (#6). `lengthMm` is recorded on
   edge holds for it, unused here.
 - **Point position confirmation** (#25). See D11.
@@ -437,5 +467,7 @@ one of these while implementing #4/#6/#7 against this PR's surface:
   moves) — explicitly *rejected* in D2, not deferred.
 - **Route queuing, priority, or starvation avoidance** — rejecting rather
   than queuing is what makes D4's deadlock-by-construction argument valid.
-- **A route-building frontend UI** beyond a minimal route list with Cancel —
-  belongs with #4's pathfinder.
+- ~~**A route-building frontend UI** beyond a minimal route list with Cancel —
+  belongs with #4's pathfinder.~~ **Landed (#4)** — the Operate screen's
+  Routes panel builds a route from loco + start + destination, lists live
+  routes with Cancel/Resume, and surfaces latched route faults.

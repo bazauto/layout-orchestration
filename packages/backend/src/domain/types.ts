@@ -291,7 +291,80 @@ export type RouteRejection =
   | { kind: 'point-position-conflict'; pointId: PointId }
   | { kind: 'loco-already-routed'; locoAddress: LocoAddress; routeId: RouteId }
   | { kind: 'unknown-loco'; locoAddress: LocoAddress }
-  | { kind: 'no-graph' };
+  | { kind: 'no-graph' }
+  // ── Pathfinding (#4, see docs/pathfinding.md) ──
+  // Produced by `ReservationService` before `planReservation` runs, when a
+  // request named a destination rather than an explicit edge list and the
+  // search could not produce one. Deliberately part of the same union: an
+  // operator asking for a route gets one rejection list, whether the refusal
+  // came from the search or from the planner.
+  | { kind: 'unknown-block'; blockId: BlockId }
+  | { kind: 'destination-is-start'; blockId: BlockId }
+  | { kind: 'no-path'; destinationBlockId: BlockId; blockers: PathBlocker[] }
+  // ── Setting the road (#4) ──
+  // Not a planning refusal at all: the route WAS granted, its locks were
+  // committed, and a point command was then rejected by the DCC adapter.
+  // `LayoutService` cancels the route and Safe-Stops, and reports the
+  // request as refused, because nothing the operator asked for took effect.
+  | { kind: 'point-command-rejected'; pointId: PointId; requiredPosition: 'normal' | 'reverse'; reason: string };
+
+/**
+ * Why the pathfinder could not use a particular edge. Collected during the
+ * search and reported alongside a `no-path` rejection so an operator is told
+ * *what is in the way* ("block 4 is occupied") rather than a bare "no route".
+ * Diagnostic, not exhaustive: an edge is reported against the first reason it
+ * failed, and the list is capped (see `MAX_REPORTED_BLOCKERS`).
+ */
+export type PathBlocker =
+  | { kind: 'block-not-clear'; blockId: BlockId; occupancy: Occupancy }
+  | { kind: 'block-locked'; blockId: BlockId; heldBy: RouteId }
+  | { kind: 'point-locked'; pointId: PointId; heldBy: RouteId }
+  | { kind: 'returns-to-start'; blockId: BlockId };
+
+// ─── Route Faults (#4, see docs/pathfinding.md) ───────────────────────────────
+
+/**
+ * Why a route lost the certainty it was granted under. Each one is a
+ * Safe-Stop trigger:
+ *  - 'unexpected-occupancy' — a reserved block read `occupied` that was not
+ *    the route's next expected step (D7). The route is cancelled.
+ *  - 'occupancy-unknown'    — a reserved block stopped being determinable
+ *    mid-route. The route is suspended, locks retained (D8).
+ *  - 'point-command-rejected' — the DCC adapter refused a point command while
+ *    setting the road. The route is cancelled; some points may already have
+ *    moved, which is precisely why this is a Safe-Stop and not a retry.
+ */
+export type RouteFaultKind = 'unexpected-occupancy' | 'occupancy-unknown' | 'point-command-rejected';
+
+/**
+ * A latched fault against one route. Keyed by `routeId` in
+ * `SystemHealth.routeFaults` for the same reason `sensorFaults` is keyed by
+ * sensor (docs/sensor-fault-recovery.md D2): acknowledging the fault an
+ * operator can see must never silently clear one they were never told about.
+ *
+ * Latched — nothing clears an entry automatically. Before #4, a route
+ * violation called `enterSafeStop` directly, outside `SystemHealth`, so the
+ * next unrelated health evaluation cleared the Safe-Stop it had caused.
+ */
+export interface RouteFault {
+  routeId: RouteId;
+  kind: RouteFaultKind;
+  reason: string;
+  /** The block whose occupancy caused this, for the two occupancy kinds. */
+  blockId: BlockId | null;
+  locoAddress: LocoAddress;
+  faultedAt: Date;
+}
+
+/** Wire projection of `RouteFault`, mirroring `SensorFaultView`. Dates as ISO 8601. */
+export interface RouteFaultView {
+  routeId: RouteId;
+  kind: RouteFaultKind;
+  reason: string;
+  blockId: BlockId | null;
+  locoAddress: LocoAddress;
+  faultedAt: string;
+}
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -330,7 +403,8 @@ export type LayoutEvent =
       type: 'SYSTEM_STATUS';
       payload: { status: SystemStatus; mode: SystemMode; reason: string | null };
     }
-  | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } };
+  | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
+  | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } };
 
 // ─── WebSocket Message Shapes ─────────────────────────────────────────────────
 

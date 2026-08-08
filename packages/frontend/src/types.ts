@@ -54,6 +54,68 @@ export interface SensorFaultView {
   armed: boolean;
 }
 
+// ─── Route reservations (mirror backend domain/types.ts) ─────────────────────
+
+export type RouteStatus = 'active' | 'suspended' | 'released' | 'cancelled';
+export type RouteHoldKind = 'block' | 'point' | 'edge';
+
+export interface RoutePathStep {
+  edgeId: string | null;
+  blockId: string;
+  entryEnd: string | null;
+  exitEnd: string | null;
+}
+
+export interface RouteHold {
+  kind: RouteHoldKind;
+  targetId: string;
+  requiredPosition: 'normal' | 'reverse' | null;
+  releaseAfterIndex: number;
+  released: boolean;
+}
+
+export interface RouteReservation {
+  id: string;
+  layoutId: string;
+  locoAddress: number;
+  authority: 'manual' | 'auto';
+  status: RouteStatus;
+  path: RoutePathStep[];
+  holds: RouteHold[];
+  confirmedIndex: number;
+  reason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Mirrors `PathBlocker` in the backend's `domain/types.ts` (#4). */
+export type PathBlocker =
+  | { kind: 'block-not-clear'; blockId: string; occupancy: Occupancy }
+  | { kind: 'block-locked'; blockId: string; heldBy: string }
+  | { kind: 'point-locked'; pointId: string; heldBy: string }
+  | { kind: 'returns-to-start'; blockId: string };
+
+/**
+ * Mirrors `RouteRejection`. Only `kind` is read structurally by the UI — the
+ * server also sends a rendered `error` string alongside, which is what gets
+ * displayed, so this exists for the cases the panel highlights specifically
+ * rather than to re-implement `describeRejections` in the browser.
+ */
+export interface RouteRejection {
+  kind: string;
+  [field: string]: unknown;
+}
+
+/** Wire projection of the backend's `RouteFault` (#4). `faultedAt` is ISO 8601. */
+export interface RouteFaultView {
+  routeId: string;
+  kind: 'unexpected-occupancy' | 'occupancy-unknown' | 'point-command-rejected';
+  reason: string;
+  blockId: string | null;
+  locoAddress: number;
+  faultedAt: string;
+}
+
 export interface LocoRecord {
   id: string;
   layoutId: string;
@@ -162,8 +224,11 @@ export interface StateSnapshot {
   blocks: Record<string, BlockState>;
   points: Record<string, PointState>;
   locos: Record<number, LocoState>;
+  routes: Record<string, RouteReservation>;
   /** #34: current per-sensor faults, always the complete set, never a delta. */
   sensorFaults: SensorFaultView[];
+  /** #4: current latched route faults, likewise always the complete set. */
+  routeFaults: RouteFaultView[];
 }
 
 // ─── Server → Client messages ─────────────────────────────────────────────────
@@ -175,6 +240,8 @@ export type ServerMessage =
   | { type: 'LOCO_STATE'; payload: LocoState }
   | { type: 'SYSTEM_STATUS'; payload: { status: SystemStatus; mode: SystemMode; reason: string | null } }
   | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
+  | { type: 'ROUTE_STATE'; payload: RouteReservation }
+  | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } };
 
 // ─── Client → Server messages ─────────────────────────────────────────────────

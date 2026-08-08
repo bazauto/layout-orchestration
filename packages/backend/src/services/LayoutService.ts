@@ -30,7 +30,11 @@ import {
   PointCommand,
   PointId,
   PointState,
+  RouteFault,
+  RouteFaultView,
+  RouteHold,
   RouteId,
+  RouteRejection,
   RouteReservation,
   RouteStatus,
   SensorFault,
@@ -53,13 +57,19 @@ import {
 } from '../domain/safety';
 import { deriveBlockOccupancy, isSensorFaultArmed, toSensorFaultView } from '../domain/occupancy';
 import { TrackGraph } from '../domain/graph';
-import { ReservationRequest } from '../domain/routeLocking';
+import { toRouteFaultView } from '../domain/routeLocking';
 import { IDccController } from '../ports/IDccController';
 import { IMqttAdapter } from '../ports/IMqttAdapter';
-import { ILayoutRepository, SensorRecord } from '../ports/ILayoutRepository';
+import { ILayoutRepository, PointRecord, SensorRecord } from '../ports/ILayoutRepository';
 import { SensorCreateInput, sensorReadingSchema, SensorUpdateInput } from './validation';
 import { loadTopology, TopologyLoadResult } from './topologyLoader';
-import { GrantOutcome, ReservationOutcome, ReservationService, ResumeResult } from './ReservationService';
+import {
+  GrantOutcome,
+  GrantRequest,
+  ReservationOutcome,
+  ReservationService,
+  ResumeResult,
+} from './ReservationService';
 
 /**
  * D1 (docs/sensor-fault-recovery.md): consecutive valid, non-retained
@@ -124,6 +134,21 @@ export class SensorFaultNotArmedError extends Error {
   }
 }
 
+/** One point command that did not take effect while setting a route's road (#4). */
+interface PointCommandFailure {
+  pointId: PointId;
+  requiredPosition: 'normal' | 'reverse';
+  message: string;
+}
+
+/** Thrown by `acknowledgeRouteFault` when the named route has no fault latched (#4). */
+export class RouteNotFaultedError extends Error {
+  constructor(readonly routeId: RouteId) {
+    super(`Route ${routeId} has no latched fault`);
+    this.name = 'RouteNotFaultedError';
+  }
+}
+
 export class LayoutService extends EventEmitter {
   private layoutId: LayoutId | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -133,6 +158,7 @@ export class LayoutService extends EventEmitter {
     topologyValid: true,
     topologyReason: null,
     sensorFaults: {},
+    routeFaults: {},
     recoveredRouteCount: 0,
   };
   private graph: TrackGraph | null = null;
@@ -370,31 +396,101 @@ export class LayoutService extends EventEmitter {
 
   // ─── Route Reservations (see docs/route-locking.md) ────────────────────────────
 
-  async requestRoute(request: Omit<ReservationRequest, 'layoutId'>): Promise<GrantOutcome> {
+  /**
+   * Grants a route and **sets the road** for it (#4).
+   *
+   * `ReservationService.grant` resolves the path (searching the graph when
+   * the request named a destination), plans, persists, and commits the
+   * locks. Only then does this method issue the point commands the route
+   * needs — after the locks are committed, never during acquisition (D3):
+   * you never send a physical command for a route you have not yet fully
+   * reserved.
+   *
+   * A point command the DCC adapter **rejects** invalidates the whole route.
+   * That is #4's stated criterion and it is not a retry case: some points may
+   * already have moved, so the physical state of the layout no longer matches
+   * either the old road or the new one. The route is cancelled (locks
+   * released), a `RouteFault` is latched, and the system Safe-Stops. The
+   * caller is told `granted: false` — the reservation row survives as
+   * `cancelled` for the record, but nothing the operator asked for is in
+   * effect, and reporting it as granted would be a lie.
+   */
+  async requestRoute(request: GrantRequest): Promise<GrantOutcome> {
     if (!this.layoutId) throw new Error('[LayoutService] requestRoute called before start()');
     const outcome = await this.reservations.grant(this.layoutId, request, this.graph);
-    if (outcome.granted) {
-      this.emit('event', { type: 'ROUTE_STATE', payload: outcome.reservation } satisfies LayoutEvent);
-      for (const block of outcome.changedBlocks) {
-        this.publishBlockState(block);
-        this.emit('event', { type: 'BLOCK_STATE', payload: block } satisfies LayoutEvent);
-      }
-      for (const point of outcome.changedPoints) {
-        this.publishPointState(point);
-        this.emit('event', { type: 'POINT_STATE', payload: point } satisfies LayoutEvent);
-      }
-      this.log.info('[LayoutService] Route granted', {
-        layoutId: this.layoutId,
-        routeId: outcome.reservation.id,
-        locoAddress: outcome.reservation.locoAddress,
-      });
-    } else {
+
+    if (!outcome.granted) {
       this.log.warn('[LayoutService] Route request rejected', {
         layoutId: this.layoutId,
         rejections: outcome.rejections,
       });
+      return outcome;
     }
+
+    const reservation = outcome.reservation;
+    this.emit('event', { type: 'ROUTE_STATE', payload: reservation } satisfies LayoutEvent);
+    for (const block of outcome.changedBlocks) {
+      this.publishBlockState(block);
+      this.emit('event', { type: 'BLOCK_STATE', payload: block } satisfies LayoutEvent);
+    }
+    for (const point of outcome.changedPoints) {
+      this.publishPointState(point);
+      this.emit('event', { type: 'POINT_STATE', payload: point } satisfies LayoutEvent);
+    }
+
+    // `commandPointHolds` selects the point holds itself, so this passes the
+    // whole set rather than pre-filtering it in two places.
+    const failures = await this.commandPointHolds(reservation.holds.filter((h) => !h.released));
+    if (failures.length > 0) {
+      return this.abandonRouteOnPointFailure(reservation, failures);
+    }
+
+    this.log.info('[LayoutService] Route granted and road set', {
+      layoutId: this.layoutId,
+      routeId: reservation.id,
+      locoAddress: reservation.locoAddress,
+    });
     return outcome;
+  }
+
+  /**
+   * Undoes a grant whose road could not be set: cancel the route (releasing
+   * its locks), latch a `RouteFault`, and Safe-Stop. Returns the rejection
+   * list the caller sees in place of the grant.
+   */
+  private async abandonRouteOnPointFailure(
+    reservation: RouteReservation,
+    failures: PointCommandFailure[],
+  ): Promise<GrantOutcome> {
+    const reason = `route ${reservation.id} abandoned — ${failures.length} point command(s) rejected: ${failures
+      .map((f) => f.message)
+      .join('; ')}`;
+
+    this.log.error('[LayoutService] Route abandoned — point command rejected', {
+      layoutId: this.layoutId,
+      routeId: reservation.id,
+      locoAddress: reservation.locoAddress,
+      failures: failures.map((f) => f.message),
+    });
+
+    const cancelled = await this.reservations.cancel(this.layoutId!, reservation.id, reason);
+    this.publishReservationOutcome(cancelled);
+
+    await this.raiseRouteFault({
+      routeId: reservation.id,
+      kind: 'point-command-rejected',
+      reason,
+      blockId: null,
+      locoAddress: reservation.locoAddress,
+    });
+
+    const rejections: RouteRejection[] = failures.map((failure) => ({
+      kind: 'point-command-rejected',
+      pointId: failure.pointId,
+      requiredPosition: failure.requiredPosition,
+      reason: failure.message,
+    }));
+    return { granted: false, rejections };
   }
 
   async cancelRoute(routeId: RouteId, reason: string | null): Promise<ReservationOutcome> {
@@ -407,10 +503,16 @@ export class LayoutService extends EventEmitter {
   /**
    * D8's resume: `ReservationService.resume` validates preconditions and
    * flips the route back to `active`; this method then re-commands every
-   * held point to its required position, best-effort — `ReservationService`
-   * has no DCC access, so the physical re-command necessarily happens here.
-   * A point lock is an authority lock, not a physical position guarantee
-   * (D11), so a re-command failure does not undo the resume.
+   * held point to its required position — `ReservationService` has no DCC
+   * access, so the physical re-command necessarily happens here.
+   *
+   * That re-commanding is **not** best-effort. D8 refuses a resume unless
+   * every held point is re-commanded, so a rejected command rolls the route
+   * straight back to `suspended` (locks retained) and leaves the D9 restart
+   * latch intact. A point lock is an authority lock rather than a physical
+   * position guarantee (D11) — which is exactly why a *rejected* command
+   * must not be swallowed: it is the only evidence available today that the
+   * road is not set.
    */
   async resumeRoute(routeId: RouteId): Promise<ResumeResult> {
     if (!this.layoutId) throw new Error('[LayoutService] resumeRoute called before start()');
@@ -420,36 +522,12 @@ export class LayoutService extends EventEmitter {
       return result;
     }
 
-    // D8 refuses a resume unless every held point is re-commanded to its
-    // required position, so the commands are issued *before* this resume is
-    // treated as successful — before the ROUTE_STATE event, and before the
-    // D9 restart latch is cleared. A route must never sit `active` while a
-    // point it holds is known not to have accepted its command, and a
-    // restart Safe-Stop must never be cleared by a resume that then failed.
-    const points = await this.repo.listPoints(this.layoutId);
-    const failures: string[] = [];
-    for (const hold of result.pointsToRecommand) {
-      if (!hold.requiredPosition) continue;
-      const pointRecord = points.find((p) => p.id === hold.targetId);
-      if (!pointRecord) {
-        // A hold referencing a point that no longer exists is an
-        // inconsistency, not a no-op to skip past.
-        failures.push(`point ${hold.targetId} is held by the route but no longer exists`);
-        continue;
-      }
-      try {
-        await this.dcc.setPoint(pointRecord.dccAddress, hold.requiredPosition);
-        const updated = this.stateManager.updatePointPosition(hold.targetId, hold.requiredPosition);
-        this.publishPointState(updated);
-        this.emit('event', { type: 'POINT_STATE', payload: updated } satisfies LayoutEvent);
-      } catch (err) {
-        failures.push(
-          `point ${hold.targetId} rejected ${hold.requiredPosition}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
-    }
+    // The commands are issued *before* this resume is treated as successful
+    // — before the ROUTE_STATE event, and before the D9 restart latch is
+    // cleared. A route must never sit `active` while a point it holds is
+    // known not to have accepted its command, and a restart Safe-Stop must
+    // never be cleared by a resume that then failed.
+    const failures = (await this.commandPointHolds(result.pointsToRecommand)).map((f) => f.message);
 
     if (failures.length > 0) {
       const reason = `resume refused — ${failures.length} point command(s) failed: ${failures.join('; ')}`;
@@ -743,11 +821,14 @@ export class LayoutService extends EventEmitter {
    * any single sensor's raw reading. That is what stops an `ir_position`
    * sensor's `clear` from ever reaching the reservation engine as the
    * block's occupancy — D3 already discards it before this point — so it
-   * can never fire progressive release under a train. A fault-driven
-   * transition to `unknown` needs no special guard here either:
-   * `evaluateOccupancyChange` only acts on `occupied`, or on `clear` when
-   * the block's previous value was `occupied`; `unknown` is inert to it and
-   * is passed through faithfully, not filtered.
+   * can never fire progressive release under a train.
+   *
+   * A transition to `unknown` is passed through faithfully, not filtered,
+   * and since #4 it is no longer inert: `evaluateOccupancyChange` reports it
+   * as `occupancy-unknown` when the block belongs to a live route, which
+   * Safe-Stops. It was previously ignored on the grounds that a sensor fault
+   * would Safe-Stop on its own account — true for that cause, but not for a
+   * sensor taken out of service or deleted mid-route, which raises no fault.
    */
   private async recomputeBlock(blockId: BlockId | null): Promise<void> {
     if (!blockId) return;
@@ -786,6 +867,12 @@ export class LayoutService extends EventEmitter {
       // ReservationService has no DCC/MQTT access.
       if (outcome.unexpectedOccupancy && outcome.reservation) {
         await this.handleRouteViolation(blockId, outcome.reservation);
+      }
+      // #4: a block a live route still holds became undeterminable. Unlike
+      // the violation above, the route keeps its locks — Safe-Stop suspends
+      // it rather than cancelling it (D8).
+      if (outcome.occupancyUnknownBlockId && outcome.reservation) {
+        await this.handleRouteOccupancyUnknown(outcome.occupancyUnknownBlockId, outcome.reservation);
       }
     }
   }
@@ -985,21 +1072,216 @@ export class LayoutService extends EventEmitter {
   }
 
   /** D7: a manual train has entered reserved track the system did not expect it in — stop that loco and enter Safe-Stop. Scoped to reserved track; unreserved track is #7. */
+  /**
+   * D7's route violation. The route is already cancelled and its locks
+   * released by `ReservationService` before this runs; what is left is the
+   * hardware and system-state half it has no access to.
+   *
+   * The Safe-Stop is raised through `raiseRouteFault` — i.e. through
+   * `SystemHealth` — rather than by calling `stateManager.enterSafeStop`
+   * directly the way this used to. The direct call left no latch, so the
+   * next unrelated health evaluation cleared it (#4).
+   */
   private async handleRouteViolation(blockId: BlockId, reservation: RouteReservation): Promise<void> {
-    this.log.error('[LayoutService] Route violation — unexpected occupancy', {
-      blockId,
+    await this.stopLoco(reservation.locoAddress);
+    await this.raiseRouteFault({
       routeId: reservation.id,
+      kind: 'unexpected-occupancy',
+      reason: `Route ${reservation.id} violated: unexpected occupancy in block ${blockId}`,
+      blockId,
       locoAddress: reservation.locoAddress,
     });
+  }
+
+  /**
+   * A block a live route still holds stopped being determinable (#4). The
+   * route was granted on the assertion that every block ahead was positively
+   * clear, and that assertion no longer holds.
+   *
+   * The route is NOT cancelled: Safe-Stop holds locks rather than releasing
+   * them (D8), and `evaluateAndApplySafeStop` suspends it as part of
+   * entering Safe-Stop. The loco is stopped, because a train moving into
+   * track whose state is unknown is the failure this exists to prevent.
+   *
+   * This can double up with a sensor fault, when a malformed payload is what
+   * made the block undeterminable — the operator then acknowledges both.
+   * That is deliberate: they are different facts ("this detector is faulty"
+   * versus "route R's road is no longer known to be clear") and clearing one
+   * does not resolve the other. The case this catches that nothing else does
+   * is a sensor being taken out of service or deleted while a route is
+   * running over it, which raises no sensor fault at all.
+   */
+  private async handleRouteOccupancyUnknown(
+    blockId: BlockId,
+    reservation: RouteReservation,
+  ): Promise<void> {
     await this.stopLoco(reservation.locoAddress);
+    await this.raiseRouteFault({
+      routeId: reservation.id,
+      kind: 'occupancy-unknown',
+      reason: `Route ${reservation.id} suspended: block ${blockId} occupancy became unknown`,
+      blockId,
+      locoAddress: reservation.locoAddress,
+    });
+  }
+
+  // ─── Private: Setting the road (#4) ──────────────────────────────────────────
+
+  /**
+   * Commands every point hold to its required position, returning one entry
+   * per command that did not succeed. The single place a route's points are
+   * physically set, shared by the initial grant and by D8's resume — the two
+   * used to differ only by accident, and a rejected command has to mean the
+   * same thing in both.
+   *
+   * Deliberately does NOT stop at the first failure: the caller invalidates
+   * the route either way, and an operator diagnosing a dead point motor is
+   * better served by "p1 and p4 rejected" than by "p1 rejected" followed by
+   * a second attempt that reveals p4.
+   *
+   * A hold naming a point that no longer exists counts as a failure, not a
+   * skip: it means the reservation and the config have drifted apart, which
+   * is exactly the kind of uncertainty that must not be driven through.
+   */
+  private async commandPointHolds(holds: readonly RouteHold[]): Promise<PointCommandFailure[]> {
+    const pointHolds = holds.filter(
+      (hold): hold is RouteHold & { requiredPosition: 'normal' | 'reverse' } =>
+        hold.kind === 'point' && hold.requiredPosition !== null,
+    );
+    if (pointHolds.length === 0) return [];
+
+    const points: PointRecord[] = this.layoutId ? await this.repo.listPoints(this.layoutId) : [];
+    const failures: PointCommandFailure[] = [];
+
+    for (const hold of pointHolds) {
+      const pointRecord = points.find((p) => p.id === hold.targetId);
+      if (!pointRecord) {
+        failures.push({
+          pointId: hold.targetId,
+          requiredPosition: hold.requiredPosition,
+          message: `point ${hold.targetId} is held by the route but no longer exists`,
+        });
+        continue;
+      }
+
+      try {
+        await this.dcc.setPoint(pointRecord.dccAddress, hold.requiredPosition);
+        const updated = this.stateManager.updatePointPosition(hold.targetId, hold.requiredPosition);
+        this.publishPointState(updated);
+        this.emit('event', { type: 'POINT_STATE', payload: updated } satisfies LayoutEvent);
+      } catch (err) {
+        failures.push({
+          pointId: hold.targetId,
+          requiredPosition: hold.requiredPosition,
+          message: `point ${hold.targetId} rejected ${hold.requiredPosition}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        });
+      }
+    }
+
+    return failures;
+  }
+
+  // ─── Route faults (#4, see docs/pathfinding.md P8) ───────────────────────────
+
+  /** The current latched route faults, oldest first — the first cause leads, matching `getSensorFaults`. */
+  getRouteFaults(): RouteFaultView[] {
+    return Object.values(this.health.routeFaults)
+      .map(toRouteFaultView)
+      .sort((a, b) => a.faultedAt.localeCompare(b.faultedAt));
+  }
+
+  /**
+   * Latches a route fault and re-evaluates Safe-Stop.
+   *
+   * Every route-level Safe-Stop goes through here rather than calling
+   * `stateManager.enterSafeStop` directly. That direct call was the bug this
+   * replaces: it set the status but left nothing in `SystemHealth`, so the
+   * next health evaluation — an MQTT reconnect, a sensor-fault acknowledge,
+   * any config write — found nothing wrong and cleared a Safe-Stop caused by
+   * a train being somewhere it should not be.
+   *
+   * Re-faulting an already-faulted route keeps the FIRST cause, matching
+   * `SensorFault`'s DD5: the original reason is the diagnostic one.
+   */
+  private async raiseRouteFault(fault: Omit<RouteFault, 'faultedAt'>): Promise<void> {
+    if (this.health.routeFaults[fault.routeId]) {
+      this.emitRouteFaults();
+      return;
+    }
+
+    this.health = {
+      ...this.health,
+      routeFaults: {
+        ...this.health.routeFaults,
+        [fault.routeId]: { ...fault, faultedAt: new Date() },
+      },
+    };
+    this.log.error('[LayoutService] Route fault latched', {
+      layoutId: this.layoutId,
+      routeId: fault.routeId,
+      kind: fault.kind,
+      reason: fault.reason,
+    });
+
+    await this.evaluateAndApplySafeStop();
+    this.emitRouteFaults();
+  }
+
+  /**
+   * Clears one latched route fault (#4). Any authenticated role, like the
+   * sensor-fault acknowledge it mirrors.
+   *
+   * There is no arming threshold — the sensor equivalent has one because a
+   * sensor can prove itself by publishing valid readings, and a route cannot
+   * prove anything: it is already cancelled or suspended. The operator's
+   * acknowledgement *is* the recovery.
+   *
+   * Clearing this does not make the route runnable again. A cancelled route
+   * is terminal. A suspended one still has to pass `resume`'s preconditions,
+   * which require every remaining block to read `clear` — so acknowledging a
+   * fault whose block is still `unknown` returns the system to `online` with
+   * that block simply un-routable, exactly as an acknowledged sensor fault
+   * does (docs/sensor-fault-recovery.md D6).
+   */
+  async acknowledgeRouteFault(
+    layoutId: LayoutId,
+    routeId: RouteId,
+  ): Promise<{
+    routeId: RouteId;
+    cleared: true;
+    systemStatus: SystemStatus;
+    safeStopReason: string | null;
+    faults: RouteFaultView[];
+  }> {
+    if (this.layoutId !== layoutId) throw new RouteNotFaultedError(routeId);
+    if (!this.health.routeFaults[routeId]) throw new RouteNotFaultedError(routeId);
+
+    const remaining = { ...this.health.routeFaults };
+    delete remaining[routeId];
+    this.health = { ...this.health, routeFaults: remaining };
+
+    await this.evaluateAndApplySafeStop();
+    this.emitRouteFaults();
 
     const state = this.stateManager.getState();
-    if (state.systemStatus !== 'safe-stop') {
-      this.stateManager.enterSafeStop(
-        `Route ${reservation.id} violated: unexpected occupancy in block ${blockId}`,
-      );
-      this.publishSystemStatus();
-    }
+    this.log.info('[LayoutService] Route fault acknowledged', { layoutId, routeId });
+
+    return {
+      routeId,
+      cleared: true,
+      systemStatus: state.systemStatus,
+      safeStopReason: state.safeStopReason,
+      faults: this.getRouteFaults(),
+    };
+  }
+
+  private emitRouteFaults(): void {
+    this.emit('event', {
+      type: 'ROUTE_FAULTS',
+      payload: { faults: this.getRouteFaults() },
+    } satisfies LayoutEvent);
   }
 
   private async stopLoco(locoAddress: number): Promise<void> {

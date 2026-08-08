@@ -24,6 +24,8 @@ import {
   Occupancy,
   PointId,
   PointState,
+  RouteFault,
+  RouteFaultView,
   RouteHold,
   RouteId,
   RoutePathStep,
@@ -32,6 +34,7 @@ import {
   SystemStatus,
 } from './types';
 import { TrackGraph, collectPointConditions } from './graph';
+import { describeBlocker } from './pathfinding';
 import { canGrantRoute, isBlockEffectivelyOccupied } from './safety';
 
 // ─── Planning ───────────────────────────────────────────────────────────────
@@ -71,6 +74,44 @@ export type GrantResult =
   | { granted: false; rejections: RouteRejection[] };
 
 /**
+ * The grant preconditions that say nothing about the path: system status,
+ * roster membership, one-live-route-per-loco (D2), and a loaded graph.
+ *
+ * Extracted and exported for #4. When a request names a *destination*,
+ * `ReservationService` must run the pathfinder before it can build the edge
+ * list `planReservation` takes — and if the search fails, `planReservation`
+ * never runs, so these rejections would silently go unreported. D14's rule is
+ * that a refused grant names *every* applicable reason, not the first one
+ * found; telling an operator "no path — block 4 is occupied" while quietly
+ * omitting "and the system is in Safe-Stop anyway" would violate it.
+ *
+ * `planReservation` calls this first, so there is exactly one definition of
+ * these checks rather than a copy in the service layer.
+ */
+export function checkPathIndependentPreconditions(
+  locoAddress: LocoAddress,
+  view: ReservationView,
+): RouteRejection[] {
+  const rejections: RouteRejection[] = [];
+
+  if (!canGrantRoute(view.systemStatus)) {
+    rejections.push({ kind: 'system-not-online', status: view.systemStatus });
+  }
+  if (!view.knownLocoAddresses.has(locoAddress)) {
+    rejections.push({ kind: 'unknown-loco', locoAddress });
+  }
+  const existingForLoco = view.holding.find((r) => r.locoAddress === locoAddress);
+  if (existingForLoco) {
+    rejections.push({ kind: 'loco-already-routed', locoAddress, routeId: existingForLoco.id });
+  }
+  if (view.graph === null) {
+    rejections.push({ kind: 'no-graph' });
+  }
+
+  return rejections;
+}
+
+/**
  * Computes an entire grant, or every reason it cannot be granted (D14 — no
  * early return). Pure: mutates neither `view` nor its own inputs. On
  * success, returns a fully-formed `RouteReservation` with status `active`,
@@ -84,27 +125,13 @@ export function planReservation(
   routeId: RouteId,
   now: Date,
 ): GrantResult {
-  const rejections: RouteRejection[] = [];
+  const rejections: RouteRejection[] = checkPathIndependentPreconditions(
+    request.locoAddress,
+    view,
+  );
 
-  if (!canGrantRoute(view.systemStatus)) {
-    rejections.push({ kind: 'system-not-online', status: view.systemStatus });
-  }
   if (request.edgeIds.length === 0) {
     rejections.push({ kind: 'empty-path' });
-  }
-  if (!view.knownLocoAddresses.has(request.locoAddress)) {
-    rejections.push({ kind: 'unknown-loco', locoAddress: request.locoAddress });
-  }
-  const existingForLoco = view.holding.find((r) => r.locoAddress === request.locoAddress);
-  if (existingForLoco) {
-    rejections.push({
-      kind: 'loco-already-routed',
-      locoAddress: request.locoAddress,
-      routeId: existingForLoco.id,
-    });
-  }
-  if (view.graph === null) {
-    rejections.push({ kind: 'no-graph' });
   }
 
   // Nothing below is resolvable without a graph and a non-empty path — the
@@ -319,6 +346,7 @@ export type OccupancyEffect =
   | { kind: 'release'; confirmedIndex: number; releasable: RouteHold[] }
   | { kind: 'complete' }
   | { kind: 'unexpected-occupancy'; blockId: BlockId }
+  | { kind: 'occupancy-unknown'; blockId: BlockId }
   | { kind: 'ignore' };
 
 /**
@@ -341,6 +369,20 @@ export type OccupancyEffect =
  *   arrived. `ReservationService` releases every remaining hold at that
  *   point (the completion release path in D5) — the destination block's own
  *   occupancy is no longer reservation-tracked once the route is complete.
+ * - `unknown` in any block the route still holds is `occupancy-unknown`
+ *   (#4): the route was granted on the assertion that every block ahead of
+ *   the train was positively clear, and one of them has stopped being
+ *   determinable. `LayoutService` latches a `RouteFault` and Safe-Stops,
+ *   which suspends the route with its locks retained (D8) — it is NOT
+ *   cancelled, because releasing track under a train whose position just
+ *   became less certain is the opposite of fail-safe.
+ *
+ *   Only the *transition* into `unknown` reports; a block already unknown
+ *   that stays unknown is inert, or every subsequent recompute would
+ *   re-fault an already-latched route. Before #4 this case fell through to
+ *   `ignore` entirely — safe when the cause was a sensor fault (which
+ *   Safe-Stops on its own account) but not when it was a sensor being taken
+ *   out of service or deleted mid-route, which nothing else caught.
  */
 export function evaluateOccupancyChange(
   r: RouteReservation,
@@ -354,6 +396,10 @@ export function evaluateOccupancyChange(
 
   if (stepIndices.length === 0) {
     return { kind: 'ignore' };
+  }
+
+  if (occupancy === 'unknown') {
+    return previous === 'unknown' ? { kind: 'ignore' } : { kind: 'occupancy-unknown', blockId };
   }
 
   if (occupancy === 'occupied') {
@@ -385,6 +431,20 @@ export function evaluateOccupancyChange(
     return { kind: 'ignore' };
   }
   return { kind: 'release', confirmedIndex: r.confirmedIndex, releasable };
+}
+
+// ─── Projections ────────────────────────────────────────────────────────────
+
+/** Wire projection of a `RouteFault` (#4). Pure — takes no clock, mirrors `toSensorFaultView`. */
+export function toRouteFaultView(fault: RouteFault): RouteFaultView {
+  return {
+    routeId: fault.routeId,
+    kind: fault.kind,
+    reason: fault.reason,
+    blockId: fault.blockId,
+    locoAddress: fault.locoAddress,
+    faultedAt: fault.faultedAt.toISOString(),
+  };
 }
 
 // ─── Description ────────────────────────────────────────────────────────────
@@ -419,6 +479,18 @@ function describeRejection(rejection: RouteRejection): string {
       return `loco ${rejection.locoAddress} is not in the roster`;
     case 'no-graph':
       return 'no track graph is currently loaded';
+    case 'unknown-block':
+      return `block ${rejection.blockId} does not exist in this layout`;
+    case 'destination-is-start':
+      return `destination block ${rejection.blockId} is the start block`;
+    case 'no-path':
+      return rejection.blockers.length === 0
+        ? `no route exists to block ${rejection.destinationBlockId}`
+        : `no route exists to block ${rejection.destinationBlockId} — ${rejection.blockers
+            .map(describeBlocker)
+            .join('; ')}`;
+    case 'point-command-rejected':
+      return `point ${rejection.pointId} rejected ${rejection.requiredPosition}: ${rejection.reason}`;
   }
 }
 

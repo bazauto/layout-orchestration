@@ -49,6 +49,8 @@ export async function registerWebSocket(
         // deliberately NOT included — it is diagnostic runtime state nothing
         // renders. Do not "complete" this snapshot with it later.
         sensorFaults: layoutService.getSensorFaults(),
+        /** #4: latched route faults, same posture as `sensorFaults` above — the derived view, never the raw health object. */
+        routeFaults: layoutService.getRouteFaults(),
       },
     };
     socket.send(JSON.stringify(snapshot));

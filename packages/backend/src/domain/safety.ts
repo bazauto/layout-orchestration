@@ -6,7 +6,15 @@
  * to any transport or infrastructure concerns.
  */
 
-import { Occupancy, SensorFault, SensorId, SystemMode, SystemStatus } from './types';
+import {
+  Occupancy,
+  RouteFault,
+  RouteId,
+  SensorFault,
+  SensorId,
+  SystemMode,
+  SystemStatus,
+} from './types';
 
 // ─── Connection Health ────────────────────────────────────────────────────────
 
@@ -42,6 +50,21 @@ export interface SystemHealth extends ConnectionHealth {
   topologyValid: boolean;
   topologyReason: string | null;
   sensorFaults: Record<SensorId, SensorFault>;
+  /**
+   * Latched faults against granted routes (#4, see docs/pathfinding.md P8),
+   * keyed by route id for the same reason `sensorFaults` is keyed by sensor.
+   * Required, not optional-defaulting-to-`{}`, same posture as the fields
+   * above.
+   *
+   * This field is why the route-violation path is now safe. Before #4, a
+   * violation called `LayoutStateManager.enterSafeStop` directly rather than
+   * going through `SystemHealth`, so it left no latch: the next unrelated
+   * health evaluation — an MQTT reconnect, a sensor-fault acknowledge —
+   * found nothing wrong and cleared the Safe-Stop that a train being
+   * somewhere it should not be had caused. Routing every Safe-Stop through
+   * this one structure is the same correction #27 made for sensor faults.
+   */
+  routeFaults: Record<RouteId, RouteFault>;
   recoveredRouteCount: number;
 }
 
@@ -52,6 +75,15 @@ export interface SystemHealth extends ConnectionHealth {
  * fault in place on a tie rather than letting a later one overwrite it.
  */
 export function oldestSensorFault(faults: Record<SensorId, SensorFault>): SensorFault | null {
+  return oldestFault(faults);
+}
+
+/** The first cause among latched route faults, by the same rule as `oldestSensorFault`. */
+export function oldestRouteFault(faults: Record<RouteId, RouteFault>): RouteFault | null {
+  return oldestFault(faults);
+}
+
+function oldestFault<T extends { faultedAt: Date }>(faults: Record<string, T>): T | null {
   const all = Object.values(faults);
   if (all.length === 0) return null;
   return all.reduce((oldest, candidate) =>
@@ -78,15 +110,21 @@ export function evaluateSafeStop(health: ConnectionHealth): {
 
 /**
  * Determines whether a Safe-Stop should be triggered based on connection
- * health, topology health, sensor-payload health, and restart-recovered
- * routes. Check order is MQTT, then DCC, then topology, then the oldest
- * latched sensor fault, then recovered routes — a connection failure reason
- * always wins over a topology reason, which wins over a sensor fault, which
- * wins over a recovered-route reason, so an operator investigating a
- * Safe-Stop sees the more systemic, more actionable cause first. With
- * several sensor faults latched at once, only the oldest's reason is
- * reported here (D2 — "the first cause"); the rest are visible via
- * `LayoutService.getSensorFaults()` / `GET .../sensor-faults`.
+ * health, topology health, sensor-payload health, route health, and
+ * restart-recovered routes. Check order is MQTT, then DCC, then topology,
+ * then the oldest latched sensor fault, then the oldest latched route fault,
+ * then recovered routes — a connection failure reason always wins over a
+ * topology reason, which wins over a sensor fault, and so on down to the
+ * recovered-route reason, so an operator investigating a Safe-Stop sees the
+ * more systemic, more actionable cause first. With several faults latched at
+ * once, only the oldest's reason is reported here (D2 — "the first cause");
+ * the rest are visible via `LayoutService.getSensorFaults()` /
+ * `getRouteFaults()` and their `GET` routes.
+ *
+ * Route faults sit *below* sensor faults because a sensor fault is usually
+ * the cause and the route fault the symptom: a detector that stopped
+ * reporting is what made a route's block undeterminable. Naming the sensor
+ * first points the operator at the thing to fix.
  */
 export function evaluateSystemSafeStop(health: SystemHealth): {
   shouldStop: boolean;
@@ -102,6 +140,10 @@ export function evaluateSystemSafeStop(health: SystemHealth): {
   const oldest = oldestSensorFault(health.sensorFaults);
   if (oldest) {
     return { shouldStop: true, reason: oldest.reason };
+  }
+  const oldestRoute = oldestRouteFault(health.routeFaults);
+  if (oldestRoute) {
+    return { shouldStop: true, reason: oldestRoute.reason };
   }
   if (health.recoveredRouteCount > 0) {
     return {
