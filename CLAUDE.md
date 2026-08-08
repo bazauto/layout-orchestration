@@ -18,6 +18,7 @@ style preferences.
 | `docs/pathfinding.md` | Pathfinding, setting the road, and route faults (P1–P8) |
 | `docs/auth.md` | Local authentication scheme and the pre-TLS threat model |
 | `docs/sensor-fault-recovery.md` | Sensor-fault latch recovery and the per-sensor occupancy model |
+| `docs/braking.md` | Per-loco braking model, deceleration profile, and calibration (B1–B10) |
 | `docs/point-feedback.md` | Point position confirmation channel and fault model (D1–D10) |
 | `docs/claude-review.md`, `docs/gpt-review.md` | Open design questions |
 
