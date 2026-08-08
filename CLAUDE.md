@@ -73,6 +73,10 @@ npm run db:seed --workspace=packages/backend
 npm run bootstrap-admin --workspace=packages/backend -- <username> <password>  # create/reset an admin account
 ```
 
+Repo housekeeping: `bash .claude/scripts/git-cleanup.sh` previews, and `--yes` applies,
+the removal of merged branches and the stale `.claude/worktrees/` agent worktrees holding
+them. The `/branch-cleanup` skill is a thin wrapper over it.
+
 Migrations are applied automatically on backend startup from `MIGRATIONS_PATH`.
 **Any change to `src/adapters/db/schema.ts` requires a generated migration in the same
 commit** — this system is deployed to a live layout and cannot be reset.
