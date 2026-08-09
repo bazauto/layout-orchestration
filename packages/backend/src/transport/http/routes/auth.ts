@@ -1,6 +1,10 @@
 import { FastifyInstance } from 'fastify';
-import { AuthService, InvalidCredentialsError } from '../../../services/AuthService';
-import { loginSchema } from '../../../services/validation';
+import {
+  AuthService,
+  InvalidCredentialsError,
+  InvalidCurrentPasswordError,
+} from '../../../services/AuthService';
+import { changePasswordSchema, loginSchema } from '../../../services/validation';
 import { sessionCookieOptions } from '../auth/cookie';
 
 export async function authRoutes(
@@ -57,4 +61,42 @@ export async function authRoutes(
     }
     return { username: req.user.username, role: req.user.role };
   });
+
+  // Self-service password change (Q3, docs/auth.md). Lives here rather than
+  // routes/users.ts because it is the only new route that needs cookieName,
+  // and it sits beside the login route's rate-limit precedent. No requireAdmin
+  // — any authenticated user may change their own password. Rate-limited at
+  // login parity: verifying the current password makes this a guessing
+  // oracle exactly like login.
+  fastify.post<{ Body: unknown }>(
+    '/api/auth/change-password',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const parsed = changePasswordSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ error: 'Invalid password payload', details: parsed.error.flatten() });
+      }
+
+      try {
+        await authService.changeOwnPassword(
+          req.user!.userId,
+          parsed.data.currentPassword,
+          parsed.data.newPassword,
+        );
+      } catch (err) {
+        if (err instanceof InvalidCurrentPasswordError) {
+          return reply.status(403).send({ error: err.message });
+        }
+        throw err;
+      }
+
+      // A successful change already revoked every session the user holds
+      // (Q3), including this request's — clear the cookie so the browser
+      // doesn't keep sending a token the server no longer recognises.
+      reply.clearCookie(cookieName, { path: '/' });
+      return reply.status(204).send();
+    },
+  );
 }

@@ -43,6 +43,13 @@ Implemented:
 - WebSocket state streaming to the frontend
 - Local username/password authentication with role-based access (`admin` /
   `operator`) — see `docs/auth.md` for the scheme and its threat model
+- Full user and role management (#53): an admin can create, list, change the role of,
+  and delete accounts, and reset another user's password, from the Configure screen's
+  Users tab or `GET|POST /api/users` / `PATCH|DELETE /api/users/:id`; any logged-in user
+  can change their own password (`POST /api/auth/change-password`). Deleting or
+  demoting the last `admin` account is refused at both the service layer and the
+  database (a trigger pair, since "at least one must exist" isn't expressible as a
+  unique index) — see `docs/auth.md`
 - Frontend login screen; the rest of the UI requires an authenticated session
 - Frontend operate screen for throttle, points, and live state
 - Frontend configuration screen for blocks, sensors, points, locos, and edges
@@ -100,10 +107,13 @@ Default local development is typically best in hybrid mode.
 
 `INITIAL_ADMIN_PASSWORD` is required the first time the backend starts against
 an empty database — it bootstraps a single `admin` account and the backend
-refuses to start without it. See `docs/auth.md` for the full scheme
-(sessions, roles, CORS, and the pre-TLS threat model) and
-`npm run bootstrap-admin --workspace=packages/backend` for resetting a
-forgotten password later.
+refuses to start without it. That first admin can then create every other
+account — including `operator` accounts, which nothing before #53 could
+produce — from the Configure screen's Users tab; `npm run bootstrap-admin
+--workspace=packages/backend` remains the CLI break-glass path for resetting
+a forgotten password without going through the UI. See `docs/auth.md` for the
+full scheme (sessions, roles, user management, CORS, and the pre-TLS threat
+model).
 
 ## Running Locally
 

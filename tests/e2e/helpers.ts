@@ -1,19 +1,24 @@
 import type { Page } from '@playwright/test';
 
 /**
- * Mocks GET /api/auth/me as an already-authenticated admin session, so
- * specs that exercise the operate/configure/track-editor UI (not the login
- * flow itself) can skip straight past LoginScreen — matching this suite's
+ * Mocks GET /api/auth/me as an already-authenticated session, so specs that
+ * exercise the operate/configure/track-editor UI (not the login flow
+ * itself) can skip straight past LoginScreen — matching this suite's
  * existing "no real backend process" approach (see installMockWebSocket
  * below). tests/e2e/auth.spec.ts covers the actual login/logout UI, with
  * its own mocked /api/auth/login and /api/auth/logout responses.
+ *
+ * `options.role` defaults to `'admin'` so every existing call site is
+ * unaffected (issue #53) — pass `{ role: 'operator' }` for specs exercising
+ * the operator-role posture (e.g. the Users tab must not render).
  */
-export async function installMockAuth(page: Page) {
+export async function installMockAuth(page: Page, options: { role?: 'admin' | 'operator' } = {}) {
+  const role = options.role ?? 'admin';
   await page.route('**://localhost:3000/api/auth/me', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ username: 'e2e-admin', role: 'admin' }),
+      body: JSON.stringify({ username: role === 'admin' ? 'e2e-admin' : 'e2e-operator', role }),
     }),
   );
 }

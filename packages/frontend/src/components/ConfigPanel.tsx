@@ -1,20 +1,31 @@
 import { useState } from 'react';
 import { useLayoutConfig } from '../hooks/useLayoutConfig';
-import { BlockRecord, PointRecord, SensorRecord } from '../types';
+import { useUsers } from '../hooks/useUsers';
+import { BlockRecord, PointRecord, Role, SensorRecord } from '../types';
 import { EdgesTab } from './EdgesTab';
+import { UsersTab } from './UsersTab';
 
 type Ops = ReturnType<typeof useLayoutConfig>;
 
 interface Props {
   layoutId: string | null;
+  /** Gates the Users tab (admin-only) and identifies the current session for self-mutation disabling — see UsersTab. */
+  role: Role;
+  currentUsername: string;
 }
 
-type Tab = 'blocks' | 'sensors' | 'points' | 'locos' | 'edges';
+type Tab = 'blocks' | 'sensors' | 'points' | 'locos' | 'edges' | 'users';
 
-export function ConfigPanel({ layoutId }: Props) {
+const CONFIG_TABS: Exclude<Tab, 'users'>[] = ['blocks', 'sensors', 'points', 'locos', 'edges'];
+
+export function ConfigPanel({ layoutId, role, currentUsername }: Props) {
   const [tab, setTab] = useState<Tab>('blocks');
   const ops = useLayoutConfig(layoutId);
   const { config, loading, error } = ops;
+  // Users aren't part of LayoutConfig (no layoutId scoping — accounts are
+  // global), so this hook is mounted here regardless of which tab is active,
+  // same as `ops` above. It's cheap: one GET, only re-fetched on a mutation.
+  const usersOps = useUsers();
 
   if (!layoutId) return <p style={s.empty}>No layout selected.</p>;
   if (loading && config.layoutId !== layoutId) return <p style={s.empty}>Loading…</p>;
@@ -25,7 +36,7 @@ export function ConfigPanel({ layoutId }: Props) {
         <h2 style={s.heading}>Configuration</h2>
         {error && <span style={s.error}>{error}</span>}
         <div style={s.tabs}>
-          {(['blocks', 'sensors', 'points', 'locos', 'edges'] as Tab[]).map((t) => (
+          {CONFIG_TABS.map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -35,6 +46,22 @@ export function ConfigPanel({ layoutId }: Props) {
               <span style={s.badge}>{config[t].length}</span>
             </button>
           ))}
+          {/*
+            Rendered separately, after the map, rather than folded into
+            CONFIG_TABS: the badge above reads `config[t].length`, and users
+            are not part of LayoutConfig — folding this in would force a
+            refactor of that badge logic for no gain. Admin-only (Q4,
+            docs/auth.md): an operator may not enumerate accounts.
+          */}
+          {role === 'admin' && (
+            <button
+              onClick={() => setTab('users')}
+              style={{ ...s.tab, ...(tab === 'users' ? s.tabActive : {}) }}
+            >
+              Users
+              <span style={s.badge}>{usersOps.users.length}</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -43,6 +70,7 @@ export function ConfigPanel({ layoutId }: Props) {
       {tab === 'points'  && <PointsTab  points={config.points} blocks={config.blocks} ops={ops} />}
       {tab === 'locos'   && <LocosTab   locos={config.locos} ops={ops} />}
       {tab === 'edges'   && <EdgesTab   edges={config.edges} topology={config.topology} blocks={config.blocks} points={config.points} ops={ops} />}
+      {tab === 'users' && role === 'admin' && <UsersTab ops={usersOps} currentUsername={currentUsername} />}
     </section>
   );
 }

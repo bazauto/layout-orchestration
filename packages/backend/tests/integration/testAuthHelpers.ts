@@ -56,6 +56,17 @@ function makeTestAuthRepo(): IAuthRepository {
       return updated;
     },
     hasAnyUsers: async () => users.size > 0,
+    listUsers: async () => [...users.values()].sort((a, b) => a.username.localeCompare(b.username)),
+    updateUserRole: async (id, role) => {
+      const existing = users.get(id);
+      if (!existing) throw new Error(`Test user ${id} not found`);
+      const updated = { ...existing, role };
+      users.set(id, updated);
+      return updated;
+    },
+    deleteUser: async (id) => {
+      users.delete(id);
+    },
     createSession: async (data) => {
       const created: SessionRecord = {
         id: `test-session-${nextSessionId++}`,

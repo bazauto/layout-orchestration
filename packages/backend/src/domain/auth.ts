@@ -61,6 +61,32 @@ export function hashSessionToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
+// ─── Password Policy ────────────────────────────────────────────────────────
+
+/**
+ * Shared by `AuthService` (create/reset/self-service change) and
+ * `scripts/bootstrap-admin.ts`, so the CLI and the HTTP schema enforce one
+ * rule rather than two that could drift apart.
+ */
+export const MIN_PASSWORD_LENGTH = 8;
+
+/**
+ * Applies to NEW passwords only (create/reset/change) — `loginSchema` is
+ * deliberately untouched by this cap. Capping login input could lock out an
+ * account whose password predates the cap.
+ */
+export const MAX_PASSWORD_LENGTH = 256;
+
+/**
+ * Normalises a username for storage/comparison. Trim only — case is
+ * preserved and compared exactly, so `Paul` and `paul` remain distinct
+ * accounts. See docs/auth.md for why a case-insensitive unique index was
+ * rejected (a table rebuild on a live layout DB, for a two-user household).
+ */
+export function normaliseUsername(raw: string): string {
+  return raw.trim();
+}
+
 // ─── Sliding Expiry ─────────────────────────────────────────────────────────
 
 /** Session lifetime: 30 days, refreshed on every validated use. */

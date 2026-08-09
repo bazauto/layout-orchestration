@@ -10,6 +10,7 @@ import { RoutesPanel } from './components/RoutesPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { GridEditor } from './components/GridEditor';
 import { SensorFaultBanner } from './components/SensorFaultBanner';
+import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { apiFetch, API_BASE } from './api';
 import { ClientMessage, Role, SystemMode } from './types';
 
@@ -38,6 +39,10 @@ function AuthenticatedApp({
   role: Role;
   onLogout: () => void;
 }) {
+  // Passed to ChangePasswordDialog as onChanged (issue #53): a successful
+  // change has already revoked every session the user holds server-side
+  // (Q3, docs/auth.md) — this is the client-side mirror, resetting local
+  // auth state back to LoginScreen the same way a deliberate "Log out" does.
   const { snapshot, connectionState, send } = useLayoutSocket();
   const { systemStatus, systemMode, safeStopReason, blocks, points, locos, routes, sensorFaults, routeFaults } =
     snapshot;
@@ -104,6 +109,7 @@ function AuthenticatedApp({
         ))}
         <div style={styles.session}>
           <span style={styles.sessionLabel}>{username} ({role})</span>
+          <ChangePasswordDialog onChanged={onLogout} />
           <button onClick={onLogout} style={styles.logoutBtn}>
             Log out
           </button>
@@ -162,7 +168,7 @@ function AuthenticatedApp({
             />
           </div>
         )}
-        {appTab === 'configure' && <ConfigPanel layoutId={layoutId} />}
+        {appTab === 'configure' && <ConfigPanel layoutId={layoutId} role={role} currentUsername={username} />}
       </main>
     </div>
   );

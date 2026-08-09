@@ -22,6 +22,7 @@ import { edgeRoutes } from './routes/edges';
 import { topologyRoutes } from './routes/topology';
 import { routeRoutes } from './routes/routes';
 import { authRoutes } from './routes/auth';
+import { userRoutes } from './routes/users';
 import { emergencyStopRoutes } from './routes/emergencyStop';
 import { registerAuthHook } from './auth/hook';
 import { registerWebSocket } from '../websocket/index';
@@ -69,6 +70,7 @@ export async function buildServer(
   });
 
   await authRoutes(fastify, authService, authConfig.cookieName, authConfig.cookieSecure);
+  await userRoutes(fastify, authService);
   await emergencyStopRoutes(fastify, layoutService);
 
   // REST API routes

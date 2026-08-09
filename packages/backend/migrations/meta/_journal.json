@@ -43,6 +43,13 @@
       "when": 1786185479588,
       "tag": "0005_dusty_iron_lad",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786267432132,
+      "tag": "0006_users_last_admin_guard",
+      "breakpoints": true
     }
   ]
 }

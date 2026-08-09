@@ -16,6 +16,7 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { DrizzleAuthRepository } from '../../src/adapters/db/authRepository';
 import { openDatabase } from '../../src/adapters/db/connection';
+import { UsernameTakenError } from '../../src/ports/IAuthRepository';
 
 const MIGRATIONS_FOLDER = join(__dirname, '../../migrations');
 
@@ -62,11 +63,11 @@ describe('DrizzleAuthRepository', () => {
     await expect(repo.getUserByUsername('no-such-username')).resolves.toBeNull();
   });
 
-  it('a duplicate username is rejected by the DB-level unique index', async () => {
+  it('a duplicate username throws UsernameTakenError, not a raw SqliteError', async () => {
     await repo.createUser({ username: 'bob', passwordHash: 'x', role: 'operator' });
     await expect(
       repo.createUser({ username: 'bob', passwordHash: 'y', role: 'operator' }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(UsernameTakenError);
   });
 
   it('an invalid role is rejected by the DB-level check constraint', async () => {
@@ -174,6 +175,39 @@ describe('DrizzleAuthRepository', () => {
     await expect(repo.getSessionByTokenHash('c'.repeat(64))).resolves.toBeNull();
     await expect(repo.getSessionByTokenHash('d'.repeat(64))).resolves.toBeNull();
     await expect(repo.getSessionByTokenHash('e'.repeat(64))).resolves.not.toBeNull();
+  });
+
+  it('listUsers returns rows in username order and validates through parseUserRow', async () => {
+    await repo.createUser({ username: 'zoe', passwordHash: 'x', role: 'operator' });
+    await repo.createUser({ username: 'amy', passwordHash: 'x', role: 'admin' });
+
+    const all = await repo.listUsers();
+    const usernames = all.map((u) => u.username);
+    const sorted = [...usernames].sort((a, b) => a.localeCompare(b));
+    expect(usernames).toEqual(sorted);
+    expect(usernames).toContain('zoe');
+    expect(usernames).toContain('amy');
+  });
+
+  it('updateUserRole returns the updated record', async () => {
+    const created = await repo.createUser({ username: 'judy', passwordHash: 'x', role: 'operator' });
+    const updated = await repo.updateUserRole(created.id, 'admin');
+    expect(updated.role).toBe('admin');
+    expect(updated.username).toBe('judy');
+  });
+
+  it('deleteUser removes the user and its sessions', async () => {
+    const created = await repo.createUser({ username: 'mallory', passwordHash: 'x', role: 'operator' });
+    await repo.createSession({
+      userId: created.id,
+      tokenHash: 'f'.repeat(64),
+      expiresAt: new Date(Date.now() + 1000 * 60),
+    });
+
+    await repo.deleteUser(created.id);
+
+    await expect(repo.getUserById(created.id)).resolves.toBeNull();
+    await expect(repo.getSessionByTokenHash('f'.repeat(64))).resolves.toBeNull();
   });
 
   it('listing rows via a hand-inserted row with an invalid role throws rather than coercing', async () => {
