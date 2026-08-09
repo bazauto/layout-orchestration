@@ -77,8 +77,10 @@ npm run bootstrap-admin --workspace=packages/backend -- <username> <password>  #
 ```
 
 Repo housekeeping: `bash .claude/scripts/git-cleanup.sh` previews, and `--yes` applies,
-the removal of merged branches and the stale `.claude/worktrees/` agent worktrees holding
-them. The `/branch-cleanup` skill is a thin wrapper over it.
+the removal of merged branches, the stale `.claude/worktrees/` agent worktrees holding
+them, and empty leftover directories git no longer tracks. Everything it keeps it names,
+including worktrees held by unmerged branches — a quiet run means nothing to do, not a
+decision made silently. The `/branch-cleanup` skill is a thin wrapper over it.
 
 Migrations are applied automatically on backend startup from `MIGRATIONS_PATH`.
 **Any change to `src/adapters/db/schema.ts` requires a generated migration in the same
