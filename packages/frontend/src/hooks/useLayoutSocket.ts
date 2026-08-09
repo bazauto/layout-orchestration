@@ -159,6 +159,18 @@ function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
     case 'ROUTE_FAULTS':
       return { ...prev, routeFaults: msg.payload.faults };
 
+    case 'ERROR':
+      // A rejected command carries no state, so there is nothing to merge —
+      // but it must not vanish either. It used to fall through to `default`,
+      // which is how a backend TypeError that killed every broadcast looked
+      // to an operator like a control that simply did nothing: no network
+      // request to inspect, no console output, no UI change. Surfacing it
+      // properly (a toast on the affected control) is still open; until then
+      // this at least puts it where someone with devtools open will find it.
+      // eslint-disable-next-line no-console -- deliberate; the frontend has no logger, and silence here is what hid the bug
+      console.warn('[ws] command rejected by backend:', msg.payload.message, msg.payload.details ?? '');
+      return prev;
+
     default:
       return prev;
   }
