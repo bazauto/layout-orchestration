@@ -177,7 +177,9 @@ Current automated coverage includes:
 - backend service tests
 - backend HTTP route integration tests, including authenticated/unauthenticated
   and role-enforcement paths (logging in for real via Fastify `inject()`, not
-  a bypass) and a real end-to-end authenticated WebSocket upgrade
+  a bypass), a real end-to-end authenticated WebSocket upgrade, and WebSocket
+  broadcast delivery — that an event emitted *after* connect actually reaches
+  every connected client, which the initial-snapshot test cannot prove
 - backend scenario tests (`packages/backend/tests/scenario/`) covering topology Safe-Stop
   and recovery paths, malformed-sensor-payload Safe-Stop (#27), and per-sensor fault
   recovery — latching, premature-recovery refusal, retained-replay exclusion, arming and

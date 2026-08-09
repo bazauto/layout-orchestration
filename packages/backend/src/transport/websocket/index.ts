@@ -7,7 +7,13 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { WebSocket } from '@fastify/websocket';
+// Type-only: `@fastify/websocket` v11 exports `WebSocket` as a *type alias*
+// (`export type WebSocket = ws.WebSocket`) and nothing by that name at
+// runtime — its only runtime exports are `default` and `fastifyWebsocket`.
+// Reaching for a value on it (`WebSocket.OPEN`) therefore throws a TypeError,
+// which is exactly what silently broke every broadcast below. Readiness is
+// checked against the socket's own `OPEN` constant instead.
+import type { WebSocket } from '@fastify/websocket';
 import { LayoutService } from '../../services/LayoutService';
 import { LayoutEvent } from '../../domain/types';
 import { clientMessageSchema } from '../../services/validation';
@@ -22,7 +28,7 @@ export async function registerWebSocket(
   layoutService.on('event', (event: LayoutEvent) => {
     const serialized = JSON.stringify(event);
     for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) {
+      if (client.readyState === client.OPEN) {
         client.send(serialized);
       }
     }

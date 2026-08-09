@@ -68,6 +68,15 @@ export async function installMockWebSocket(
 
       send(_data: string) {
         // No-op for tests unless a specific test inspects outbound messages.
+        //
+        // Know what this costs you: with `send` inert and no backend process
+        // behind it, **no spec in this suite can observe backend behaviour**.
+        // A defect in the WebSocket transport, a service, or the domain leaves
+        // this suite green — a broadcast bug that made every live update stop
+        // reaching the browser was invisible here, and the tempting "fix" is to
+        // make the mock echo, which proves nothing about the real server.
+        // Reproduce below-the-browser bugs in the backend integration or
+        // scenario suites instead; Playwright's job here is the DOM.
       }
 
       close() {
