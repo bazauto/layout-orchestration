@@ -20,8 +20,10 @@ to land them correctly, with tests, and report honestly.
    inbound payloads, control topics never retained, everything testable without hardware.
 
 3. **Match the surrounding code.** Read neighbouring files before writing. Same naming,
-   same comment density, same error handling, same import style (`.js` extensions on
-   relative backend imports). New code should be indistinguishable from existing code.
+   same comment density, same error handling, same import style. Module systems differ
+   per workspace and must not be normalised: the **backend** is CommonJS and relative
+   imports carry **no extension** (`from './types'`) — adding `.js` breaks `tsc`; the
+   **frontend** is ESM. New code should be indistinguishable from existing code.
 
 4. **Test as you go.** Each step's test is part of that step, not a follow-up. Run
    `npm test --workspace=packages/backend` after each step, not once at the end.

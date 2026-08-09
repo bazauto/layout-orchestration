@@ -90,7 +90,13 @@ async function main() {
     );
     console.log('[Bootstrap] Mode: HYBRID — real MQTT broker, simulated DCC');
   } else {
-    const { SerialDccAdapter } = await import('./adapters/dcc/SerialDccAdapter');
+    // NOTE the `.js` extension, which is required *here and only here*. Static
+    // relative imports across the backend stay extensionless (CommonJS
+    // resolution); a dynamic `import()` always carries ESM semantics under
+    // moduleResolution Node16, so it needs the emitted file's extension. See
+    // CLAUDE.md's Conventions section. This import is lazy on purpose: it keeps
+    // `serialport` out of the process entirely in simulator mode.
+    const { SerialDccAdapter } = await import('./adapters/dcc/SerialDccAdapter.js');
     dcc = new SerialDccAdapter(
       { path: config.dcc.serialPort, baudRate: config.dcc.baudRate },
       adapterLogger,
