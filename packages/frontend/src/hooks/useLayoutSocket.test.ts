@@ -366,6 +366,34 @@ describe('useLayoutSocket', () => {
 
       expect(result.current.snapshot).toBe(before);
     });
+
+    // An ERROR frame is the backend saying a command was rejected. It carries
+    // no state, so the snapshot must not move — but it used to be swallowed by
+    // the unknown-type branch above, which is how a rejected SET_MODE looked
+    // to an operator like a dropdown that simply refused to move: nothing in
+    // the network tab, nothing in the console, nothing in the UI.
+    it('leaves the snapshot untouched on ERROR but reports it to the console', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { result } = renderHook(() => useLayoutSocket());
+      const ws = currentSocket();
+
+      act(() => {
+        ws.open();
+      });
+      const before = result.current.snapshot;
+
+      act(() => {
+        ws.emit({ type: 'ERROR', payload: { message: 'Command failed' } });
+      });
+
+      expect(result.current.snapshot).toBe(before);
+      expect(warn).toHaveBeenCalledWith(
+        '[ws] command rejected by backend:',
+        'Command failed',
+        '',
+      );
+      warn.mockRestore();
+    });
   });
 
   describe('reconnection', () => {
