@@ -150,296 +150,61 @@ and quote real output — never claim passing tests you did not run.
 ## Current state (2026-08)
 
 Phases 0–2 complete: domain, adapters, persistence, REST, WebSocket, operator UI,
-config UI, track editor, CI.
+config UI, track editor, CI. Phase 3 is in progress.
 
-**Topology's backend half has landed (PR A of two); authoring has not (PR B).**
-`block_edges` now has a full backend path: `ILayoutRepository` has edge CRUD methods
-(`DrizzleRepository`, every read going through `parseBlockEdgeRow` — full-row Zod
-validation, not just `point_conditions`); DB-level invariants (no self-loop, a positive
-`length_mm` or `NULL`, non-blank ends, and a unique index on the full connection tuple —
-deliberately *not* on `(from_block_id, from_end)`, see `docs/topology.md`) landed in
-`migrations/0002_bitter_jane_foster.sql`; a `TopologyService` write path
-(`src/services/TopologyService.ts`) validates every create/update against the rest of the
-layout before persisting; and `LayoutService.reloadTopology()` runs on startup and after
-every edge mutation, applying Safe-Stop on a fatal violation (`domain/topology.ts`,
-`services/topologyLoader.ts`). REST: `GET|POST /api/layouts/:layoutId/edges`,
-`PUT|DELETE .../edges/:id`, `GET .../topology`, `POST .../topology/revalidate`; block and
-point deletes now delegate to `TopologyService` so a block delete cannot leave a dangling
-edge and a point delete is refused while an edge still references it.
+**This section is an index, not a changelog.** Each row says what exists and which
+document holds the reasoning. The "why, not just what" lives in `docs/` — do not restate
+it here. `CLAUDE.md` loads into every session *and every subagent*, so length in this file
+is a tax paid on every task. When you land a feature, add or amend one row and put the
+decision record in `docs/`; when a later change supersedes an earlier one, **rewrite the
+row rather than appending the new story beneath the old one.**
 
-**The Configure UI has an Edges tab.** Edges are authored explicitly from the Configure
-screen — not derived from grid tiles, which stays deferred (see `docs/topology.md`).
+### What has landed
 
-**Route locking has landed (#3).** `lockBlock` / `lockPoint` in `domain/layoutState.ts`
-are now called — by `ReservationService`, the sole owner of that policy;
-`LayoutStateManager` stays storage only. `domain/routeLocking.ts` is the pure planning/
-release logic (`planReservation`, `evaluateOccupancyChange`, `holdsReleasableAt`);
-`domain/types.ts` carries `RouteReservation`/`RouteHold`/`RouteRejection`;
-`route_reservations`/`route_holds` (migration `0004_redundant_tana_nile.sql`) persist
-reservations with DB-level exclusivity (partial unique indexes, #11's posture — no two
-routes may hold the same block/point, at most one active/suspended reservation per loco);
-`ReservationService` (`grant`/`cancel`/`suspendAll`/`suspendAuto`/`suspendOne`/`resume`/
-`onOccupancyChange`/`loadOnStartup`) owns the lifecycle, with no MQTT/DCC access of its
-own — `LayoutService` calls in and reacts to the outcomes. Because the service has no DCC
-access, `resume` returning `resumed: true` is **provisional**: D8 requires every held
-point to be re-commanded, so `LayoutService.resumeRoute` issues those commands *before*
-treating the resume as successful, and rolls the route back to `suspended` (`suspendOne`,
-locks retained) without clearing D9's restart latch if any is rejected. `TopologyService` gained a
-fourth constructor argument, `lockView: IRouteLockView` (implemented by
-`ReservationService`), closing the deferred edge-writes-vs-reservations note in
-`docs/topology.md`: an edge/block/point held by an active or suspended route now refuses
-a topology write (409). REST: `GET|POST /api/layouts/:layoutId/routes`,
-`DELETE .../routes/:routeId`, `POST .../routes/:routeId/resume` — not role-gated beyond
-authentication, same posture as the WebSocket driving commands. Full design record
-(D1–D14) — why, not just what — is `docs/route-locking.md`; read it before touching
-`domain/routeLocking.ts`, `services/ReservationService.ts`, or the route-lock guard in
-`services/TopologyService.ts`.
+| Area | What exists | Read before touching |
+|---|---|---|
+| **Track topology** (#2, #21) | `block_edges` with a full backend path: edge CRUD on `ILayoutRepository`, full-row Zod (`parseBlockEdgeRow`) on every read, DB-level graph invariants, a `TopologyService` write path that validates against the rest of the layout, and `LayoutService.reloadTopology()` applying Safe-Stop on a fatal violation. Validation is O(n) in edge count; `MAX_EDGES_PER_LAYOUT` (2,000) is admission control in `TopologyService.createEdge` only, not a DB or load-path check. Edges are authored explicitly in the Configure screen's Edges tab — deriving them from grid tiles stays deferred. | `docs/topology.md` |
+| **Route locking** (#3) | `ReservationService` is the sole owner of lock policy; `LayoutStateManager` stays storage. `domain/routeLocking.ts` is the pure planning/release logic; `route_reservations`/`route_holds` carry DB-level exclusivity via partial unique indexes. `TopologyService` refuses a topology write against anything an active or suspended route holds (409). | `docs/route-locking.md` |
+| **Pathfinding** (#4) | `domain/pathfinding.ts#findPath` — a pure, direction-aware Dijkstra whose search state is **(block, end entered by)**, which is what makes the no-reversal rule structural rather than a post-filter. The pathfinder proposes, `planReservation` disposes. `SystemHealth.routeFaults` latches route violations. | `docs/pathfinding.md` |
+| **Sensor-fault recovery** (#34, supersedes #27's scalar pair) | `SystemHealth.sensorFaults` is a keyed collection, one latched fault per sensor, with `acknowledgeSensorFault` and `sensors.in_service` for recovery. Block occupancy is **derived**, not last-write-wins: `domain/occupancy.ts#deriveBlockOccupancy` is the only thing that feeds `ReservationService.onOccupancyChange`. | `docs/sensor-fault-recovery.md` |
+| **Local auth** (#20) and **user/role management** (#53) | argon2id + session tokens pure in `domain/auth.ts`; one Fastify `onRequest` hook rejects unauthenticated requests before any route, including the `/ws` upgrade. `AuthService` owns all user policy; the repository stays storage. `requireAdmin` on every topology/config write and all of `/api/users`. `POST /api/emergency-stop` is the single deliberately unauthenticated path. | `docs/auth.md` |
+| **Operator-facing names** (#54) | `NameBook` (`domain/types.ts`) + pure helpers in `domain/naming.ts`; every `describe*` takes an optional trailing `book?: NameBook` and, without one, renders raw ids byte-for-byte as before. `NameBookCache` (`services/nameBook.ts`) behind the `INameBook` port is injected into the three services as an optional trailing constructor parameter. | `docs/naming.md` |
 
-**Sensor-fault recovery has landed (#34).** `SystemHealth.sensorFault`/`sensorFaultReason`
-(the scalar pair #27 introduced) are gone, replaced by a keyed collection,
-`SystemHealth.sensorFaults: Record<SensorId, SensorFault>` — one latched fault per sensor,
-so acknowledging a fault the operator can see never silently clears one they were never
-told about (D2); `evaluateSystemSafeStop` reports the *oldest* fault's reason and keeps its
-existing priority order (MQTT, DCC, topology, sensor faults, then recovered routes — #4
-later inserted route faults between the last two).
-Block occupancy is now **derived**, not last-write-wins:
-`domain/occupancy.ts#deriveBlockOccupancy` computes it fresh from every sensor currently
-registered against a block, and an `ir_position` sensor may only ever raise occupancy,
-never lower it — before this, any sensor carrying a `blockId` could clear the whole block
-on its own say-so, which is exactly the "guess a train's position" failure safety rule 1
-forbids (D3). That derivation is also now the ONLY thing that feeds
-`ReservationService.onOccupancyChange` (`LayoutService.recomputeBlock`) — closing a real
-seam with route locking: an IR `clear` can no longer fire progressive release or
-un-reserve track under a train, because it never reaches the reservation engine as the
-block's occupancy in the first place (see the cross-reference in `docs/route-locking.md`
-D5 and `docs/sensor-fault-recovery.md` D6). `sensors.in_service`
-(migration `0005_dusty_iron_lad.sql`, a single `ALTER TABLE ADD COLUMN`, default `true`)
-plus `parseSensorRow` (full-row Zod, matching `parseBlockEdgeRow`/`parseUserRow`) join
-`SensorRecord`; `MqttMessageHandler` gained a third `retained` parameter (D1/D8) so a
-broker's retained replay on reconnect/subscribe can never count toward a fault's
-recovery-arming threshold. `LayoutService` gained `acknowledgeSensorFault`,
-`createSensorConfig`/`updateSensorConfig`/`deleteSensorConfig`, and `getSensorFaults`; two
-new REST routes, `POST .../sensors/:id/acknowledge-fault` (any authenticated role — the
-deliberate mirror of `POST /api/emergency-stop`'s deliberate lack of auth, since this one
-moves the system OUT of Safe-Stop rather than into it) and
-`GET .../sensor-faults`, alongside `requireAdmin` on the existing sensor config routes,
-which now delegate to `LayoutService` instead of calling the repository directly. A
-`SENSOR_FAULTS` `LayoutEvent` is forwarded over `/ws` the same way `BLOCK_STATE` etc.
-already are, and the WS `STATE_SNAPSHOT` gains `sensorFaults` (deliberately not the raw
-per-sensor observation map — diagnostic state nothing renders). Full design record
-(D1–D8, plus the Q1/Q2 additions this PR recorded) is `docs/sensor-fault-recovery.md`;
-read it before touching `domain/occupancy.ts`, `LayoutService`'s sensor-handling methods,
-or `domain/safety.ts`'s `sensorFaults` handling.
+### Traps
 
-**Pathfinding and setting the road have landed (#4).** `domain/pathfinding.ts#findPath`
-is a pure, direction-aware Dijkstra whose search state is **(block, end entered by)**, not
-block — that is what makes the no-reversal rule structural rather than a post-filter (P1).
-Cost is `BlockEdge.lengthMm`, with `DEFAULT_EDGE_LENGTH_MM` (1,000) for unmeasured track,
-so a layout with no lengths recorded degrades to fewest-hops (P2); ties break
-deterministically by node key then edge id, so the same request cannot return different
-paths between runs. The search ignores current point *positions* — setting the road is
-what a route is — but refuses a point another route *holds*, and refuses any block that is
-not positively `clear` and unlocked, via the shared `isBlockEffectivelyOccupied` (P3).
-`ReservationService.grant` now takes `GrantRequest.path`, either
-`{ kind: 'edges', edgeIds }` (#3's form, unchanged and still first-class) or
-`{ kind: 'destination', destinationBlockId, startExitEnd? }`; a searched path is then
-handed to `planReservation` exactly like a supplied one — **the pathfinder proposes, the
-planner disposes** (P6). `checkPathIndependentPreconditions` was extracted from
-`planReservation` so a search failure still reports the system/roster/graph rejections
-D14 requires. `LayoutService.requestRoute` **throws the points** after the locks are
-committed (D3's ordering, now exercised); a command the DCC adapter *rejects* invalidates
-the whole route — cancelled, locks released, Safe-Stop — and is reported as
-`granted: false` (P7). `commandPointHolds` is shared with D8's resume path.
+Things that look like bugs or oversights and are not. Each was a deliberate decision:
 
-**`SystemHealth.routeFaults: Record<RouteId, RouteFault>`** (P8) closes a live bug: a
-route violation used to call `stateManager.enterSafeStop` directly, bypassing
-`SystemHealth`, so the next unrelated health evaluation cleared a Safe-Stop caused by a
-train being somewhere it should not be. Three kinds — `unexpected-occupancy` and
-`point-command-rejected` (route cancelled) and `occupancy-unknown` (route **suspended**,
-locks retained per D8). That last one is new behaviour: `evaluateOccupancyChange` used to
-ignore `unknown` entirely, which was safe when the cause was a sensor fault (that
-Safe-Stops on its own) but not when a sensor was taken out of service or deleted
-mid-route. Priority in `evaluateSystemSafeStop` is now MQTT, DCC, topology, sensor faults,
-**route faults**, recovered routes. REST: `POST .../routes/:routeId/acknowledge-fault`
-(any authenticated role, mirroring the sensor equivalent; no arming threshold — a route
-cannot prove itself) and `GET .../route-faults`. A `ROUTE_FAULTS` `LayoutEvent` is
-forwarded over `/ws` and the `STATE_SNAPSHOT` gains `routeFaults`. Frontend: a Routes
-panel on the Operate screen (loco + start + destination, live routes with Cancel/Resume,
-latched faults with Acknowledge). Full design record is `docs/pathfinding.md` — read it
-before touching `domain/pathfinding.ts`, `ReservationService.resolvePath`, or
-`LayoutService`'s `requestRoute` / `commandPointHolds` / route-fault methods.
+- **Safe-Stop goes through `SystemHealth`/`evaluateAndApplySafeStop`, never
+  `stateManager.enterSafeStop` directly.** #4 fixed a live bug where a route violation
+  bypassed `SystemHealth`, so the next unrelated health evaluation cleared a Safe-Stop
+  caused by a train being somewhere it should not be.
+- **`migrations/0006_users_last_admin_guard.sql` has no `schema.ts` change**, and that is
+  correct — SQLite triggers cannot be expressed in Drizzle's schema DSL, so it was
+  generated with `drizzle-kit generate --custom`. `schema.ts` carries a comment above
+  `users` recording that they exist. Do not "fix" the missing structural change.
+- **A malformed sensor payload is a Safe-Stop on the first message, with no tolerance.**
+  A malformed *operator UI* request is an ordinary 400 — turning a bad UI request into a
+  layout halt would itself be a bug. The contract's fail-safe rule is scoped to
+  sensor/control topics.
+- **`NameBookCache.refresh` catches `BlockEdgeRowInvalidError` and nothing else.** It runs
+  before `loadTopology` inside `reloadTopology`, so a wider catch would let a corrupt row
+  escape `loadTopology`'s narrow catch and regress #10's Safe-Stop-not-throw guarantee.
+- **`ReservationService.resume` returning `resumed: true` is provisional.** The service has
+  no DCC access; `LayoutService.resumeRoute` must re-command every held point before the
+  resume counts, and rolls back to `suspended` with locks retained if any is rejected.
 
-Phase 3's remaining work is per-loco braking (#6) and collision avoidance (#7); driving a
-granted route is still manual — #4 sets and reserves the road, it does not drive the
-train. Limits recorded rather than closed: a point lock is an authority guarantee ("no
-other authority will command this point"), not a physical position guarantee — there is
-still no point-position feedback channel (#25); the locking model does not catch two
-routes fouling at a plain (non-switched) diamond crossing, since neither shares a block or
-a point (#26; Westgate Hollow has none today); and the pathfinder does not search around a
-point-position conflict, so a path can exist that it will not find (P5).
+### Open limits
 
-The three security findings against the original topology commit — #10 (Safe-Stop on
-invalid topology rather than a bare throw), #11 (DB-level graph invariants), #12 (Zod
-over the whole `block_edges` row) — have landed with this work.
+Recorded rather than closed — do not treat any of these as bugs to fix in passing:
 
-**#21 landed**: topology validation (`domain/topology.ts`'s `validateTopology`) is O(n)
-in edge count rather than O(n²) — duplicate-connection detection is index-backed
-(`EdgeIndex`/`buildEdgeIndex`) instead of an `Array#find` scan per edge — and each
-layout is capped at `MAX_EDGES_PER_LAYOUT` (2,000) edges, enforced only by
-`TopologyService.createEdge` (admission control, not a DB invariant or a load-path
-check — see `docs/topology.md`). `TopologyService.getStatus` now delegates to
-`validateTopology` instead of open-coding its own scan, so `GET .../topology` and the
-load path that decides Safe-Stop report the same violation set. A cap breach is a new
-`EdgeLimitExceededError`, mapped to HTTP 409 on `POST .../edges`.
-
-`packages/backend/tests/scenario/` now exists and has content (topology Safe-Stop and
-recovery paths); it was empty before.
-
-Frontend has no unit tests (`vitest --passWithNoTests`) — #8.
-
-**Local authentication has landed.** `users`/`sessions` tables
-(`migrations/0003_cooing_blur.sql`); pure argon2id hashing and session-token
-logic in `domain/auth.ts`; `IAuthRepository`/`DrizzleAuthRepository`
-(`parseUserRow`/`parseSessionRow` full-row Zod, matching `parseBlockEdgeRow`);
-`AuthService` (login/logout/session validation, 30-day sliding refresh).
-`DrizzleRepository` and `DrizzleAuthRepository` now share one SQLite
-connection via `adapters/db/connection.ts#openDatabase` rather than each
-opening and migrating their own. A single Fastify `onRequest` hook
-(`transport/http/auth/hook.ts`), registered before any route, rejects an
-unauthenticated request with 401 — this also covers the `/ws` upgrade, since
-`@fastify/websocket` dispatches it through the same hook pipeline before
-switching protocols; no separate check lives in the WebSocket transport code,
-and auth is still enforced only at that edge, never mid-connection on a live
-socket. `POST /api/auth/login` (rate-limited), `POST /api/auth/logout`,
-`GET /api/auth/me`; every topology/config write route carries a
-`requireAdmin` preHandler (`operator` may read and drive, only `admin` may
-edit topology or config); `POST /api/emergency-stop` is the one deliberately
-unauthenticated control path. CORS is an explicit env-driven allowlist
-(`CORS_ALLOWED_ORIGINS`) plus `credentials: true`, replacing `origin: true`.
-`services/bootstrapAdmin.ts` creates a single admin account from
-`INITIAL_ADMIN_PASSWORD` on an empty `users` table and refuses to start
-otherwise; `scripts/bootstrap-admin.ts` is the CLI password-reset path.
-Frontend: `LoginScreen`, `useAuth`, and `api.ts` (`credentials: 'include'` +
-centralised 401 handling) gate the rest of the UI behind a session. Full
-scheme and the pre-TLS threat model are in `docs/auth.md` — read it before
-touching anything under `transport/http/auth/` or `services/AuthService.ts`.
-
-**#27 landed**: `LayoutService.handleSensorReading` now enters Safe-Stop — via
-the same `SystemHealth`/`evaluateAndApplySafeStop` machinery as a connection
-or topology failure, not a parallel mechanism — the instant a sensor payload
-fails `sensorReadingSchema`, per mqtt-contract.md §Fail-Safe Triggers item 3.
-The old warn-and-return is gone; the reason names the sensor id and topic,
-block state is never touched on that path (the `return` happens before
-`stateManager.updateBlockOccupancy`), and there is no tolerance — the first
-malformed message trips it. `SystemHealth` gained `sensorFault`/
-`sensorFaultReason` (`domain/safety.ts`), required fields mirroring
-`topologyValid`/`topologyReason`; `evaluateSystemSafeStop`'s priority order is
-now MQTT, then DCC, then topology, then sensor fault. The fault is latched —
-nothing clears it automatically, so an unrelated MQTT/DCC reconnect can't
-silently undo it. (`sensorFault`/`sensorFaultReason` and the "no acknowledge and
-clear; recovery means restarting the backend" gap described here are #27's
-original shape — #34, above, replaced the scalar pair with a keyed
-`sensorFaults` collection and closed the gap with `acknowledgeSensorFault`
-and out-of-service; see `docs/sensor-fault-recovery.md`.) Audited the
-other inbound-parse warn-and-return sites while in there: `MqttAdapter`'s raw
-`JSON.parse` failure (`adapters/mqtt/`) had the *same* bug one layer up —
-malformed non-JSON on a sensor topic was dropped before it ever reached
-`handleSensorReading`'s Zod check, so it now forwards the raw string through
-to the subscriber instead of swallowing it, keeping the Safe-Stop decision in
-the service layer rather than the transport (rule 2). HTTP/WS parse failures
-on operator-facing routes (`transport/http/routes/{auth,edges}.ts`,
-`transport/websocket/index.ts`'s `clientMessageSchema`) were also audited and
-left as ordinary 400s / `ERROR` frames — the contract's fail-safe rule is
-scoped to sensor/control topics, not operator UI requests, and turning a bad
-UI request into a layout halt would itself be a bug. `services/validation.ts`'s
-other `safeParse` sites (`block_edges`/`users`/`sessions` row parsing) were
-already throwing rather than warn-and-return, and DB-row corruption already
-surfaces as Safe-Stop via the topology load path (#12) or a 500, so those were
-left unchanged. `docs/mqtt-contract.md` did not change — the code moved to
-meet it.
-
-**#53 landed**: local authentication (#20) shipped with no way to create an
-`operator` account — every path that could create a user hardcoded `role:
-'admin'` — so the entire operator half of the role model was unreachable
-short of hand-editing SQLite. `IAuthRepository` gained `listUsers`,
-`updateUserRole`, `deleteUser` (plus `LastAdminError`/`UsernameTakenError`,
-declared on the port so both `AuthService` and `DrizzleAuthRepository` can
-throw them without either importing the other's module); `AuthService` owns
-the policy (`listUsers`/`createUser`/`changeUserRole`/`deleteUser`/
-`resetUserPassword`/`changeOwnPassword`) the same way `ReservationService`
-owns route-locking policy over `LayoutStateManager` — the repository stays
-storage. Deleting or demoting the layout's last admin is refused at both
-layers: `AuthService` from a `listUsers()` pre-check
-(`domain/users.ts#wouldRemoveLastAdmin`), and — because that service-level
-check has the same read-then-write race #11 argued against for route
-exclusivity — a SQLite trigger pair (`users_last_admin_no_demote`/
-`users_last_admin_no_delete`, migration `0006_users_last_admin_guard.sql`)
-at the database. That migration is deliberately the one place in the repo
-that touches persistence without a `schema.ts` change: a trigger can't be
-expressed in Drizzle's schema DSL, so it was generated with
-`drizzle-kit generate --custom` rather than `db:generate`, and `schema.ts`
-carries a comment above the `users` table recording that the triggers exist
-so the file still tells the truth. A role change and a deletion both call
-`deleteSessionsForUser` immediately after the write succeeds, closing the
-same "auth enforced only at the connection edge" gap the WebSocket upgrade
-hook already relies on — a demoted or deleted user holding an open `/ws`
-would otherwise keep their old authority indefinitely. Six routes:
-`GET|POST /api/users`, `PATCH|DELETE /api/users/:id`,
-`POST /api/users/:id/password` — all `requireAdmin`, since an operator has
-no reason to enumerate accounts — and `POST /api/auth/change-password`,
-reachable by any authenticated user and rate-limited at login parity because
-verifying the caller's current password makes it the same guessing oracle
-login is; a wrong current password there is 403, not 401, so the frontend's
-app-wide 401 handler doesn't bounce the user to the login screen on a typo.
-An admin may not change their own role or delete themselves (409
-`SelfMutationError`) even with another admin present — handover is "create
-the second admin, then they demote you" — but may reset their own password
-exactly like anyone else's, since a hijacked admin session could already do
-that regardless. Frontend: a Users tab on the Configure screen, rendered
-only for `role === 'admin'` (`useUsers`, `UsersTab`), and a
-`ChangePasswordDialog` reachable by any logged-in user from the session area
-beside "Log out". Full decision record — why, not just what — is
-`docs/auth.md`'s "User and role management" section; read it before touching
-`AuthService`'s user-management methods, `domain/users.ts`, or the trigger
-migration.
-
-**#54 landed**: operator-facing diagnostic strings (route rejections, topology
-violations, Safe-Stop reasons, HTTP 404 bodies) name the block/point/sensor/loco
-involved instead of a bare UUID. `NameBook` (`domain/types.ts`) is six
-`ReadonlyMap`s — layouts, blocks, points, sensors, locos, edges (edges hold a
-*derived* label like `Down Platform:north → Up Loop:south`, not a name —
-`block_edges` has no name column) — and `domain/naming.ts` carries the pure
-rendering helpers (`label`/`blockLabel`/`pointLabel`/`sensorLabel`/`locoLabel`/
-`edgeLabel`/`layoutLabel`/`buildEdgeLabel`/`pluralise`) every `describe*`
-function in `domain/` now threads an optional trailing `book?: NameBook`
-through. With no book (or a book miss) every one of those renders the full raw
-id, byte-for-byte identical to before #54 (D8) — the plural/delimiter wording
-fixes D7 asked for are the one unconditional exception. `services/nameBook.ts`
-holds the impure half: `buildNameBook` (pure over plain record arrays) and
-`NameBookCache`, the `INameBook` (`ports/INameBook.ts`) implementation
-`LayoutService`/`ReservationService`/`TopologyService` each take as an optional
-trailing constructor parameter, defaulting to the inert `INERT_NAME_BOOK` so
-the ~60 pre-#54 test construction sites kept compiling untouched. The cache is
-refreshed at four points — startup, every topology write (via
-`LayoutService.reloadTopology`, before it loads topology so a fatal-violation
-Safe-Stop reason is already named), every sensor-config write, and every
-block/point/loco route handler after its repo write — a missed refresh costs a
-stale display name, never unsafe behaviour. `NameBookCache.refresh` narrowly
-catches `BlockEdgeRowInvalidError` only, falling back to an empty edges map, so
-a corrupt `block_edges` row can never let the name-book refresh (which now runs
-before `loadTopology` inside `reloadTopology`) regress #10's Safe-Stop-not-throw
-guarantee. Persisted/published reasons (a reservation's `reason`, a
-`RouteFault`/`SensorFault`, `SystemHealth.topologyReason`) render through the
-book at generation time, not on demand — `system/status.reason` goes out over
-MQTT and cannot be re-rendered later; the one HTTP-422-body exception renders
-at the transport edge, since that body is neither persisted nor published.
-Route ids stay bare everywhere (`block-locked`/`point-locked`/
-`loco-already-routed`, braking's `manual-authority`/`route-not-active`) — a
-route is runtime state with a different invalidation lifetime than the rest of
-the book, deliberately deferred. Frontend: `packages/frontend/src/naming.ts`
-mirrors the backend helpers (no shared workspace package exists to import
-instead) and `EdgesTab`/`RoutesPanel` build a local `NameBook` from props
-already in scope rather than re-implementing `describeViolation` a second
-time. Full design record (D1–D10, Q1–Q3) is `docs/naming.md` — read it before
-touching `domain/naming.ts`, `services/nameBook.ts`, or any `describe*`
-function.
+- **A point lock is an authority guarantee, not a physical position guarantee.** There is
+  still no point-position feedback channel (#25).
+- **Two routes fouling at a plain (non-switched) diamond crossing is not caught**, since
+  neither shares a block or a point (#26). Westgate Hollow has none today.
+- **The pathfinder does not search around a point-position conflict**, so a path can exist
+  that it will not find (P5 in `docs/pathfinding.md`).
+- **Driving a granted route is manual.** #4 sets and reserves the road; it does not drive
+  the train.
+- **Lock messages name the route id, not the train holding it** (D3 in `docs/naming.md`) —
+  a route has a different invalidation lifetime from the rest of the `NameBook`.
+- Phase 3's remaining work is per-loco braking (#6) and collision avoidance (#7).

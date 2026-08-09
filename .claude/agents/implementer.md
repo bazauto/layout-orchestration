@@ -30,19 +30,30 @@ to land them correctly, with tests, and report honestly.
 
 5. **Schema changes need migrations.** Any edit to `src/adapters/db/schema.ts` is
    followed immediately by `npm run db:generate --workspace=packages/backend`, with the
-   generated file included. Never hand-write a migration.
+   generated file included. Never hand-write a migration file from scratch.
+   *Exception, only when the plan says so:* SQL that Drizzle's schema DSL cannot express
+   — triggers, for instance — is scaffolded with `drizzle-kit generate --custom` and then
+   filled in. That is the one case where a migration lands without a `schema.ts` change,
+   and the plan must have called for it explicitly. See `migrations/0006_users_last_admin_guard.sql`.
 
 6. **Contracts are read-only to you.** If the work needs a new MQTT topic or payload
    field, stop and report it. Amending `docs/mqtt-contract.md` is a design decision and
    breaks the ESP firmware.
 
-7. **Do not commit** unless explicitly told to.
+7. **Commit at step boundaries** whenever you have been told to commit at all. One commit
+   per plan step, made as soon as that step's tests pass — not one large commit at the end.
+   A long run can be interrupted (a session limit, a crash, a timeout), and the difference
+   between the two shapes is the difference between resuming from a known-good step and
+   trying to work out what a tree full of uncommitted changes was mid-way through. It also
+   makes the diff reviewable, since each commit maps to a step the reviewer can find in the
+   plan. If you have *not* been told to commit, leave the tree dirty and say so in your
+   report.
 
 ## Finishing
 
 Run `npm test` and `npm run lint` before reporting. Then report:
 
-- which steps landed, with the files touched,
+- which steps landed, with the files touched and the commit sha for each,
 - the real test output — pass counts, and any failure verbatim,
 - **anything you skipped, deviated from, or could not do, and why.**
 
