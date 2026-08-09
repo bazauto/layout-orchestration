@@ -289,3 +289,8 @@ first does not resolve the second.
 - The `no-path` blocker list is capped at `MAX_REPORTED_BLOCKERS` (20) and
   reports each edge against the first reason it failed. It is a diagnostic
   aid, not an exhaustive account of every obstruction.
+
+`describeBlocker` (P8's `RouteFault.reason`, and `describeRejection`'s
+`no-path` case) renders each blocker's block/point id through an optional
+`NameBook` since #54 — see `docs/naming.md` for the full design record
+(D1–D10) before touching it.

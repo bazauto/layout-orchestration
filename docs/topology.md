@@ -242,13 +242,18 @@ complexity on its own.
   a connection failure reason always wins over a topology reason if both are
   present.
 - **Reason string:** `describeViolations` produces
-  `Topology invalid: N violation(s) — <first three, semicolon-separated>`.
-  This is the same string that ends up on `SystemHealth.topologyReason`, the
-  `SYSTEM_STATUS` event's `reason` field, and the retained
-  `system/status.reason` MQTT field — no new topic or payload field was
-  needed; `system/status.reason` is already documented in
-  `docs/mqtt-contract.md` as free-text "human-readable reason for a
-  safe-stop or offline status".
+  `Topology invalid: N violation(s) [(first 3 shown)] — <first three,
+  semicolon-separated>` — the `(first 3 shown)` suffix appears only when
+  `N > 3` (#54; the old version silently dropped the rest). Each id in the
+  violation list renders as `"Name" (shortid)` when a `NameBook` is
+  supplied to `describeViolations` (as `LayoutService.reloadTopology` now
+  does — see `docs/naming.md`) and degrades to the bare id, byte-for-byte,
+  with no book. This is the same string that ends up on
+  `SystemHealth.topologyReason`, the `SYSTEM_STATUS` event's `reason`
+  field, and the retained `system/status.reason` MQTT field — no new topic
+  or payload field was needed; `system/status.reason` is already
+  documented in `docs/mqtt-contract.md` as free-text "human-readable
+  reason for a safe-stop or offline status".
 - **Recovery:** an operator (today: via `TopologyService`, once #2 lands: via
   the Configure UI) fixes the offending edge — typically by deleting it — and
   the write path's `onTopologyChanged` callback triggers
