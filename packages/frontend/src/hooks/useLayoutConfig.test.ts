@@ -466,7 +466,7 @@ describe('useLayoutConfig', () => {
         json: async () => {
           throw new Error('not JSON');
         },
-      } as Response);
+      } as unknown as Response);
 
       const result = await mutate('/api/users', { method: 'POST' });
 
