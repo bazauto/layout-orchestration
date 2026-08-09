@@ -84,7 +84,13 @@ export interface MutationResult<T = void> {
   violations?: TopologyViolation[];
 }
 
-async function mutate<T = void>(path: string, init: RequestInit): Promise<MutationResult<T>> {
+/**
+ * Exported so `useUsers.ts` (#53) can share this exact `{ ok, message }`
+ * shape and error-extraction behaviour rather than re-implementing it —
+ * `/api/users` isn't part of `LayoutConfig`, but the mutation posture (a
+ * non-2xx must reach the caller, never be swallowed) is identical.
+ */
+export async function mutate<T = void>(path: string, init: RequestInit): Promise<MutationResult<T>> {
   // Must go through apiFetch, not bare fetch: these are cross-origin in dev,
   // so the session cookie would be dropped, and a 401 here needs to reach
   // the app's central unauthorized handler like every other call site.

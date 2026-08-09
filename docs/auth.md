@@ -125,7 +125,114 @@ silently overridden by a stale `INITIAL_ADMIN_PASSWORD` still sitting in
 is the CLI reset path: it creates the named account as admin if it doesn't
 exist, or resets its password and revokes its existing sessions if it does.
 Physical/shell access to this machine already implies access to track power,
-so a local recovery path here is not a new hole.
+so a local recovery path here is not a new hole. It stays the break-glass
+path and its own scope is unchanged by the user-management work below — see
+that section for why the last-admin guard doesn't obstruct it.
+
+## User and role management (issue #53)
+
+Before this work, nothing in the system could create an `operator` account:
+`bootstrapAdmin.ts` creates the first account only, always as `admin`, and
+`scripts/bootstrap-admin.ts` hardcoded `role: 'admin'` on its create path.
+The entire `operator` half of the authorisation model — reads and driving,
+but not topology/config edits — was unreachable short of hand-editing SQLite
+on a live layout. `IAuthRepository` gained three methods (`listUsers`,
+`updateUserRole`, `deleteUser`); `AuthService` owns the policy
+(`listUsers`/`createUser`/`changeUserRole`/`deleteUser`/`resetUserPassword`/
+`changeOwnPassword`), matching how `ReservationService` owns route-locking
+policy over `LayoutStateManager` — the repository stays storage. Six routes:
+`GET|POST /api/users`, `PATCH|DELETE /api/users/:id`,
+`POST /api/users/:id/password` (all `requireAdmin`), and
+`POST /api/auth/change-password` (any authenticated user, not admin-gated).
+The decisions below were made once, as a set, and are recorded here so a
+later session does not re-open them piecemeal:
+
+- **Q1 — Last-admin protection is enforced at both layers.** `AuthService`
+  refuses the demotion or deletion with `LastAdminError` (409) after a
+  `listUsers()` pre-check (`domain/users.ts#wouldRemoveLastAdmin`); SQLite
+  triggers `users_last_admin_no_demote`/`users_last_admin_no_delete`
+  (migration `0006_users_last_admin_guard.sql`) abort it at the database,
+  closing the interleave between the service's read and its write — #11's
+  posture on route exclusivity, applied here because the service-level race
+  is real: two concurrent demotions can each observe two admins and both
+  proceed, leaving zero. The DB half is a trigger pair, not a partial unique
+  index, because a unique index expresses "at most one" and this is "at
+  least one", which SQLite can express no other way. The triggers are
+  therefore invisible in `schema.ts` (see the comment above the `users`
+  table there) and the migration was produced with
+  `drizzle-kit generate --custom` rather than `db:generate` — the one
+  migration in this repo that lands without a structural schema change.
+  `BEFORE UPDATE OF role` does not fire for a password update, so
+  `scripts/bootstrap-admin.ts` (which only ever inserts or updates
+  `password_hash`, never `role`, never deletes) is unaffected by either
+  trigger.
+- **Q2 — A role change and a deletion both revoke the user's live
+  sessions** via `deleteSessionsForUser`, called only after the write
+  succeeds (so an aborting trigger leaves sessions intact for a change that
+  didn't happen). Auth is enforced only at the connection edge, never
+  mid-connection — see "Enforcement" above — so a demoted admin holding an
+  open `/ws` would otherwise keep admin authority, and a deleted user's
+  session would otherwise keep working entirely, until the session expired
+  on its own.
+- **Q3 — Self-service password change requires the current password and is
+  rate-limited at login parity** (`{ max: 5, timeWindow: '1 minute' }`),
+  because verifying the old password makes `POST /api/auth/change-password`
+  the same guessing oracle `POST /api/auth/login` is. An admin reset
+  (`POST /api/users/:id/password`) verifies nothing, is `requireAdmin`, and
+  carries no rate limit — deliberately: an admin session can already reset
+  any other admin's password, so requiring proof of the *old* password before
+  an admin can reset someone else's would buy nothing, and the same argument
+  applies to an admin resetting their own. A wrong current password on the
+  self-service route returns **403**, not 401 — `packages/frontend/src/api.ts`
+  routes every 401 to the app-wide unauthorized handler, which would bounce
+  the user to the login screen on a typo, an actively wrong outcome. A
+  successful self-service change revokes **every** session the user holds,
+  including the caller's — no "keep this one" carve-out — clears the cookie,
+  and returns 204; the frontend's `ChangePasswordDialog` then resets local
+  auth state the same way a deliberate "Log out" does, rather than waiting
+  for the next 401.
+- **Q4 — An operator may not list users.** All five `/api/users` routes
+  carry `requireAdmin`; an operator's own identity is already available from
+  `GET /api/auth/me`, and the pre-TLS threat model below argues for the
+  smaller surface. The Configure screen's Users tab is rendered only for
+  `role === 'admin'`.
+- **Q5 — A new account's password is set by the admin at creation**,
+  required in the `POST /api/users` payload, no invite or first-login flow —
+  this is a local-first single-household system where the admin and the new
+  user are typically in the same room. `MIN_PASSWORD_LENGTH` (8) moved from
+  `scripts/bootstrap-admin.ts` into `domain/auth.ts` (alongside the new
+  `MAX_PASSWORD_LENGTH`, 256) so the CLI and every HTTP schema share one
+  rule; `loginSchema` is deliberately not capped, since a login password may
+  predate the cap.
+- **Q6 — `passwordHash: null` is unreachable through these routes.**
+  `password` is a required non-empty string in `userCreateSchema`, and
+  `AuthService.createUser` independently throws `PasswordPolicyError`, so a
+  non-HTTP caller cannot bypass it either. The column stays nullable —
+  WebAuthn is still the reason (see "Nothing here forecloses adding
+  passkeys later" below).
+- **Self-mutation is refused.** An admin may not change their own role or
+  delete themselves (409 `SelfMutationError`), even when another admin
+  exists — handover is "create the second admin, then they demote you", and
+  this removes a whole class of "I deleted my own session mid-operation"
+  surprises. Self *password* change and self password reset are both still
+  allowed: a hijacked admin session can already reset any other admin's
+  password, so blocking self-reset would buy nothing.
+- **Password reset is its own route**, `POST /api/users/:id/password`, not a
+  field on `PATCH /api/users/:id`. `PATCH` carries `{ role }` only,
+  `.strict()` — a PATCH that can silently rotate a credential reads
+  identically in logs to one that only changes a role, and the two have
+  different audit meaning.
+- **Usernames remain case-sensitive**, trimmed on creation only
+  (`domain/auth.ts#normaliseUsername`). `Paul` and `paul` would be distinct
+  accounts. A case-insensitive (`NOCASE`) unique index would mean a table
+  rebuild migration on the live layout database for a two-user household —
+  recorded here as a known limit rather than closed.
+- **`LastAdminError`/`UsernameTakenError` are declared on
+  `ports/IAuthRepository.ts`**, not in `AuthService`. Both layers throw them
+  — the service from its pre-checks, `DrizzleAuthRepository` when
+  translating a SQLite constraint/trigger abort — so the port is the one
+  contract both sides share, and neither imports the other's module for an
+  error type.
 
 ## CORS
 
@@ -149,6 +256,17 @@ password and the session cookie are sniffable by anything already on the
 network — a passive observer on the same Wi-Fi/switch can read both directly
 off the wire. That is a reasonable goal for a home layout control system; it
 is written down here so nobody later assumes stronger properties than exist.
+
+Session revocation on a role change and on a deletion (Q2, issue #53) exists
+*because* of the "enforced only at the connection edge, never mid-connection"
+property above, stated plainly here too: without it, an admin just demoted
+to operator — or removed outright — who is holding an open `/ws` connection
+would keep driving with their old authority until that socket happened to
+close and the browser reconnected with the now-invalid cookie. `AuthService`
+calling `deleteSessionsForUser` immediately after the write is what forces
+that reconnect (and the accompanying 401) to happen on the *next* request
+over the socket's underlying HTTP session, rather than leaving a stale
+authority live indefinitely.
 
 The design does not assume plaintext stays forever, and nothing here needs to
 change shape when TLS lands — only configuration:

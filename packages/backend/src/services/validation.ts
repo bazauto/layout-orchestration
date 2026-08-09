@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import { BlockEdge, PointCondition, RouteHold, RoutePathStep, RouteReservation } from '../domain/types';
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from '../domain/auth';
 import { SessionRecord, UserRecord } from '../ports/IAuthRepository';
 import { SensorRecord } from '../ports/ILayoutRepository';
 
@@ -552,6 +553,61 @@ export const loginSchema = z
     password: z.string().min(1),
   })
   .strict();
+
+// ─── User management (issue #53, see docs/auth.md) ─────────────────────────
+//
+// `.strict()`, same posture as `edgeCreateSchema` — an unexpected field is a
+// 400, not a silently ignored write.
+
+const newPasswordSchema = z.string().min(MIN_PASSWORD_LENGTH).max(MAX_PASSWORD_LENGTH);
+
+/**
+ * Write schema for `POST /api/users`. `role` is required rather than
+ * defaulted, so creating an operator is an explicit act and a client that
+ * forgets the field gets a 400 instead of silently inheriting the column
+ * default.
+ */
+export const userCreateSchema = z
+  .object({
+    username: z.string().trim().min(1).max(64),
+    password: newPasswordSchema,
+    role: roleSchema,
+  })
+  .strict();
+
+export type UserCreateInput = z.infer<typeof userCreateSchema>;
+
+/**
+ * Write schema for `PATCH /api/users/:id`. Role only — a password reset is
+ * its own route (`POST /api/users/:id/password`), never a field here, so a
+ * credential rotation reads differently in logs from a role change.
+ */
+export const userRoleUpdateSchema = z
+  .object({
+    role: roleSchema,
+  })
+  .strict();
+
+export type UserRoleUpdateInput = z.infer<typeof userRoleUpdateSchema>;
+
+/** Write schema for `POST /api/users/:id/password` (admin reset). */
+export const passwordResetSchema = z
+  .object({
+    password: newPasswordSchema,
+  })
+  .strict();
+
+export type PasswordResetInput = z.infer<typeof passwordResetSchema>;
+
+/** Write schema for `POST /api/auth/change-password` (self-service). */
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1),
+    newPassword: newPasswordSchema,
+  })
+  .strict();
+
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
 export const clientMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('THROTTLE_COMMAND'), payload: throttleCommandSchema }),

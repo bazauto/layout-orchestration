@@ -11,6 +11,10 @@ import {
   SessionRowInvalidError,
   parseSensorRow,
   SensorRowInvalidError,
+  userCreateSchema,
+  userRoleUpdateSchema,
+  passwordResetSchema,
+  changePasswordSchema,
 } from '../../../src/services/validation';
 
 describe('parsePointConditions', () => {
@@ -242,5 +246,84 @@ describe('parseSensorRow', () => {
     const rowWithoutInService: Record<string, unknown> = { ...validSensorRow };
     delete rowWithoutInService.inService;
     expect(() => parseSensorRow(rowWithoutInService)).toThrow(SensorRowInvalidError);
+  });
+});
+
+describe('userCreateSchema', () => {
+  const validInput = { username: 'alice', password: 'a-good-password', role: 'operator' };
+
+  it('accepts a valid payload', () => {
+    expect(userCreateSchema.parse(validInput)).toEqual(validInput);
+  });
+
+  it('rejects an unknown extra field (.strict())', () => {
+    expect(() => userCreateSchema.parse({ ...validInput, isAdmin: true })).toThrow();
+  });
+
+  it('rejects a blank/whitespace username', () => {
+    expect(() => userCreateSchema.parse({ ...validInput, username: '   ' })).toThrow();
+  });
+
+  it('rejects a short password', () => {
+    expect(() => userCreateSchema.parse({ ...validInput, password: '1234567' })).toThrow();
+  });
+
+  it('rejects a role outside the enum', () => {
+    expect(() => userCreateSchema.parse({ ...validInput, role: 'superadmin' })).toThrow();
+  });
+
+  it('requires role rather than defaulting it', () => {
+    const withoutRole = { username: validInput.username, password: validInput.password };
+    expect(() => userCreateSchema.parse(withoutRole)).toThrow();
+  });
+});
+
+describe('userRoleUpdateSchema', () => {
+  it('accepts a valid payload', () => {
+    expect(userRoleUpdateSchema.parse({ role: 'admin' })).toEqual({ role: 'admin' });
+  });
+
+  it('rejects an unknown extra field (.strict())', () => {
+    expect(() => userRoleUpdateSchema.parse({ role: 'admin', username: 'sneaky' })).toThrow();
+  });
+
+  it('rejects a role outside the enum', () => {
+    expect(() => userRoleUpdateSchema.parse({ role: 'superadmin' })).toThrow();
+  });
+});
+
+describe('passwordResetSchema', () => {
+  it('accepts a valid payload', () => {
+    expect(passwordResetSchema.parse({ password: 'a-good-password' })).toEqual({
+      password: 'a-good-password',
+    });
+  });
+
+  it('rejects an unknown extra field (.strict())', () => {
+    expect(() => passwordResetSchema.parse({ password: 'a-good-password', role: 'admin' })).toThrow();
+  });
+
+  it('rejects a short password', () => {
+    expect(() => passwordResetSchema.parse({ password: '1234567' })).toThrow();
+  });
+});
+
+describe('changePasswordSchema', () => {
+  const validInput = { currentPassword: 'old-password', newPassword: 'a-good-password' };
+
+  it('accepts a valid payload', () => {
+    expect(changePasswordSchema.parse(validInput)).toEqual(validInput);
+  });
+
+  it('rejects an unknown extra field (.strict())', () => {
+    expect(() => changePasswordSchema.parse({ ...validInput, role: 'admin' })).toThrow();
+  });
+
+  it('rejects an empty currentPassword', () => {
+    expect(() => changePasswordSchema.parse({ ...validInput, currentPassword: '' })).toThrow();
+  });
+
+  it('rejects a short newPassword', () => {
+    expect(() => changePasswordSchema.parse({ ...validInput, newPassword: '1234567' })).toThrow();
   });
 });

@@ -314,4 +314,104 @@ describe('migrations', () => {
       ).not.toThrow();
     });
   });
+
+  // ── Last-admin guard triggers (Q1, docs/auth.md, issue #53) ────────────────
+  //
+  // Raw sqlite handle, independent of any application code (AuthService/
+  // DrizzleAuthRepository) — this proves the DB half of the guard on its own.
+  // Each test gets its OWN fresh temp-file database (via `withFreshDb`, same
+  // pattern as repository-auth.test.ts's `hasAnyUsers` isolation) rather than
+  // sharing the outer `sqlite` handle: the trigger's condition counts every
+  // admin row currently in the whole table, so a "sole admin" scenario must
+  // start from a table nothing else has touched.
+
+  describe('users last-admin invariant', () => {
+    let userCounter = 0;
+
+    function withFreshDb<T>(fn: (raw: Database.Database) => T): T {
+      const dir = mkdtempSync(join(tmpdir(), 'layout-orchestrator-last-admin-'));
+      const path = join(dir, `${randomUUID()}.db`);
+      openDatabase(path, MIGRATIONS_FOLDER); // applies migrations; drizzle handle unused here
+      const raw = new Database(path);
+      try {
+        return fn(raw);
+      } finally {
+        raw.close();
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // ignore — OS temp directory, cleaned up eventually regardless
+        }
+      }
+    }
+
+    function insertUser(raw: Database.Database, overrides: { role?: string }): string {
+      userCounter += 1;
+      const id = `user-${userCounter}`;
+      raw
+        .prepare(
+          `INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(id, `user-${userCounter}`, 'x', overrides.role ?? 'admin', Date.now());
+      return id;
+    }
+
+    it('both triggers exist', () => {
+      withFreshDb((raw) => {
+        const triggers = raw
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+          .all() as Array<{ name: string }>;
+        const names = triggers.map((t) => t.name);
+        expect(names).toContain('users_last_admin_no_demote');
+        expect(names).toContain('users_last_admin_no_delete');
+      });
+    });
+
+    it('refuses to demote the sole admin', () => {
+      withFreshDb((raw) => {
+        const admin = insertUser(raw, { role: 'admin' });
+        expect(() =>
+          raw.prepare("UPDATE users SET role = 'operator' WHERE id = ?").run(admin),
+        ).toThrow();
+      });
+    });
+
+    it('refuses to delete the sole admin', () => {
+      withFreshDb((raw) => {
+        const admin = insertUser(raw, { role: 'admin' });
+        expect(() => raw.prepare('DELETE FROM users WHERE id = ?').run(admin)).toThrow();
+      });
+    });
+
+    it('with two admins, demoting one succeeds and demoting the second then throws', () => {
+      withFreshDb((raw) => {
+        const first = insertUser(raw, { role: 'admin' });
+        const second = insertUser(raw, { role: 'admin' });
+
+        expect(() =>
+          raw.prepare("UPDATE users SET role = 'operator' WHERE id = ?").run(first),
+        ).not.toThrow();
+        expect(() =>
+          raw.prepare("UPDATE users SET role = 'operator' WHERE id = ?").run(second),
+        ).toThrow();
+      });
+    });
+
+    it('deleting an operator while one admin exists succeeds', () => {
+      withFreshDb((raw) => {
+        insertUser(raw, { role: 'admin' });
+        const operator = insertUser(raw, { role: 'operator' });
+        expect(() => raw.prepare('DELETE FROM users WHERE id = ?').run(operator)).not.toThrow();
+      });
+    });
+
+    it('a password update on the sole admin succeeds (the trigger does not fire on it)', () => {
+      withFreshDb((raw) => {
+        const admin = insertUser(raw, { role: 'admin' });
+        expect(() =>
+          raw.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run('new-hash', admin),
+        ).not.toThrow();
+      });
+    });
+  });
 });

@@ -5,6 +5,7 @@ import {
   hashPassword,
   hashSessionToken,
   isSessionExpired,
+  normaliseUsername,
   SESSION_TTL_MS,
   verifyPassword,
 } from '../../../src/domain/auth';
@@ -87,5 +88,19 @@ describe('computeSessionExpiry / isSessionExpired', () => {
   it('a session expiring exactly now is treated as expired (boundary is inclusive)', () => {
     const now = new Date('2026-01-01T00:00:00.000Z');
     expect(isSessionExpired(now, now)).toBe(true);
+  });
+});
+
+describe('normaliseUsername', () => {
+  it('trims leading and trailing whitespace', () => {
+    expect(normaliseUsername('  alice  ')).toBe('alice');
+  });
+
+  it('preserves case', () => {
+    expect(normaliseUsername('Alice')).toBe('Alice');
+  });
+
+  it('leaves an already-clean name alone', () => {
+    expect(normaliseUsername('alice')).toBe('alice');
   });
 });

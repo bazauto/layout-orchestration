@@ -40,6 +40,17 @@ export interface IAuthRepository {
    * admin is never silently overridden on the next restart.
    */
   hasAnyUsers(): Promise<boolean>;
+  /** Every user, ordered by username ascending — deterministic for the UI and for tests. */
+  listUsers(): Promise<UserRecord[]>;
+  /** Throws `LastAdminError` if the DB-level trigger aborts the update (see migration 0006). */
+  updateUserRole(id: UserId, role: Role): Promise<UserRecord>;
+  /**
+   * Sessions cascade at the FK level; `AuthService` also calls
+   * `deleteSessionsForUser` explicitly (Q2) so the guarantee does not depend
+   * on any adapter's FK behaviour. Throws `LastAdminError` if the DB-level
+   * trigger aborts the delete.
+   */
+  deleteUser(id: UserId): Promise<void>;
 
   createSession(data: Omit<SessionRecord, 'id' | 'createdAt'>): Promise<SessionRecord>;
   getSessionByTokenHash(tokenHash: string): Promise<SessionRecord | null>;
@@ -48,4 +59,30 @@ export interface IAuthRepository {
   deleteSession(id: SessionId): Promise<void>;
   /** Deletes every session belonging to a user, e.g. on account removal. */
   deleteSessionsForUser(userId: UserId): Promise<void>;
+}
+
+/**
+ * Thrown when a write would leave the layout with zero admin accounts (Q1).
+ * Declared here, not in `AuthService`, because both layers throw it: the
+ * service from its `wouldRemoveLastAdmin` pre-check, `DrizzleAuthRepository`
+ * when translating the DB trigger's abort (migration
+ * `0006_users_last_admin_guard.sql`). The port is the contract both sides
+ * share, so neither imports the other's module for the error type.
+ */
+export class LastAdminError extends Error {
+  constructor() {
+    super('Cannot remove the last admin account');
+    this.name = 'LastAdminError';
+  }
+}
+
+/** Thrown when a username is already taken — see `LastAdminError` for why this lives on the port rather than the service. */
+export class UsernameTakenError extends Error {
+  readonly username: string;
+
+  constructor(username: string) {
+    super(`Username '${username}' is already taken`);
+    this.name = 'UsernameTakenError';
+    this.username = username;
+  }
 }

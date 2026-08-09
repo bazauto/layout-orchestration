@@ -7,6 +7,12 @@
  * this machine already implies access to track power, so a local recovery
  * path here is not a new hole — see docs/auth.md.
  *
+ * The last-admin guard triggers (migration `0006_users_last_admin_guard.sql`,
+ * issue #53) do not obstruct this script: it only ever inserts a new row or
+ * updates `password_hash` on an existing one — it never sets `role` on an
+ * update and never deletes — and neither of those is what either trigger
+ * guards against.
+ *
  * Usage (from packages/backend):
  *   npx tsx scripts/bootstrap-admin.ts <username> <password>
  */
@@ -18,9 +24,7 @@ config({ path: resolve(__dirname, '../../../.env') });
 
 import { openDatabase } from '../src/adapters/db/connection';
 import { DrizzleAuthRepository } from '../src/adapters/db/authRepository';
-import { hashPassword } from '../src/domain/auth';
-
-const MIN_PASSWORD_LENGTH = 8;
+import { hashPassword, MIN_PASSWORD_LENGTH } from '../src/domain/auth';
 
 async function main() {
   const [, , username, password] = process.argv;

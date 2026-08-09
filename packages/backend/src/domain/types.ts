@@ -50,6 +50,22 @@ export type SystemStatus = 'online' | 'safe-stop' | 'offline';
 /** Operator account role. 'admin' may edit topology and config; 'operator' may drive. */
 export type Role = 'admin' | 'operator';
 
+// ─── Users (see docs/auth.md) ──────────────────────────────────────────────────
+
+/**
+ * API-facing view of a `users` row (issue #53). Deliberately excludes
+ * `passwordHash` — that never leaves `AuthService`, matching the posture of
+ * `SensorFaultView`/`RouteFaultView` stripping runtime-only fields.
+ */
+export interface UserView {
+  id: UserId;
+  username: string;
+  role: Role;
+  createdAt: Date;
+  /** Derived: `passwordHash !== null`. Distinguishes a future WebAuthn-only account. */
+  hasPassword: boolean;
+}
+
 // ─── Track Topology ───────────────────────────────────────────────────────────
 
 /**

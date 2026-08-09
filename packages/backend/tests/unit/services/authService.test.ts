@@ -1,7 +1,21 @@
 import { describe, it, expect, vi } from 'vitest';
-import { AuthService, InvalidCredentialsError } from '../../../src/services/AuthService';
+import {
+  AuthService,
+  InvalidCredentialsError,
+  InvalidCurrentPasswordError,
+  PasswordPolicyError,
+  SelfMutationError,
+  UserNotFoundError,
+  ValidatedSession,
+} from '../../../src/services/AuthService';
 import { hashPassword, hashSessionToken } from '../../../src/domain/auth';
-import { IAuthRepository, SessionRecord, UserRecord } from '../../../src/ports/IAuthRepository';
+import {
+  IAuthRepository,
+  LastAdminError,
+  SessionRecord,
+  UsernameTakenError,
+  UserRecord,
+} from '../../../src/ports/IAuthRepository';
 
 const silentLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -40,6 +54,20 @@ function makeRepo(initialUsers: UserRecord[] = []): IAuthRepository {
       return updated;
     }),
     hasAnyUsers: vi.fn(async () => users.size > 0),
+    listUsers: vi.fn(async () => [...users.values()].sort((a, b) => a.username.localeCompare(b.username))),
+    updateUserRole: vi.fn(async (id: string, role: UserRecord['role']) => {
+      const existing = users.get(id);
+      if (!existing) throw new Error(`User ${id} not found`);
+      const updated = { ...existing, role };
+      users.set(id, updated);
+      usersByName.set(updated.username, updated);
+      return updated;
+    }),
+    deleteUser: vi.fn(async (id: string) => {
+      const existing = users.get(id);
+      users.delete(id);
+      if (existing) usersByName.delete(existing.username);
+    }),
     createSession: vi.fn(async (data) => {
       const created: SessionRecord = { id: `s-${sessions.size + 1}`, createdAt: new Date(), ...data };
       sessions.set(created.id, created);
@@ -208,5 +236,217 @@ describe('AuthService — logout', () => {
 
     await expect(service.logout('never-existed')).resolves.toBeUndefined();
     expect(repo.deleteSession).not.toHaveBeenCalled();
+  });
+});
+
+function actorFor(user: UserRecord): ValidatedSession {
+  return {
+    sessionId: `session-for-${user.id}`,
+    userId: user.id,
+    username: user.username,
+    role: user.role,
+    expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+  };
+}
+
+describe('AuthService — user management (issue #53)', () => {
+  it('createUser hashes the password and never stores/returns it', async () => {
+    const admin = user({ id: 'admin-1', username: 'admin', role: 'admin' });
+    const repo = makeRepo([admin]);
+    const service = new AuthService(repo, silentLogger);
+
+    const created = await service.createUser(
+      { username: 'newop', password: 'a-good-password', role: 'operator' },
+      actorFor(admin),
+    );
+
+    expect(created.username).toBe('newop');
+    expect(created.role).toBe('operator');
+    expect(created.hasPassword).toBe(true);
+    expect((created as Record<string, unknown>).passwordHash).toBeUndefined();
+  });
+
+  it('creating a duplicate username throws UsernameTakenError, and the repo createUser was never called', async () => {
+    const admin = user({ id: 'admin-1', username: 'admin', role: 'admin' });
+    const existing = user({ id: 'u2', username: 'taken', role: 'operator' });
+    const repo = makeRepo([admin, existing]);
+    const service = new AuthService(repo, silentLogger);
+
+    await expect(
+      service.createUser({ username: 'taken', password: 'a-good-password', role: 'operator' }, actorFor(admin)),
+    ).rejects.toThrow(UsernameTakenError);
+    expect(repo.createUser).not.toHaveBeenCalled();
+  });
+
+  it('creating with a 7-character password throws PasswordPolicyError', async () => {
+    const admin = user({ id: 'admin-1', username: 'admin', role: 'admin' });
+    const repo = makeRepo([admin]);
+    const service = new AuthService(repo, silentLogger);
+
+    await expect(
+      service.createUser({ username: 'shortpw', password: '1234567', role: 'operator' }, actorFor(admin)),
+    ).rejects.toThrow(PasswordPolicyError);
+  });
+
+  it('demoting the sole admin throws LastAdminError, and updateUserRole was never called', async () => {
+    const admin = user({ id: 'admin-1', username: 'admin', role: 'admin' });
+    const other = user({ id: 'other', username: 'other', role: 'operator' });
+    const repo = makeRepo([admin, other]);
+    const service = new AuthService(repo, silentLogger);
+
+    await expect(service.changeUserRole('admin-1', 'operator', actorFor(other))).rejects.toThrow(
+      LastAdminError,
+    );
+    expect(repo.updateUserRole).not.toHaveBeenCalled();
+  });
+
+  it('deleting the sole admin throws LastAdminError, and deleteUser was never called', async () => {
+    const admin = user({ id: 'admin-1', username: 'admin', role: 'admin' });
+    const other = user({ id: 'other', username: 'other', role: 'operator' });
+    const repo = makeRepo([admin, other]);
+    const service = new AuthService(repo, silentLogger);
+
+    await expect(service.deleteUser('admin-1', actorFor(other))).rejects.toThrow(LastAdminError);
+    expect(repo.deleteUser).not.toHaveBeenCalled();
+  });
+
+  it('demoting oneself throws SelfMutationError even with two admins present', async () => {
+    const admin1 = user({ id: 'admin-1', username: 'admin1', role: 'admin' });
+    const admin2 = user({ id: 'admin-2', username: 'admin2', role: 'admin' });
+    const repo = makeRepo([admin1, admin2]);
+    const service = new AuthService(repo, silentLogger);
+
+    await expect(service.changeUserRole('admin-1', 'operator', actorFor(admin1))).rejects.toThrow(
+      SelfMutationError,
+    );
+  });
+
+  it('deleting oneself throws SelfMutationError even with two admins present', async () => {
+    const admin1 = user({ id: 'admin-1', username: 'admin1', role: 'admin' });
+    const admin2 = user({ id: 'admin-2', username: 'admin2', role: 'admin' });
+    const repo = makeRepo([admin1, admin2]);
+    const service = new AuthService(repo, silentLogger);
+
+    await expect(service.deleteUser('admin-1', actorFor(admin1))).rejects.toThrow(SelfMutationError);
+  });
+
+  it('changeUserRole on an unknown user throws UserNotFoundError', async () => {
+    const admin = user({ id: 'admin-1', username: 'admin', role: 'admin' });
+    const repo = makeRepo([admin]);
+    const service = new AuthService(repo, silentLogger);
+
+    await expect(service.changeUserRole('nobody', 'operator', actorFor(admin))).rejects.toThrow(
+      UserNotFoundError,
+    );
+  });
+
+  it('a successful role change revokes the target session — a subsequent validateSession returns null', async () => {
+    const admin = user({ id: 'admin-1', username: 'admin', role: 'admin' });
+    const admin2 = user({ id: 'admin-2', username: 'admin2', role: 'admin' });
+    const repo = makeRepo([admin, admin2]);
+    const service = new AuthService(repo, silentLogger);
+
+    const token = 'admin2-token';
+    await repo.createSession({
+      userId: 'admin-2',
+      tokenHash: hashSessionToken(token),
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+    });
+
+    await service.changeUserRole('admin-2', 'operator', actorFor(admin));
+
+    expect(repo.deleteSessionsForUser).toHaveBeenCalledWith('admin-2');
+    await expect(service.validateSession(token)).resolves.toBeNull();
+  });
+
+  it('a successful delete revokes the target session', async () => {
+    const admin = user({ id: 'admin-1', username: 'admin', role: 'admin' });
+    const operator = user({ id: 'op-1', username: 'op1', role: 'operator' });
+    const repo = makeRepo([admin, operator]);
+    const service = new AuthService(repo, silentLogger);
+
+    const token = 'op-token';
+    await repo.createSession({
+      userId: 'op-1',
+      tokenHash: hashSessionToken(token),
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+    });
+
+    await service.deleteUser('op-1', actorFor(admin));
+
+    expect(repo.deleteSessionsForUser).toHaveBeenCalledWith('op-1');
+    await expect(service.validateSession(token)).resolves.toBeNull();
+  });
+
+  it('a successful admin reset revokes the target session', async () => {
+    const admin = user({ id: 'admin-1', username: 'admin', role: 'admin' });
+    const operator = user({ id: 'op-1', username: 'op1', role: 'operator', passwordHash: await hashPassword('old-password') });
+    const repo = makeRepo([admin, operator]);
+    const service = new AuthService(repo, silentLogger);
+
+    const token = 'op-token';
+    await repo.createSession({
+      userId: 'op-1',
+      tokenHash: hashSessionToken(token),
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+    });
+
+    await service.resetUserPassword('op-1', 'a-new-password', actorFor(admin));
+
+    expect(repo.deleteSessionsForUser).toHaveBeenCalledWith('op-1');
+    await expect(service.validateSession(token)).resolves.toBeNull();
+  });
+
+  it('changeOwnPassword with the wrong current password throws InvalidCurrentPasswordError, stored hash unchanged', async () => {
+    const passwordHash = await hashPassword('correct-password');
+    const operator = user({ id: 'op-1', username: 'op1', role: 'operator', passwordHash });
+    const repo = makeRepo([operator]);
+    const service = new AuthService(repo, silentLogger);
+
+    await expect(
+      service.changeOwnPassword('op-1', 'wrong-password', 'a-new-password'),
+    ).rejects.toThrow(InvalidCurrentPasswordError);
+    expect(repo.updateUserPassword).not.toHaveBeenCalled();
+  });
+
+  it('changeOwnPassword on a passwordHash: null user throws InvalidCurrentPasswordError', async () => {
+    const operator = user({ id: 'op-1', username: 'op1', role: 'operator', passwordHash: null });
+    const repo = makeRepo([operator]);
+    const service = new AuthService(repo, silentLogger);
+
+    await expect(
+      service.changeOwnPassword('op-1', 'anything', 'a-new-password'),
+    ).rejects.toThrow(InvalidCurrentPasswordError);
+  });
+
+  it('a successful changeOwnPassword revokes the caller own session', async () => {
+    const passwordHash = await hashPassword('correct-password');
+    const operator = user({ id: 'op-1', username: 'op1', role: 'operator', passwordHash });
+    const repo = makeRepo([operator]);
+    const service = new AuthService(repo, silentLogger);
+
+    const token = 'own-token';
+    await repo.createSession({
+      userId: 'op-1',
+      tokenHash: hashSessionToken(token),
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+    });
+
+    await service.changeOwnPassword('op-1', 'correct-password', 'a-new-password');
+
+    expect(repo.deleteSessionsForUser).toHaveBeenCalledWith('op-1');
+    await expect(service.validateSession(token)).resolves.toBeNull();
+  });
+
+  it('listUsers output contains no passwordHash key', async () => {
+    const admin = user({ id: 'admin-1', username: 'admin', role: 'admin', passwordHash: 'x' });
+    const repo = makeRepo([admin]);
+    const service = new AuthService(repo, silentLogger);
+
+    const list = await service.listUsers();
+
+    for (const u of list) {
+      expect((u as Record<string, unknown>).passwordHash).toBeUndefined();
+    }
   });
 });

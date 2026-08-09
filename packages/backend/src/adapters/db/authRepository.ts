@@ -7,13 +7,40 @@
  * selected fields — matching the `parseBlockEdgeRow` precedent.
  */
 
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { randomUUID } from 'crypto';
-import { IAuthRepository, SessionRecord, UserRecord } from '../../ports/IAuthRepository';
-import { SessionId, UserId } from '../../domain/types';
+import {
+  IAuthRepository,
+  LastAdminError,
+  SessionRecord,
+  UsernameTakenError,
+  UserRecord,
+} from '../../ports/IAuthRepository';
+import { Role, SessionId, UserId } from '../../domain/types';
 import { parseSessionRow, parseUserRow } from '../../services/validation';
 import { sessions, users } from './schema';
+
+/**
+ * Translates a better-sqlite3 constraint failure on a `users` write into the
+ * `IAuthRepository` error the port declares, so `AuthService` never has to
+ * know about SQLite error codes. Anything else is rethrown untouched — the
+ * only failures this repository knows how to interpret are the last-admin
+ * trigger pair (migration `0006_users_last_admin_guard.sql`) and the
+ * username unique index.
+ */
+function translateUserWriteError(err: unknown, username?: string): never {
+  if (err instanceof Error) {
+    const code = (err as { code?: string }).code;
+    if (code === 'SQLITE_CONSTRAINT_TRIGGER' && err.message.includes('users_last_admin')) {
+      throw new LastAdminError();
+    }
+    if (code === 'SQLITE_CONSTRAINT_UNIQUE' && err.message.includes('users.username') && username) {
+      throw new UsernameTakenError(username);
+    }
+  }
+  throw err;
+}
 
 export class DrizzleAuthRepository implements IAuthRepository {
   /**
@@ -39,16 +66,20 @@ export class DrizzleAuthRepository implements IAuthRepository {
   async createUser(data: Omit<UserRecord, 'id' | 'createdAt'>): Promise<UserRecord> {
     const id = randomUUID();
     const createdAt = new Date();
-    this.db
-      .insert(users)
-      .values({
-        id,
-        username: data.username,
-        passwordHash: data.passwordHash,
-        role: data.role,
-        createdAt,
-      })
-      .run();
+    try {
+      this.db
+        .insert(users)
+        .values({
+          id,
+          username: data.username,
+          passwordHash: data.passwordHash,
+          role: data.role,
+          createdAt,
+        })
+        .run();
+    } catch (err) {
+      translateUserWriteError(err, data.username);
+    }
     const created = await this.getUserById(id);
     if (!created) throw new Error(`User ${id} not found after create`);
     return created;
@@ -64,6 +95,30 @@ export class DrizzleAuthRepository implements IAuthRepository {
   async hasAnyUsers(): Promise<boolean> {
     const rows = this.db.select({ id: users.id }).from(users).limit(1).all();
     return rows.length > 0;
+  }
+
+  async listUsers(): Promise<UserRecord[]> {
+    const rows = this.db.select().from(users).orderBy(asc(users.username)).all();
+    return rows.map(parseUserRow);
+  }
+
+  async updateUserRole(id: UserId, role: Role): Promise<UserRecord> {
+    try {
+      this.db.update(users).set({ role }).where(eq(users.id, id)).run();
+    } catch (err) {
+      translateUserWriteError(err);
+    }
+    const updated = await this.getUserById(id);
+    if (!updated) throw new Error(`User ${id} not found after role update`);
+    return updated;
+  }
+
+  async deleteUser(id: UserId): Promise<void> {
+    try {
+      this.db.delete(users).where(eq(users.id, id)).run();
+    } catch (err) {
+      translateUserWriteError(err);
+    }
   }
 
   // ─── Sessions ───────────────────────────────────────────────────────────────

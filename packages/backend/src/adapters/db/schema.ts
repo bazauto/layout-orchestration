@@ -237,6 +237,17 @@ export const routeHolds = sqliteTable(
  * its own `webauthn_credentials` table keyed on `user_id`, not as a column
  * here — a NULL `passwordHash` is what makes a WebAuthn-only account (no
  * password at all) representable without a fake placeholder hash.
+ *
+ * NOT VISIBLE HERE: migration `0006_users_last_admin_guard.sql` attaches two
+ * triggers, `users_last_admin_no_demote` (`BEFORE UPDATE OF role`) and
+ * `users_last_admin_no_delete` (`BEFORE DELETE`), that abort a write which
+ * would leave the layout with zero admin accounts (Q1, docs/auth.md).
+ * Drizzle has no trigger DSL, so this is the one migration in the repo that
+ * lands without a corresponding `schema.ts` change — deliberately generated
+ * with `drizzle-kit generate --custom` rather than `db:generate`. This
+ * comment exists so the schema file still tells the truth about what the
+ * table enforces. Removing the triggers means a new migration with
+ * `DROP TRIGGER`, never editing `0006_users_last_admin_guard.sql` in place.
  */
 export const users = sqliteTable(
   'users',

@@ -12,6 +12,19 @@ export type SystemMode = 'manual' | 'auto' | 'hybrid';
 /** Operator account role. 'admin' may edit topology and config; 'operator' may drive. */
 export type Role = 'admin' | 'operator';
 
+/**
+ * Wire projection of the backend's `UserView` (#53, `domain/types.ts`).
+ * `createdAt` is ISO 8601; there is no `passwordHash` field on the wire at
+ * all — the backend strips it before the record ever leaves `AuthService`.
+ */
+export interface UserView {
+  id: string;
+  username: string;
+  role: Role;
+  createdAt: string;
+  hasPassword: boolean;
+}
+
 // ─── REST / config types (mirror backend records) ────────────────────────────
 
 export interface BlockRecord {

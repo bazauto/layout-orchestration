@@ -351,3 +351,48 @@ already throwing rather than warn-and-return, and DB-row corruption already
 surfaces as Safe-Stop via the topology load path (#12) or a 500, so those were
 left unchanged. `docs/mqtt-contract.md` did not change — the code moved to
 meet it.
+
+**#53 landed**: local authentication (#20) shipped with no way to create an
+`operator` account — every path that could create a user hardcoded `role:
+'admin'` — so the entire operator half of the role model was unreachable
+short of hand-editing SQLite. `IAuthRepository` gained `listUsers`,
+`updateUserRole`, `deleteUser` (plus `LastAdminError`/`UsernameTakenError`,
+declared on the port so both `AuthService` and `DrizzleAuthRepository` can
+throw them without either importing the other's module); `AuthService` owns
+the policy (`listUsers`/`createUser`/`changeUserRole`/`deleteUser`/
+`resetUserPassword`/`changeOwnPassword`) the same way `ReservationService`
+owns route-locking policy over `LayoutStateManager` — the repository stays
+storage. Deleting or demoting the layout's last admin is refused at both
+layers: `AuthService` from a `listUsers()` pre-check
+(`domain/users.ts#wouldRemoveLastAdmin`), and — because that service-level
+check has the same read-then-write race #11 argued against for route
+exclusivity — a SQLite trigger pair (`users_last_admin_no_demote`/
+`users_last_admin_no_delete`, migration `0006_users_last_admin_guard.sql`)
+at the database. That migration is deliberately the one place in the repo
+that touches persistence without a `schema.ts` change: a trigger can't be
+expressed in Drizzle's schema DSL, so it was generated with
+`drizzle-kit generate --custom` rather than `db:generate`, and `schema.ts`
+carries a comment above the `users` table recording that the triggers exist
+so the file still tells the truth. A role change and a deletion both call
+`deleteSessionsForUser` immediately after the write succeeds, closing the
+same "auth enforced only at the connection edge" gap the WebSocket upgrade
+hook already relies on — a demoted or deleted user holding an open `/ws`
+would otherwise keep their old authority indefinitely. Six routes:
+`GET|POST /api/users`, `PATCH|DELETE /api/users/:id`,
+`POST /api/users/:id/password` — all `requireAdmin`, since an operator has
+no reason to enumerate accounts — and `POST /api/auth/change-password`,
+reachable by any authenticated user and rate-limited at login parity because
+verifying the caller's current password makes it the same guessing oracle
+login is; a wrong current password there is 403, not 401, so the frontend's
+app-wide 401 handler doesn't bounce the user to the login screen on a typo.
+An admin may not change their own role or delete themselves (409
+`SelfMutationError`) even with another admin present — handover is "create
+the second admin, then they demote you" — but may reset their own password
+exactly like anyone else's, since a hijacked admin session could already do
+that regardless. Frontend: a Users tab on the Configure screen, rendered
+only for `role === 'admin'` (`useUsers`, `UsersTab`), and a
+`ChangePasswordDialog` reachable by any logged-in user from the session area
+beside "Log out". Full decision record — why, not just what — is
+`docs/auth.md`'s "User and role management" section; read it before touching
+`AuthService`'s user-management methods, `domain/users.ts`, or the trigger
+migration.
