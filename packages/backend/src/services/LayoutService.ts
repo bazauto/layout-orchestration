@@ -27,6 +27,7 @@ import {
   LayoutEvent,
   LayoutId,
   LocoState,
+  NameBook,
   PointCommand,
   PointId,
   PointState,
@@ -58,10 +59,13 @@ import {
 import { deriveBlockOccupancy, isSensorFaultArmed, toSensorFaultView } from '../domain/occupancy';
 import { TrackGraph } from '../domain/graph';
 import { toRouteFaultView } from '../domain/routeLocking';
+import { blockLabel, layoutLabel, pluralise, pointLabel, sensorLabel } from '../domain/naming';
 import { IDccController } from '../ports/IDccController';
 import { IMqttAdapter } from '../ports/IMqttAdapter';
 import { ILayoutRepository, PointRecord, SensorRecord } from '../ports/ILayoutRepository';
+import { INameBook } from '../ports/INameBook';
 import { SensorCreateInput, sensorReadingSchema, SensorUpdateInput } from './validation';
+import { INERT_NAME_BOOK } from './nameBook';
 import { loadTopology, TopologyLoadResult } from './topologyLoader';
 import {
   GrantOutcome,
@@ -94,24 +98,31 @@ export class PointLockedError extends Error {
   constructor(
     readonly pointId: PointId,
     readonly routeId: RouteId,
+    pointLabelText?: string,
   ) {
-    super(`Point ${pointId} is locked by route ${routeId}. Use force=true to override.`);
+    super(`Point ${pointLabelText ?? pointId} is locked by route ${routeId}. Use force=true to override.`);
     this.name = 'PointLockedError';
   }
 }
 
 /** Thrown by sensor-config/fault-recovery methods when a sensor id does not resolve in the given layout (see docs/sensor-fault-recovery.md). */
 export class SensorNotFoundError extends Error {
-  constructor(readonly sensorId: string) {
-    super(`Sensor ${sensorId} not found`);
+  constructor(
+    readonly sensorId: string,
+    sensorLabelText?: string,
+  ) {
+    super(`Sensor ${sensorLabelText ?? sensorId} not found`);
     this.name = 'SensorNotFoundError';
   }
 }
 
 /** Thrown by `acknowledgeSensorFault` when the named sensor has no fault latched. */
 export class SensorNotFaultedError extends Error {
-  constructor(readonly sensorId: string) {
-    super(`Sensor ${sensorId} has no active fault`);
+  constructor(
+    readonly sensorId: string,
+    sensorLabelText?: string,
+  ) {
+    super(`Sensor ${sensorLabelText ?? sensorId} has no active fault`);
     this.name = 'SensorNotFaultedError';
   }
 }
@@ -122,9 +133,13 @@ export class SensorFaultNotArmedError extends Error {
     readonly sensorId: string,
     readonly consecutiveValidReadings: number,
     readonly requiredValidReadings: number,
+    sensorLabelText?: string,
   ) {
     super(
-      `Sensor "${sensorId}" fault is not yet armed: ${requiredValidReadings - consecutiveValidReadings} more consecutive valid reading(s) required`,
+      // No manual quoting here (unlike the pre-#54 message) — sensorLabel
+      // already quotes the name when one is known, and the raw-id fallback
+      // with no book matches the D8 degradation contract for `describe*`.
+      `Sensor ${sensorLabelText ?? sensorId} fault is not yet armed: ${requiredValidReadings - consecutiveValidReadings} more consecutive valid reading(s) required`,
     );
     this.name = 'SensorFaultNotArmedError';
   }
@@ -176,6 +191,7 @@ export class LayoutService extends EventEmitter {
     private readonly reservations: ReservationService,
     private readonly log: LayoutServiceLogger,
     options?: Partial<LayoutServiceOptions>,
+    private readonly names: INameBook = INERT_NAME_BOOK,
   ) {
     super();
     this.options = { ...DEFAULT_LAYOUT_SERVICE_OPTIONS, ...options };
@@ -283,6 +299,7 @@ export class LayoutService extends EventEmitter {
     this.emit('event', { type: 'LOCO_STATE', payload: locoState } satisfies LayoutEvent);
     this.log.info('[LayoutService] Throttle command applied', {
       address: cmd.locoAddress,
+      locoName: this.names.get().locos.get(cmd.locoAddress),
       speed: cmd.speed,
       direction: cmd.direction,
     });
@@ -316,7 +333,7 @@ export class LayoutService extends EventEmitter {
     const pointState = state.points.get(cmd.pointId);
     if (pointState?.locked) {
       if (!cmd.force) {
-        throw new PointLockedError(cmd.pointId, pointState.lockedByRoute!);
+        throw new PointLockedError(cmd.pointId, pointState.lockedByRoute!, pointLabel(cmd.pointId, this.names.get()));
       }
       // D6: force is refused outright in auto mode (no manual authority in
       // auto). Otherwise permitted, and it CANCELS the route holding the
@@ -352,7 +369,9 @@ export class LayoutService extends EventEmitter {
       (p) => p.id === cmd.pointId,
     );
     if (!pointRecord) {
-      throw new Error(`Point ${cmd.pointId} not found in layout ${this.layoutId}`);
+      throw new Error(
+        `Point ${pointLabel(cmd.pointId, this.names.get())} not found in layout ${layoutLabel(this.layoutId!, this.names.get())}`,
+      );
     }
 
     await this.dcc.setPoint(pointRecord.dccAddress, cmd.position);
@@ -362,6 +381,7 @@ export class LayoutService extends EventEmitter {
     this.emit('event', { type: 'POINT_STATE', payload: updated } satisfies LayoutEvent);
     this.log.info('[LayoutService] Point command applied', {
       pointId: cmd.pointId,
+      pointName: this.names.get().points.get(cmd.pointId),
       position: cmd.position,
     });
   }
@@ -422,6 +442,8 @@ export class LayoutService extends EventEmitter {
     if (!outcome.granted) {
       this.log.warn('[LayoutService] Route request rejected', {
         layoutId: this.layoutId,
+        locoAddress: request.locoAddress,
+        locoName: this.names.get().locos.get(request.locoAddress),
         rejections: outcome.rejections,
       });
       return outcome;
@@ -449,6 +471,7 @@ export class LayoutService extends EventEmitter {
       layoutId: this.layoutId,
       routeId: reservation.id,
       locoAddress: reservation.locoAddress,
+      locoName: this.names.get().locos.get(reservation.locoAddress),
     });
     return outcome;
   }
@@ -462,7 +485,9 @@ export class LayoutService extends EventEmitter {
     reservation: RouteReservation,
     failures: PointCommandFailure[],
   ): Promise<GrantOutcome> {
-    const reason = `route ${reservation.id} abandoned — ${failures.length} point command(s) rejected: ${failures
+    // The DCC adapter's error text inside each `failure.message` is not
+    // named/bounded by #54 — pre-existing and out of scope (see docs/naming.md).
+    const reason = `route ${reservation.id} abandoned — ${pluralise(failures.length, 'point command')} rejected: ${failures
       .map((f) => f.message)
       .join('; ')}`;
 
@@ -470,6 +495,7 @@ export class LayoutService extends EventEmitter {
       layoutId: this.layoutId,
       routeId: reservation.id,
       locoAddress: reservation.locoAddress,
+      locoName: this.names.get().locos.get(reservation.locoAddress),
       failures: failures.map((f) => f.message),
     });
 
@@ -530,7 +556,7 @@ export class LayoutService extends EventEmitter {
     const failures = (await this.commandPointHolds(result.pointsToRecommand)).map((f) => f.message);
 
     if (failures.length > 0) {
-      const reason = `resume refused — ${failures.length} point command(s) failed: ${failures.join('; ')}`;
+      const reason = `resume refused — ${pluralise(failures.length, 'point command')} failed: ${failures.join('; ')}`;
       this.log.error('[LayoutService] Resume rolled back — point re-command failed', {
         layoutId: this.layoutId,
         routeId,
@@ -580,6 +606,11 @@ export class LayoutService extends EventEmitter {
     return this.layoutId;
   }
 
+  /** The current `NameBook` (#54), for the transport layer to render an HTTP-body-only string (D9) — `EMPTY_NAME_BOOK` before the first refresh or with no `INameBook` injected. */
+  getNames(): NameBook {
+    return this.names.get();
+  }
+
   /**
    * Reloads and re-validates the track topology for the running layout,
    * applying Safe-Stop if it is invalid. Called on startup (after blocks and
@@ -598,7 +629,14 @@ export class LayoutService extends EventEmitter {
     }
     const layoutId = this.layoutId;
 
-    const result = await loadTopology(this.repo, layoutId);
+    // Refresh the name book BEFORE loading topology, so a fatal-violation
+    // Safe-Stop reason is already named (D5). D10 guards the corrupt-row
+    // case this ordering creates: `NameBookCache.refresh` narrowly catches
+    // `BlockEdgeRowInvalidError` itself, so it can never be the thing that
+    // escapes `loadTopology`'s own narrow catch below and regresses #10.
+    await this.names.refresh(layoutId);
+
+    const result = await loadTopology(this.repo, layoutId, this.names.get());
 
     this.graph = result.graph;
     this.health = { ...this.health, topologyValid: !result.fatal, topologyReason: result.reason };
@@ -723,6 +761,7 @@ export class LayoutService extends EventEmitter {
       this.log.warn('[LayoutService] Sensor reading for an unregistered sensor — dropping', {
         layoutId: this.layoutId,
         sensorId,
+        sensorName: this.names.get().sensors.get(sensorId),
         topic,
       });
       return;
@@ -731,7 +770,7 @@ export class LayoutService extends EventEmitter {
     if (!obs.inService) {
       this.log.warn(
         '[LayoutService] Sensor reading from an out-of-service sensor — dropping before validation',
-        { layoutId: this.layoutId, sensorId, topic },
+        { layoutId: this.layoutId, sensorId, sensorName: this.names.get().sensors.get(sensorId), topic },
       );
       return;
     }
@@ -751,6 +790,7 @@ export class LayoutService extends EventEmitter {
         this.log.info('[LayoutService] Valid RETAINED reading while faulted — does not count toward arming', {
           layoutId: this.layoutId,
           sensorId,
+          sensorName: this.names.get().sensors.get(sensorId),
         });
         return;
       }
@@ -765,6 +805,7 @@ export class LayoutService extends EventEmitter {
       this.log.info('[LayoutService] Valid reading while faulted — counted toward recovery arming', {
         layoutId: this.layoutId,
         sensorId,
+        sensorName: this.names.get().sensors.get(sensorId),
         consecutiveValidReadings: updatedFault.consecutiveValidReadings,
         requiredValidReadings: this.options.clearAfterValidReadings,
       });
@@ -786,7 +827,10 @@ export class LayoutService extends EventEmitter {
   private async tripSensorFault(sensorId: SensorId, topic: string, parseErrorMessage: string): Promise<void> {
     const obs = this.stateManager.getSensorObservation(sensorId);
     const existing = this.health.sensorFaults[sensorId];
-    const reason = `Malformed sensor payload from sensor "${sensorId}" on topic "${topic}": ${parseErrorMessage}`;
+    // sensorLabel already quotes the name when one is known (or renders the
+    // bare id verbatim when not) — the inner quotes #27's original wording
+    // carried around a bare sensor id are redundant now and dropped.
+    const reason = `Malformed sensor payload from sensor ${sensorLabel(sensorId, this.names.get())} on topic "${topic}": ${parseErrorMessage}`;
 
     const fault: SensorFault = existing
       ? { ...existing, consecutiveValidReadings: 0 }
@@ -795,7 +839,9 @@ export class LayoutService extends EventEmitter {
     this.log.error('[LayoutService] Invalid sensor payload — entering Safe-Stop', {
       layoutId: this.layoutId,
       sensorId,
+      sensorName: this.names.get().sensors.get(sensorId),
       blockId: obs?.blockId ?? null,
+      blockName: obs?.blockId ? this.names.get().blocks.get(obs.blockId) : undefined,
       topic,
       error: parseErrorMessage,
     });
@@ -849,7 +895,7 @@ export class LayoutService extends EventEmitter {
     this.emit('event', { type: 'BLOCK_STATE', payload: updated } satisfies LayoutEvent);
 
     if (isBlockEffectivelyOccupied(updated.occupancy)) {
-      this.log.info('[LayoutService] Block occupied', { blockId });
+      this.log.info('[LayoutService] Block occupied', { blockId, blockName: this.names.get().blocks.get(blockId) });
     }
 
     if (this.layoutId) {
@@ -911,18 +957,19 @@ export class LayoutService extends EventEmitter {
     safeStopReason: string | null;
     faults: SensorFaultView[];
   }> {
-    if (this.layoutId !== layoutId) throw new SensorNotFoundError(sensorId);
+    if (this.layoutId !== layoutId) throw new SensorNotFoundError(sensorId, sensorLabel(sensorId, this.names.get()));
     const obs = this.stateManager.getSensorObservation(sensorId);
-    if (!obs) throw new SensorNotFoundError(sensorId);
+    if (!obs) throw new SensorNotFoundError(sensorId, sensorLabel(sensorId, this.names.get()));
 
     const fault = this.health.sensorFaults[sensorId];
-    if (!fault) throw new SensorNotFaultedError(sensorId);
+    if (!fault) throw new SensorNotFaultedError(sensorId, sensorLabel(sensorId, this.names.get()));
 
     if (!isSensorFaultArmed(fault, this.options.clearAfterValidReadings)) {
       throw new SensorFaultNotArmedError(
         sensorId,
         fault.consecutiveValidReadings,
         this.options.clearAfterValidReadings,
+        sensorLabel(sensorId, this.names.get()),
       );
     }
 
@@ -939,7 +986,11 @@ export class LayoutService extends EventEmitter {
     this.emitSensorFaults();
 
     const state = this.stateManager.getState();
-    this.log.info('[LayoutService] Sensor fault acknowledged', { layoutId, sensorId });
+    this.log.info('[LayoutService] Sensor fault acknowledged', {
+      layoutId,
+      sensorId,
+      sensorName: this.names.get().sensors.get(sensorId),
+    });
 
     return {
       sensorId,
@@ -977,8 +1028,16 @@ export class LayoutService extends EventEmitter {
       );
     }
 
+    // D5: refresh before recomputeBlock/evaluateAndApplySafeStop, so any
+    // reason generated downstream in this same call already carries the new
+    // name.
+    await this.names.refresh(layoutId);
     await this.recomputeBlock(created.blockId);
-    this.log.info('[LayoutService] Sensor config created', { layoutId, sensorId: created.id });
+    this.log.info('[LayoutService] Sensor config created', {
+      layoutId,
+      sensorId: created.id,
+      sensorName: created.name,
+    });
     return created;
   }
 
@@ -994,7 +1053,7 @@ export class LayoutService extends EventEmitter {
   ): Promise<SensorRecord> {
     const existingSensors = await this.repo.listSensors(layoutId);
     const existing = existingSensors.find((s) => s.id === sensorId);
-    if (!existing) throw new SensorNotFoundError(sensorId);
+    if (!existing) throw new SensorNotFoundError(sensorId, sensorLabel(sensorId, this.names.get()));
 
     const updated = await this.repo.updateSensor(sensorId, patch);
     const handler = (payload: unknown, topic: string, retained: boolean) =>
@@ -1035,6 +1094,10 @@ export class LayoutService extends EventEmitter {
       inService: updated.inService,
     });
 
+    // D5: refresh before recomputeBlock/evaluateAndApplySafeStop, so any
+    // reason generated downstream in this same call already carries the new
+    // name.
+    await this.names.refresh(layoutId);
     await this.recomputeBlock(existing.blockId);
     if (updated.blockId !== existing.blockId) {
       await this.recomputeBlock(updated.blockId);
@@ -1042,7 +1105,11 @@ export class LayoutService extends EventEmitter {
     await this.evaluateAndApplySafeStop();
     this.emitSensorFaults();
 
-    this.log.info('[LayoutService] Sensor config updated', { layoutId, sensorId });
+    this.log.info('[LayoutService] Sensor config updated', {
+      layoutId,
+      sensorId,
+      sensorName: updated.name,
+    });
     return updated;
   }
 
@@ -1050,7 +1117,7 @@ export class LayoutService extends EventEmitter {
   async deleteSensorConfig(layoutId: LayoutId, sensorId: SensorId): Promise<void> {
     const existingSensors = await this.repo.listSensors(layoutId);
     const existing = existingSensors.find((s) => s.id === sensorId);
-    if (!existing) throw new SensorNotFoundError(sensorId);
+    if (!existing) throw new SensorNotFoundError(sensorId, sensorLabel(sensorId, this.names.get()));
 
     if (existing.inService) {
       await this.mqtt.unsubscribe(existing.mqttTopic);
@@ -1064,11 +1131,18 @@ export class LayoutService extends EventEmitter {
       this.health = { ...this.health, sensorFaults: remaining };
     }
 
+    // D5: refresh before recomputeBlock/evaluateAndApplySafeStop — this
+    // sensor's name should no longer appear once its config write commits.
+    await this.names.refresh(layoutId);
     await this.recomputeBlock(existing.blockId);
     await this.evaluateAndApplySafeStop();
     this.emitSensorFaults();
 
-    this.log.info('[LayoutService] Sensor config deleted', { layoutId, sensorId });
+    this.log.info('[LayoutService] Sensor config deleted', {
+      layoutId,
+      sensorId,
+      sensorName: existing.name,
+    });
   }
 
   /** D7: a manual train has entered reserved track the system did not expect it in — stop that loco and enter Safe-Stop. Scoped to reserved track; unreserved track is #7. */
@@ -1087,7 +1161,7 @@ export class LayoutService extends EventEmitter {
     await this.raiseRouteFault({
       routeId: reservation.id,
       kind: 'unexpected-occupancy',
-      reason: `Route ${reservation.id} violated: unexpected occupancy in block ${blockId}`,
+      reason: `Route ${reservation.id} violated: unexpected occupancy in block ${blockLabel(blockId, this.names.get())}`,
       blockId,
       locoAddress: reservation.locoAddress,
     });
@@ -1119,7 +1193,7 @@ export class LayoutService extends EventEmitter {
     await this.raiseRouteFault({
       routeId: reservation.id,
       kind: 'occupancy-unknown',
-      reason: `Route ${reservation.id} suspended: block ${blockId} occupancy became unknown`,
+      reason: `Route ${reservation.id} suspended: block ${blockLabel(blockId, this.names.get())} occupancy became unknown`,
       blockId,
       locoAddress: reservation.locoAddress,
     });
@@ -1159,7 +1233,7 @@ export class LayoutService extends EventEmitter {
         failures.push({
           pointId: hold.targetId,
           requiredPosition: hold.requiredPosition,
-          message: `point ${hold.targetId} is held by the route but no longer exists`,
+          message: `point ${pointLabel(hold.targetId, this.names.get())} is held by the route but no longer exists`,
         });
         continue;
       }
@@ -1173,7 +1247,7 @@ export class LayoutService extends EventEmitter {
         failures.push({
           pointId: hold.targetId,
           requiredPosition: hold.requiredPosition,
-          message: `point ${hold.targetId} rejected ${hold.requiredPosition}: ${
+          message: `point ${pointLabel(hold.targetId, this.names.get())} rejected ${hold.requiredPosition}: ${
             err instanceof Error ? err.message : String(err)
           }`,
         });
@@ -1221,6 +1295,8 @@ export class LayoutService extends EventEmitter {
     this.log.error('[LayoutService] Route fault latched', {
       layoutId: this.layoutId,
       routeId: fault.routeId,
+      locoAddress: fault.locoAddress,
+      locoName: this.names.get().locos.get(fault.locoAddress),
       kind: fault.kind,
       reason: fault.reason,
     });
@@ -1288,7 +1364,11 @@ export class LayoutService extends EventEmitter {
     await this.dcc
       .setSpeed(locoAddress, 0, 'stop')
       .catch((err: Error) =>
-        this.log.error('[LayoutService] Failed to stop loco', { locoAddress, error: err.message }),
+        this.log.error('[LayoutService] Failed to stop loco', {
+          locoAddress,
+          locoName: this.names.get().locos.get(locoAddress),
+          error: err.message,
+        }),
       );
     const locoState = this.stateManager.updateLoco(locoAddress, { speed: 0, direction: 'stop' });
     this.publishLocoState(locoState);

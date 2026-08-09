@@ -10,7 +10,7 @@
 
 import { buildTrackGraph, TrackGraph } from '../domain/graph';
 import { describeViolations, isFatalViolation, validateTopology } from '../domain/topology';
-import { BlockEdge, LayoutId, TopologyViolation } from '../domain/types';
+import { BlockEdge, LayoutId, NameBook, TopologyViolation } from '../domain/types';
 import { ILayoutRepository } from '../ports/ILayoutRepository';
 import { BlockEdgeRowInvalidError } from './validation';
 
@@ -33,6 +33,7 @@ export interface TopologyLoadResult {
 export async function loadTopology(
   repo: ILayoutRepository,
   layoutId: LayoutId,
+  book?: NameBook,
 ): Promise<TopologyLoadResult> {
   try {
     const [blocks, points, edges] = await Promise.all([
@@ -57,7 +58,7 @@ export async function loadTopology(
       graph,
       violations,
       fatal,
-      reason: fatal ? describeViolations(fatalViolations) : null,
+      reason: fatal ? describeViolations(fatalViolations, book) : null,
     };
   } catch (err) {
     // BlockEdgeRowInvalidError means a block_edges row failed schema
