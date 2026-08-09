@@ -14,3 +14,7 @@ playwright-report/
 
 # Agent worktrees — checkouts of branches that already live in git
 .claude/worktrees/
+
+# Investigator evidence — local working notes and repro tests. The durable
+# record of anything worth keeping is the GitHub issue the investigation filed.
+.claude/investigations/
