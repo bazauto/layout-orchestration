@@ -489,6 +489,26 @@ export interface BrakingStopExpectation {
   forbiddenBlockIds: BlockId[];
 }
 
+// ─── Naming (see docs/naming.md) ───────────────────────────────────────────────
+
+/**
+ * Id → display-name lookup used to render operator-facing strings
+ * (`domain/naming.ts`'s `label`/`*Label` helpers) instead of a bare UUID.
+ * Passed as data to every `describe*` function — never a port or a service,
+ * so the domain stays dependency-free. Values are pre-truncated to
+ * `MAX_LABEL_CHARS` at build time (see `services/nameBook.ts#buildNameBook`).
+ */
+export interface NameBook {
+  layouts: ReadonlyMap<LayoutId, string>;
+  blocks: ReadonlyMap<BlockId, string>;
+  points: ReadonlyMap<PointId, string>;
+  sensors: ReadonlyMap<SensorId, string>;
+  locos: ReadonlyMap<LocoAddress, string>;
+  /** Derived labels ("Down Platform:north → Up Loop:south"), not names —
+   * `block_edges` has no name column. See docs/naming.md. */
+  edges: ReadonlyMap<BlockEdgeId, string>;
+}
+
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
 export interface ThrottleCommand {
