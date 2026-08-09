@@ -11,7 +11,9 @@ import fastifyRateLimit from '@fastify/rate-limit';
 import { LayoutService } from '../../services/LayoutService';
 import { TopologyService } from '../../services/TopologyService';
 import { AuthService } from '../../services/AuthService';
+import { INERT_NAME_BOOK } from '../../services/nameBook';
 import { ILayoutRepository } from '../../ports/ILayoutRepository';
+import { INameBook } from '../../ports/INameBook';
 import { layoutRoutes } from './routes/layouts';
 import { locoRoutes } from './routes/locos';
 import { pointRoutes } from './routes/points';
@@ -40,6 +42,7 @@ export async function buildServer(
   topologyService: TopologyService,
   authService: AuthService,
   authConfig: AuthTransportConfig,
+  nameBook: INameBook = INERT_NAME_BOOK,
 ) {
   const fastify = Fastify({ logger: { level: logLevel } });
 
@@ -75,9 +78,9 @@ export async function buildServer(
 
   // REST API routes
   await layoutRoutes(fastify, repo);
-  await locoRoutes(fastify, repo);
-  await blockRoutes(fastify, repo, topologyService);
-  await pointRoutes(fastify, repo, topologyService);
+  await locoRoutes(fastify, repo, nameBook);
+  await blockRoutes(fastify, repo, topologyService, nameBook);
+  await pointRoutes(fastify, repo, topologyService, nameBook);
   await sensorRoutes(fastify, repo, layoutService);
   await gridRoutes(fastify, repo);
   await edgeRoutes(fastify, topologyService);

@@ -13,6 +13,7 @@ import { FastifyInstance } from 'fastify';
 import { LayoutService, RouteNotFaultedError } from '../../../services/LayoutService';
 import { RequestedPath, RouteNotFoundError } from '../../../services/ReservationService';
 import { describeRejections } from '../../../domain/routeLocking';
+import { layoutLabel } from '../../../domain/naming';
 import { routeCancelSchema, routeRequestSchema } from '../../../services/validation';
 
 export async function routeRoutes(
@@ -52,9 +53,13 @@ export async function routeRoutes(
         path,
       });
       if (!outcome.granted) {
-        return reply
-          .status(422)
-          .send({ error: describeRejections(outcome.rejections), rejections: outcome.rejections });
+        return reply.status(422).send({
+          // Renders at the transport edge (D9) — this 422 body is neither
+          // persisted nor published, unlike the reasons baked in at
+          // generation time inside the services.
+          error: describeRejections(outcome.rejections, layoutService.getNames()),
+          rejections: outcome.rejections,
+        });
       }
       return reply.status(201).send(outcome.reservation);
     },
@@ -135,9 +140,9 @@ export async function routeRoutes(
     '/api/layouts/:layoutId/route-faults',
     async (req, reply) => {
       if (req.params.layoutId !== layoutService.getLayoutId()) {
-        return reply
-          .status(404)
-          .send({ error: `Layout ${req.params.layoutId} is not the running layout` });
+        return reply.status(404).send({
+          error: `Layout ${layoutLabel(req.params.layoutId, layoutService.getNames())} is not the running layout`,
+        });
       }
       return { faults: layoutService.getRouteFaults() };
     },

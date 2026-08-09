@@ -147,11 +147,19 @@ async function main() {
   const authService = new AuthService(authRepo, adapterLogger);
   await layoutService.start(activeLayoutId);
 
-  const server = await buildServer(layoutService, repo, config.log.level, topologyService, authService, {
-    cookieName: config.auth.cookieName,
-    cookieSecure: config.auth.cookieSecure,
-    corsAllowedOrigins: config.cors.allowedOrigins,
-  });
+  const server = await buildServer(
+    layoutService,
+    repo,
+    config.log.level,
+    topologyService,
+    authService,
+    {
+      cookieName: config.auth.cookieName,
+      cookieSecure: config.auth.cookieSecure,
+      corsAllowedOrigins: config.cors.allowedOrigins,
+    },
+    nameBook,
+  );
   await server.listen({ port: config.http.port, host: config.http.host });
 
   // ── Graceful Shutdown ─────────────────────────────────────────────────────────

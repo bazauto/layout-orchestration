@@ -13,6 +13,7 @@ import { buildServer } from '../../src/transport/http/server';
 import { LayoutService } from '../../src/services/LayoutService';
 import { TopologyService } from '../../src/services/TopologyService';
 import { ReservationService } from '../../src/services/ReservationService';
+import { NameBookCache } from '../../src/services/nameBook';
 import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
@@ -44,7 +45,14 @@ function makeRepo(): ILayoutRepository {
   let sensors: SensorRecord[] = [SENSOR_S1];
 
   return {
-    listLayouts: vi.fn().mockResolvedValue([]),
+    // #54: includes a foreign layout too, so the "not the running layout"
+    // 404 test below can assert it gets named — buildNameBook's `layouts`
+    // map is global (listLayouts takes no layoutId), not scoped to the
+    // running layout, which is what closes that inventory gap (Q2).
+    listLayouts: vi.fn().mockResolvedValue([
+      { id: LAYOUT_ID, name: 'Westgate Hollow', description: null, createdAt: new Date() },
+      { id: 'some-other-layout', name: 'Other Layout', description: null, createdAt: new Date() },
+    ]),
     getLayout: vi.fn().mockResolvedValue(null),
     createLayout: vi.fn(),
     deleteLayout: vi.fn(),
@@ -102,17 +110,19 @@ async function buildStartedTestServer(repo: ILayoutRepository) {
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
   const state = new LayoutStateManager(LAYOUT_ID);
-  const reservations = new ReservationService(repo, state, silentLogger);
-  const service = new LayoutService(dcc, mqtt, repo, state, reservations, silentLogger);
+  const nameBook = new NameBookCache(repo, LAYOUT_ID);
+  const reservations = new ReservationService(repo, state, silentLogger, nameBook);
+  const service = new LayoutService(dcc, mqtt, repo, state, reservations, silentLogger, undefined, nameBook);
   await service.start(LAYOUT_ID);
   const topologyService = new TopologyService(
     repo,
     () => Promise.resolve(),
     silentTopologyLogger,
     reservations,
+    nameBook,
   );
   const authService = await makeTestAuthService();
-  const app = await buildServer(service, repo, 'silent', topologyService, authService, TEST_AUTH_CONFIG);
+  const app = await buildServer(service, repo, 'silent', topologyService, authService, TEST_AUTH_CONFIG, nameBook);
   return { app, service, mqtt, dcc, repo };
 }
 
@@ -290,13 +300,15 @@ describe('Sensor fault-recovery routes', () => {
       expect(typeof body.faults[0].faultedAt).toBe('string');
     });
 
-    it('a foreign :layoutId is refused with 404', async () => {
+    it('a foreign :layoutId is refused with 404, naming the layout (#54)', async () => {
       await authenticateAsOperator(app);
       const res = await app.inject({
         method: 'GET',
         url: `/api/layouts/some-other-layout/sensor-faults`,
       });
       expect(res.statusCode).toBe(404);
+      const body = JSON.parse(res.body);
+      expect(body.error).toBe('Layout "Other Layout" (some-oth) is not the running layout');
     });
   });
 });

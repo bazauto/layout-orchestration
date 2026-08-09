@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
+import { INameBook } from '../../../ports/INameBook';
 import { RecordNotFoundError, TopologyService } from '../../../services/TopologyService';
 import { blockCreateSchema, blockUpdateSchema } from '../../../services/validation';
 import { requireAdmin } from '../auth/hook';
@@ -8,6 +9,7 @@ export async function blockRoutes(
   fastify: FastifyInstance,
   repo: ILayoutRepository,
   topologyService: TopologyService,
+  nameBook: INameBook,
 ): Promise<void> {
   fastify.get<{ Params: { layoutId: string } }>(
     '/api/layouts/:layoutId/blocks',
@@ -35,6 +37,9 @@ export async function blockRoutes(
         layoutId: req.params.layoutId,
         name: parsed.data.name,
       });
+      // D5: refresh after the write so the new block's name is available to
+      // the next operator-facing string that renders it.
+      await nameBook.refresh(req.params.layoutId);
       return reply.status(201).send(block);
     },
   );
@@ -51,6 +56,7 @@ export async function blockRoutes(
       }
 
       const updated = await repo.updateBlock(req.params.id, parsed.data);
+      await nameBook.refresh(req.params.layoutId);
       return reply.status(200).send(updated);
     },
   );
@@ -66,6 +72,7 @@ export async function blockRoutes(
           req.params.layoutId,
           req.params.id,
         );
+        await nameBook.refresh(req.params.layoutId);
         return reply.status(200).send(result);
       } catch (err) {
         if (err instanceof RecordNotFoundError) {
