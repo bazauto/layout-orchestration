@@ -14,6 +14,7 @@ import { buildServer } from '../../src/transport/http/server';
 import { LayoutService } from '../../src/services/LayoutService';
 import { TopologyService } from '../../src/services/TopologyService';
 import { ReservationService } from '../../src/services/ReservationService';
+import { NameBookCache } from '../../src/services/nameBook';
 import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
@@ -153,12 +154,22 @@ async function buildTestServer(repo: ILayoutRepository, options: { skipLogin?: b
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
   const state = new LayoutStateManager(LAYOUT_ID);
-  const reservations = new ReservationService(repo, state, silentLogger);
-  const service = new LayoutService(dcc, mqtt, repo, state, reservations, silentLogger);
-  const topologyService = new TopologyService(repo, () => service.reloadTopology(), silentLogger, reservations);
+  // #54: a real NameBookCache (not INERT_NAME_BOOK), so this suite proves
+  // the whole naming chain end to end — the 422 body from a route rejection
+  // is the exact case #54 was raised from.
+  const nameBook = new NameBookCache(repo, LAYOUT_ID);
+  const reservations = new ReservationService(repo, state, silentLogger, nameBook);
+  const service = new LayoutService(dcc, mqtt, repo, state, reservations, silentLogger, undefined, nameBook);
+  const topologyService = new TopologyService(
+    repo,
+    () => service.reloadTopology(),
+    silentLogger,
+    reservations,
+    nameBook,
+  );
   await service.start(LAYOUT_ID);
   const authService = await makeTestAuthService();
-  const app = await buildServer(service, repo, 'silent', topologyService, authService, TEST_AUTH_CONFIG);
+  const app = await buildServer(service, repo, 'silent', topologyService, authService, TEST_AUTH_CONFIG, nameBook);
   if (!options.skipLogin) {
     await authenticateAsAdmin(app);
   }
@@ -378,8 +389,9 @@ describe('Route reservation routes', () => {
     expect(body.rejections).toContainEqual(
       expect.objectContaining({ kind: 'no-path', destinationBlockId: 'b2' }),
     );
-    // The human-readable summary names what is in the way.
-    expect(body.error).toMatch(/block b2 is occupied/);
+    // The human-readable summary names what is in the way — #54: rendered
+    // through the live NameBookCache this suite wires up, not a raw id.
+    expect(body.error).toMatch(/block "Block 2" \(b2\) is occupied/);
   });
 
   it('POST to a destination that is the start block returns 422', async () => {
@@ -393,6 +405,17 @@ describe('Route reservation routes', () => {
       kind: 'destination-is-start',
       blockId: 'b1',
     });
+  });
+
+  it('#54: the 422 body names the block — the exact circular-route failure the issue was raised from', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/routes`,
+      payload: { locoAddress: 3, authority: 'manual', startBlockId: 'b1', destinationBlockId: 'b1' },
+    });
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body);
+    expect(body.error).toContain('destination block "Block 1" (b1) is the start block');
   });
 
   // ── Route faults (#4) ─────────────────────────────────────────────────────

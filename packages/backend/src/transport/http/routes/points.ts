@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
+import { INameBook } from '../../../ports/INameBook';
 import {
   RecordNotFoundError,
   TopologyRejectedError,
@@ -12,6 +13,7 @@ export async function pointRoutes(
   fastify: FastifyInstance,
   repo: ILayoutRepository,
   topologyService: TopologyService,
+  nameBook: INameBook,
 ): Promise<void> {
   fastify.get<{ Params: { layoutId: string } }>(
     '/api/layouts/:layoutId/points',
@@ -40,6 +42,9 @@ export async function pointRoutes(
         dccAddress: parsed.data.dccAddress,
         blockId: parsed.data.blockId,
       });
+      // D5: refresh after the write so the new point's name is available to
+      // the next operator-facing string that renders it.
+      await nameBook.refresh(req.params.layoutId);
       return reply.status(201).send(point);
     },
   );
@@ -65,6 +70,7 @@ export async function pointRoutes(
           req.params.id,
           parsed.data,
         );
+        await nameBook.refresh(req.params.layoutId);
         return reply.status(200).send(updated);
       } catch (err) {
         if (err instanceof RecordNotFoundError) {
@@ -83,6 +89,7 @@ export async function pointRoutes(
     async (req, reply) => {
       try {
         await topologyService.deletePointIfUnreferenced(req.params.layoutId, req.params.id);
+        await nameBook.refresh(req.params.layoutId);
         return reply.status(204).send();
       } catch (err) {
         if (err instanceof RecordNotFoundError) {

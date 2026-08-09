@@ -7,6 +7,7 @@ import {
   SensorNotFoundError,
 } from '../../../services/LayoutService';
 import { sensorCreateSchema, sensorUpdateSchema } from '../../../services/validation';
+import { layoutLabel } from '../../../domain/naming';
 import { requireAdmin } from '../auth/hook';
 
 export async function sensorRoutes(
@@ -124,9 +125,9 @@ export async function sensorRoutes(
     '/api/layouts/:layoutId/sensor-faults',
     async (req, reply) => {
       if (req.params.layoutId !== layoutService.getLayoutId()) {
-        return reply
-          .status(404)
-          .send({ error: `Layout ${req.params.layoutId} is not the running layout` });
+        return reply.status(404).send({
+          error: `Layout ${layoutLabel(req.params.layoutId, layoutService.getNames())} is not the running layout`,
+        });
       }
       return { faults: layoutService.getSensorFaults() };
     },

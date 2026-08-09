@@ -1,10 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
+import { INameBook } from '../../../ports/INameBook';
 import { requireAdmin } from '../auth/hook';
 
 export async function locoRoutes(
   fastify: FastifyInstance,
   repo: ILayoutRepository,
+  nameBook: INameBook,
 ): Promise<void> {
   fastify.get<{ Params: { layoutId: string } }>(
     '/api/layouts/:layoutId/locos',
@@ -34,6 +36,9 @@ export async function locoRoutes(
       maxSpeed: req.body.maxSpeed ?? 126,
       brakingFactor: req.body.brakingFactor ?? 0.5,
     });
+    // D5: refresh after the write so the new loco's name is available to
+    // the next operator-facing string that renders it.
+    await nameBook.refresh(req.params.layoutId);
     return reply.status(201).send(loco);
   });
 
@@ -45,6 +50,7 @@ export async function locoRoutes(
     { preHandler: requireAdmin },
     async (req, reply) => {
       const updated = await repo.updateLoco(req.params.id, req.body);
+      await nameBook.refresh(req.params.layoutId);
       return reply.status(200).send(updated);
     },
   );
@@ -54,6 +60,7 @@ export async function locoRoutes(
     { preHandler: requireAdmin },
     async (req, reply) => {
       await repo.deleteLoco(req.params.id);
+      await nameBook.refresh(req.params.layoutId);
       return reply.status(204).send();
     },
   );
