@@ -110,9 +110,15 @@ and quote real output — never claim passing tests you did not run.
 
 - TypeScript strict everywhere. Module systems differ per workspace — match the code you
   are editing, do not normalise:
-  - **Backend** — CommonJS (`"module": "CommonJS"`, `"moduleResolution": "Node"`, no
-    `"type"` field). Relative imports carry **no extension**: `from './types'`. Adding
-    `.js` breaks `tsc`.
+  - **Backend** — CommonJS (`"module": "Node16"`, `"moduleResolution": "Node16"`, and
+    `packages/backend/package.json` has no `"type"` field, which is what makes these
+    files CommonJS — the *root* `package.json` says `"type": "module"`, but Node reads
+    the nearest one). Static relative imports carry **no extension**:
+    `from './types'`. Adding `.js` to a static import breaks `tsc`.
+    **One exception:** a dynamic `await import('./x.js')` *requires* the extension,
+    because dynamic imports always carry ESM semantics under `Node16` resolution. The
+    only one today is the lazy `SerialDccAdapter` load in `src/index.ts`; it is
+    commented in place. Do not "fix" it to match the static rule.
   - **Frontend** — ESM (`"type": "module"`, `"module": "ESNext"`, bundler resolution).
 - Structured logging with Pino; always include `layoutId`, and `locoAddress` / `blockId` /
   `pointId` where relevant.
