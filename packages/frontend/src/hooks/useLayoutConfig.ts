@@ -50,18 +50,80 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-/** Best-effort extraction of the `error` field from a JSON error body. */
-async function extractErrorMessage(res: Response): Promise<string> {
+/**
+ * Best-effort extraction of a human-readable message from a JSON error body.
+ *
+ * A Zod rejection is sent as `{ error, details: parsed.error.flatten() }`,
+ * where `error` is a generic label ("Invalid user payload") and `details`
+ * holds the only part that tells the operator what to fix. Returning `error`
+ * alone — which this did until a short password on the Users tab surfaced as
+ * a bare "Invalid user payload" — throws that away at the last step. The
+ * field errors win when present, since they are strictly more specific.
+ *
+ * Fields are named in the output because not every schema's messages
+ * self-describe: `Password must be at least 8 characters` reads fine alone,
+ * but a bare `Required` or `Expected number, received string` from the block
+ * and sensor schemas does not.
+ */
+function flattenDetails(details: unknown): string[] {
+  if (!details || typeof details !== 'object') return [];
+  const { formErrors, fieldErrors } = details as {
+    formErrors?: unknown;
+    fieldErrors?: unknown;
+  };
+  const out: string[] = [];
+
+  if (Array.isArray(formErrors)) {
+    out.push(...formErrors.filter((m): m is string => typeof m === 'string'));
+  }
+
+  if (fieldErrors && typeof fieldErrors === 'object') {
+    for (const [field, messages] of Object.entries(fieldErrors as Record<string, unknown>)) {
+      if (!Array.isArray(messages)) continue;
+      for (const m of messages) {
+        if (typeof m === 'string') out.push(`${field}: ${m}`);
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Reads a non-2xx body **once** and derives everything callers need from it.
+ *
+ * `mutate()` previously inlined its own copy of this extraction while
+ * `extractErrorMessage` sat right above it — which is why the Users tab
+ * (#53, built on `mutate`) could not be fixed by changing the helper alone.
+ * A `Response` body can only be consumed once, so message and violations
+ * must come out of the same parse.
+ */
+async function readErrorBody(
+  res: Response,
+): Promise<{ message: string; violations?: TopologyViolation[] }> {
   try {
     const body: unknown = await res.json();
-    if (body && typeof body === 'object' && 'error' in body) {
-      const err = (body as { error: unknown }).error;
-      if (typeof err === 'string') return err;
+    if (body && typeof body === 'object') {
+      const violations =
+        'violations' in body ? (body as { violations: TopologyViolation[] }).violations : undefined;
+
+      const detail = flattenDetails((body as { details?: unknown }).details);
+      if (detail.length > 0) return { message: detail.join('; '), violations };
+
+      if ('error' in body) {
+        const err = (body as { error: unknown }).error;
+        if (typeof err === 'string') return { message: err, violations };
+      }
+      return { message: `HTTP ${res.status}`, violations };
     }
   } catch {
     // Non-JSON error body — fall back below.
   }
-  return `HTTP ${res.status}`;
+  return { message: `HTTP ${res.status}` };
+}
+
+async function extractErrorMessage(res: Response): Promise<string> {
+  return (await readErrorBody(res)).message;
 }
 
 /**
@@ -100,21 +162,7 @@ export async function mutate<T = void>(path: string, init: RequestInit): Promise
     return { ok: true, status: res.status, data };
   }
 
-  let message = `HTTP ${res.status}`;
-  let violations: TopologyViolation[] | undefined;
-  try {
-    const body: unknown = await res.json();
-    if (body && typeof body === 'object') {
-      if ('error' in body && typeof (body as { error: unknown }).error === 'string') {
-        message = (body as { error: string }).error;
-      }
-      if ('violations' in body) {
-        violations = (body as { violations: TopologyViolation[] }).violations;
-      }
-    }
-  } catch {
-    // Non-JSON error body — fall back to the status-derived message.
-  }
+  const { message, violations } = await readErrorBody(res);
   return { ok: false, status: res.status, message, violations };
 }
 

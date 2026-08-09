@@ -559,7 +559,14 @@ export const loginSchema = z
 // `.strict()`, same posture as `edgeCreateSchema` — an unexpected field is a
 // 400, not a silently ignored write.
 
-const newPasswordSchema = z.string().min(MIN_PASSWORD_LENGTH).max(MAX_PASSWORD_LENGTH);
+// Every message below is written to be shown to an admin verbatim. Zod's
+// defaults ("String must contain at least 8 character(s)") name the *type*,
+// not the field, and reach the Users tab through `extractErrorMessage` — an
+// admin needs to know how to fix the input, not what a Zod string is.
+const newPasswordSchema = z
+  .string()
+  .min(MIN_PASSWORD_LENGTH, `Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
+  .max(MAX_PASSWORD_LENGTH, `Password must be at most ${MAX_PASSWORD_LENGTH} characters`);
 
 /**
  * Write schema for `POST /api/users`. `role` is required rather than
@@ -569,7 +576,11 @@ const newPasswordSchema = z.string().min(MIN_PASSWORD_LENGTH).max(MAX_PASSWORD_L
  */
 export const userCreateSchema = z
   .object({
-    username: z.string().trim().min(1).max(64),
+    username: z
+      .string()
+      .trim()
+      .min(1, 'Username is required')
+      .max(64, 'Username must be at most 64 characters'),
     password: newPasswordSchema,
     role: roleSchema,
   })
@@ -602,7 +613,7 @@ export type PasswordResetInput = z.infer<typeof passwordResetSchema>;
 /** Write schema for `POST /api/auth/change-password` (self-service). */
 export const changePasswordSchema = z
   .object({
-    currentPassword: z.string().min(1),
+    currentPassword: z.string().min(1, 'Current password is required'),
     newPassword: newPasswordSchema,
   })
   .strict();
