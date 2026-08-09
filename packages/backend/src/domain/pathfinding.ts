@@ -26,12 +26,14 @@ import {
   BlockEndLabel,
   BlockId,
   BlockState,
+  NameBook,
   Occupancy,
   PathBlocker,
   PointId,
   PointState,
 } from './types';
 import { TrackGraph, collectPointConditions, edgesFrom } from './graph';
+import { blockLabel, pointLabel } from './naming';
 import { isBlockEffectivelyOccupied } from './safety';
 
 /**
@@ -387,15 +389,15 @@ class MinHeap<T> {
 // ─── Description ──────────────────────────────────────────────────────────────
 
 /** Human-readable summary of one blocker, for `describeRejections` and log messages. */
-export function describeBlocker(blocker: PathBlocker): string {
+export function describeBlocker(blocker: PathBlocker, book?: NameBook): string {
   switch (blocker.kind) {
     case 'block-not-clear':
-      return `block ${blocker.blockId} is ${blocker.occupancy}`;
+      return `block ${blockLabel(blocker.blockId, book)} is ${blocker.occupancy}`;
     case 'block-locked':
-      return `block ${blocker.blockId} is locked by route ${blocker.heldBy}`;
+      return `block ${blockLabel(blocker.blockId, book)} is locked by route ${blocker.heldBy}`;
     case 'point-locked':
-      return `point ${blocker.pointId} is locked by route ${blocker.heldBy}`;
+      return `point ${pointLabel(blocker.pointId, book)} is locked by route ${blocker.heldBy}`;
     case 'returns-to-start':
-      return `paths returning to the start block ${blocker.blockId} were not considered`;
+      return `paths returning to the start block ${blockLabel(blocker.blockId, book)} were not considered`;
   }
 }

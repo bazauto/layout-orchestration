@@ -7,7 +7,8 @@ import {
   findPath,
 } from '../../../src/domain/pathfinding';
 import { buildTrackGraph } from '../../../src/domain/graph';
-import { BlockEdge, BlockState, PointState } from '../../../src/domain/types';
+import { EMPTY_NAME_BOOK } from '../../../src/domain/naming';
+import { BlockEdge, BlockState, NameBook, PointState } from '../../../src/domain/types';
 
 const LAYOUT = 'layout-1';
 const NOW = new Date('2026-08-08T00:00:00Z');
@@ -518,5 +519,29 @@ describe('describeBlocker', () => {
       'point p1 is locked by route r1',
     );
     expect(describeBlocker({ kind: 'returns-to-start', blockId: 'b1' })).toContain('b1');
+  });
+
+  it('degrades to raw ids, byte-for-byte, with no book (D8)', () => {
+    expect(describeBlocker({ kind: 'block-not-clear', blockId: 'b2', occupancy: 'unknown' }, undefined)).toBe(
+      'block b2 is unknown',
+    );
+  });
+
+  it('renders quoted names when a book is supplied', () => {
+    const book: NameBook = {
+      ...EMPTY_NAME_BOOK,
+      blocks: new Map([['b2', 'Up Loop']]),
+      points: new Map([['p1', 'Yard Points']]),
+    };
+    expect(describeBlocker({ kind: 'block-not-clear', blockId: 'b2', occupancy: 'unknown' }, book)).toBe(
+      'block "Up Loop" (b2) is unknown',
+    );
+    expect(describeBlocker({ kind: 'block-locked', blockId: 'b2', heldBy: 'r1' }, book)).toBe(
+      'block "Up Loop" (b2) is locked by route r1',
+    );
+    expect(describeBlocker({ kind: 'point-locked', pointId: 'p1', heldBy: 'r1' }, book)).toBe(
+      'point "Yard Points" (p1) is locked by route r1',
+    );
+    expect(describeBlocker({ kind: 'returns-to-start', blockId: 'b2' }, book)).toContain('"Up Loop" (b2)');
   });
 });

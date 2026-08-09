@@ -21,6 +21,7 @@ import {
   BlockState,
   LayoutId,
   LocoAddress,
+  NameBook,
   Occupancy,
   PointId,
   PointState,
@@ -35,6 +36,7 @@ import {
 } from './types';
 import { TrackGraph, collectPointConditions } from './graph';
 import { describeBlocker } from './pathfinding';
+import { blockLabel, edgeLabel, locoLabel, pluralise, pointLabel } from './naming';
 import { canGrantRoute, isBlockEffectivelyOccupied } from './safety';
 
 // ─── Planning ───────────────────────────────────────────────────────────────
@@ -449,48 +451,48 @@ export function toRouteFaultView(fault: RouteFault): RouteFaultView {
 
 // ─── Description ────────────────────────────────────────────────────────────
 
-function describeRejection(rejection: RouteRejection): string {
+function describeRejection(rejection: RouteRejection, book?: NameBook): string {
   switch (rejection.kind) {
     case 'system-not-online':
       return `system is ${rejection.status}, not online`;
     case 'empty-path':
       return 'requested path has no edges';
     case 'unknown-edge':
-      return `edge ${rejection.edgeId} does not exist in the current track graph`;
+      return `edge ${edgeLabel(rejection.edgeId, book)} does not exist in the current track graph`;
     case 'path-not-connected':
       return `path is not connected at step ${rejection.index}`;
     case 'reversal-at-block':
-      return `path reverses at block ${rejection.blockId}`;
+      return `path reverses at block ${blockLabel(rejection.blockId, book)}`;
     case 'start-block-not-occupied':
-      return `start block ${rejection.blockId} is ${rejection.occupancy}, not occupied`;
+      return `start block ${blockLabel(rejection.blockId, book)} is ${rejection.occupancy}, not occupied`;
     case 'start-block-holds-other-loco':
-      return `start block ${rejection.blockId} holds loco ${rejection.locoAddress}, not the requested loco`;
+      return `start block ${blockLabel(rejection.blockId, book)} holds loco ${locoLabel(rejection.locoAddress, book)}, not the requested loco`;
     case 'block-not-clear':
-      return `block ${rejection.blockId} is ${rejection.occupancy}, not clear`;
+      return `block ${blockLabel(rejection.blockId, book)} is ${rejection.occupancy}, not clear`;
     case 'block-locked':
-      return `block ${rejection.blockId} is locked by route ${rejection.heldBy}`;
+      return `block ${blockLabel(rejection.blockId, book)} is locked by route ${rejection.heldBy}`;
     case 'point-locked':
-      return `point ${rejection.pointId} is locked by route ${rejection.heldBy}`;
+      return `point ${pointLabel(rejection.pointId, book)} is locked by route ${rejection.heldBy}`;
     case 'point-position-conflict':
-      return `point ${rejection.pointId} is required in two different positions by this path`;
+      return `point ${pointLabel(rejection.pointId, book)} is required in two different positions by this path`;
     case 'loco-already-routed':
-      return `loco ${rejection.locoAddress} already has an active route (${rejection.routeId})`;
+      return `loco ${locoLabel(rejection.locoAddress, book)} already has an active route (${rejection.routeId})`;
     case 'unknown-loco':
-      return `loco ${rejection.locoAddress} is not in the roster`;
+      return `loco ${locoLabel(rejection.locoAddress, book)} is not in the roster`;
     case 'no-graph':
       return 'no track graph is currently loaded';
     case 'unknown-block':
-      return `block ${rejection.blockId} does not exist in this layout`;
+      return `block ${blockLabel(rejection.blockId, book)} does not exist in this layout`;
     case 'destination-is-start':
-      return `destination block ${rejection.blockId} is the start block`;
+      return `destination block ${blockLabel(rejection.blockId, book)} is the start block`;
     case 'no-path':
       return rejection.blockers.length === 0
-        ? `no route exists to block ${rejection.destinationBlockId}`
-        : `no route exists to block ${rejection.destinationBlockId} — ${rejection.blockers
-            .map(describeBlocker)
-            .join('; ')}`;
+        ? `no route exists to block ${blockLabel(rejection.destinationBlockId, book)}`
+        : `no route exists to block ${blockLabel(rejection.destinationBlockId, book)} [blocked by: ${rejection.blockers
+            .map((b) => describeBlocker(b, book))
+            .join('; ')}]`;
     case 'point-command-rejected':
-      return `point ${rejection.pointId} rejected ${rejection.requiredPosition}: ${rejection.reason}`;
+      return `point ${pointLabel(rejection.pointId, book)} rejected ${rejection.requiredPosition}: ${rejection.reason}`;
   }
 }
 
@@ -500,7 +502,7 @@ function describeRejection(rejection: RouteRejection): string {
  * grant rejection list is bounded by path length, not layout size, so there
  * is no unbounded-string risk to guard against.
  */
-export function describeRejections(rejections: readonly RouteRejection[]): string {
-  const shown = rejections.map(describeRejection);
-  return `Route rejected: ${rejections.length} reason(s) — ${shown.join('; ')}`;
+export function describeRejections(rejections: readonly RouteRejection[], book?: NameBook): string {
+  const shown = rejections.map((r) => describeRejection(r, book));
+  return `Route rejected: ${pluralise(rejections.length, 'reason')} — ${shown.join('; ')}`;
 }

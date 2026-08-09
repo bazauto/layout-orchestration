@@ -121,14 +121,14 @@ describe('evaluateSystemSafeStop', () => {
       mqttConnected: true,
       dccConnected: true,
       topologyValid: false,
-      topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
+      topologyReason: 'Topology invalid: 1 violation — edge e1 is a self-loop on block b1',
       sensorFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toBe(
-      'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
+      'Topology invalid: 1 violation — edge e1 is a self-loop on block b1',
     );
   });
 
@@ -137,7 +137,7 @@ describe('evaluateSystemSafeStop', () => {
       mqttConnected: false,
       dccConnected: true,
       topologyValid: false,
-      topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
+      topologyReason: 'Topology invalid: 1 violation — edge e1 is a self-loop on block b1',
       sensorFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
@@ -181,7 +181,7 @@ describe('evaluateSystemSafeStop', () => {
       mqttConnected: true,
       dccConnected: true,
       topologyValid: false,
-      topologyReason: 'Topology invalid: 1 violation(s) — edge e1 is a self-loop on block b1',
+      topologyReason: 'Topology invalid: 1 violation — edge e1 is a self-loop on block b1',
       sensorFaults: { s1: fault() },
       routeFaults: {},
       recoveredRouteCount: 0,

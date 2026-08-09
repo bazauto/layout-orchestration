@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  describeRejections,
   evaluateOccupancyChange,
   holdsReleasableAt,
   planReservation,
@@ -7,7 +8,8 @@ import {
   ReservationView,
 } from '../../../src/domain/routeLocking';
 import { buildTrackGraph } from '../../../src/domain/graph';
-import { BlockEdge, BlockState, PointState, RouteReservation } from '../../../src/domain/types';
+import { EMPTY_NAME_BOOK } from '../../../src/domain/naming';
+import { BlockEdge, BlockState, NameBook, PointState, RouteReservation, RouteRejection } from '../../../src/domain/types';
 
 const LAYOUT = 'layout-1';
 const ROUTE_ID = 'route-new';
@@ -498,5 +500,31 @@ describe('evaluateOccupancyChange', () => {
     expect(effect.kind).toBe('release');
     if (effect.kind !== 'release') throw new Error('expected release');
     expect(effect.releasable.map((h) => h.targetId).sort()).toEqual(['b1', 'e1', 'p1']);
+  });
+});
+
+describe('describeRejections', () => {
+  const rejections: RouteRejection[] = [
+    { kind: 'destination-is-start', blockId: 'b2' },
+    { kind: 'no-path', destinationBlockId: 'b2', blockers: [{ kind: 'block-not-clear', blockId: 'b2', occupancy: 'occupied' }] },
+  ];
+
+  it('degrades to raw ids, byte-for-byte, with no book (D8)', () => {
+    expect(describeRejections(rejections)).toBe(
+      'Route rejected: 2 reasons — destination block b2 is the start block; no route exists to block b2 [blocked by: block b2 is occupied]',
+    );
+  });
+
+  it('renders quoted names when a book is supplied, with the bracketed nested-blocker form (D7)', () => {
+    const book: NameBook = { ...EMPTY_NAME_BOOK, blocks: new Map([['b2', 'Up Loop']]) };
+    expect(describeRejections(rejections, book)).toBe(
+      'Route rejected: 2 reasons — destination block "Up Loop" (b2) is the start block; no route exists to block "Up Loop" (b2) [blocked by: block "Up Loop" (b2) is occupied]',
+    );
+  });
+
+  it('uses the singular for one reason', () => {
+    expect(describeRejections([{ kind: 'destination-is-start', blockId: 'b2' }])).toBe(
+      'Route rejected: 1 reason — destination block b2 is the start block',
+    );
   });
 });

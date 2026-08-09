@@ -14,7 +14,8 @@
  * stays", for the reasoning (#21).
  */
 
-import { BlockEdge, BlockEdgeId, BlockId, LayoutId, PointId, TopologyViolation } from './types';
+import { BlockEdge, BlockEdgeId, BlockId, LayoutId, NameBook, PointId, TopologyViolation } from './types';
+import { blockLabel, edgeLabel, layoutLabel, pluralise, pointLabel } from './naming';
 
 export interface TopologyContext {
   blockIds: ReadonlySet<BlockId>;
@@ -190,20 +191,20 @@ export function isFatalViolation(violation: TopologyViolation): boolean {
   return violation.kind !== 'unknown-point';
 }
 
-function describeViolation(violation: TopologyViolation): string {
+function describeViolation(violation: TopologyViolation, book?: NameBook): string {
   switch (violation.kind) {
     case 'layout-mismatch':
-      return `edge ${violation.edgeId} belongs to layout ${violation.actualLayoutId}, not ${violation.expectedLayoutId}`;
+      return `edge ${edgeLabel(violation.edgeId, book)} belongs to layout ${layoutLabel(violation.actualLayoutId, book)}, not ${layoutLabel(violation.expectedLayoutId, book)}`;
     case 'duplicate-edge-id':
-      return `duplicate edge id ${violation.edgeId}`;
+      return `duplicate edge id ${edgeLabel(violation.edgeId, book)}`;
     case 'self-loop':
-      return `edge ${violation.edgeId} is a self-loop on block ${violation.blockId}`;
+      return `edge ${edgeLabel(violation.edgeId, book)} is a self-loop on block ${blockLabel(violation.blockId, book)}`;
     case 'unknown-block':
-      return `edge ${violation.edgeId} references unknown block ${violation.blockId}`;
+      return `edge ${edgeLabel(violation.edgeId, book)} references unknown block ${blockLabel(violation.blockId, book)}`;
     case 'unknown-point':
-      return `edge ${violation.edgeId} references unknown point ${violation.pointId}`;
+      return `edge ${edgeLabel(violation.edgeId, book)} references unknown point ${pointLabel(violation.pointId, book)}`;
     case 'duplicate-connection':
-      return `edge ${violation.edgeId} duplicates the connection already defined by edge ${violation.conflictingEdgeId}`;
+      return `edge ${edgeLabel(violation.edgeId, book)} duplicates the connection already defined by edge ${edgeLabel(violation.conflictingEdgeId, book)}`;
   }
 }
 
@@ -212,9 +213,9 @@ function describeViolation(violation: TopologyViolation): string {
  * reasons. Lists at most the first three violations to keep the reason
  * string (which ends up on `system/status.reason` over MQTT) bounded.
  */
-export function describeViolations(violations: readonly TopologyViolation[]): string {
-  const shown = violations.slice(0, 3).map(describeViolation);
-  return `Topology invalid: ${violations.length} violation(s) — ${shown.join('; ')}`;
+export function describeViolations(violations: readonly TopologyViolation[], book?: NameBook): string {
+  const shown = violations.slice(0, 3).map((v) => describeViolation(v, book));
+  return `Topology invalid: ${pluralise(violations.length, 'violation')}${violations.length > 3 ? ' (first 3 shown)' : ''} — ${shown.join('; ')}`;
 }
 
 /** Thrown by `graph.ts` when a `TrackGraph` cannot be built from the given edges. */

@@ -8,7 +8,8 @@ import {
   TopologyContext,
   buildEdgeIndex,
 } from '../../../src/domain/topology';
-import { BlockEdge, TopologyViolation } from '../../../src/domain/types';
+import { EMPTY_NAME_BOOK } from '../../../src/domain/naming';
+import { BlockEdge, NameBook, TopologyViolation } from '../../../src/domain/types';
 
 const layoutId = 'layout-1';
 
@@ -178,7 +179,7 @@ describe('isFatalViolation', () => {
 });
 
 describe('describeViolations', () => {
-  it('summarises the count and lists the first three violations', () => {
+  it('summarises the count and lists the first three violations, byte-for-byte raw ids with no book (D8)', () => {
     const violations: TopologyViolation[] = [
       { kind: 'self-loop', edgeId: 'e1', blockId: 'a' },
       { kind: 'self-loop', edgeId: 'e2', blockId: 'b' },
@@ -186,11 +187,30 @@ describe('describeViolations', () => {
       { kind: 'self-loop', edgeId: 'e4', blockId: 'd' },
     ];
     const description = describeViolations(violations);
-    expect(description).toMatch(/^Topology invalid: 4 violation\(s\) —/);
+    expect(description).toMatch(/^Topology invalid: 4 violations \(first 3 shown\) —/);
     expect(description).toContain('e1');
     expect(description).toContain('e2');
     expect(description).toContain('e3');
     expect(description).not.toContain('e4');
+  });
+
+  it('uses the singular, with no "(first N shown)" suffix, for exactly one violation', () => {
+    const violations: TopologyViolation[] = [{ kind: 'self-loop', edgeId: 'e1', blockId: 'a' }];
+    expect(describeViolations(violations)).toBe(
+      'Topology invalid: 1 violation — edge e1 is a self-loop on block a',
+    );
+  });
+
+  it('renders quoted names when a book is supplied', () => {
+    const violations: TopologyViolation[] = [{ kind: 'self-loop', edgeId: 'e1', blockId: 'a' }];
+    const book: NameBook = {
+      ...EMPTY_NAME_BOOK,
+      blocks: new Map([['a', 'Down Platform']]),
+      edges: new Map([['e1', 'Down Platform:north → Down Platform:south']]),
+    };
+    expect(describeViolations(violations, book)).toBe(
+      'Topology invalid: 1 violation — edge "Down Platform:north → Down Platform:south" (e1) is a self-loop on block "Down Platform" (a)',
+    );
   });
 });
 
