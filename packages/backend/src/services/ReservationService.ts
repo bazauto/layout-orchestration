@@ -48,8 +48,11 @@ import {
   RouteRejection,
   RouteStatus,
 } from '../domain/types';
+import { blockLabel } from '../domain/naming';
 import { ILayoutRepository } from '../ports/ILayoutRepository';
 import { IRouteLockView } from '../ports/IRouteLockView';
+import { INameBook } from '../ports/INameBook';
+import { INERT_NAME_BOOK } from './nameBook';
 
 export interface ReservationServiceLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -142,6 +145,7 @@ export class ReservationService implements IRouteLockView {
     private readonly repo: ILayoutRepository,
     private readonly stateManager: LayoutStateManager,
     private readonly log: ReservationServiceLogger,
+    private readonly names: INameBook = INERT_NAME_BOOK,
   ) {}
 
   // ─── Grant ──────────────────────────────────────────────────────────────────
@@ -172,6 +176,7 @@ export class ReservationService implements IRouteLockView {
       this.log.warn('[ReservationService] Grant rejected — no path', {
         layoutId,
         locoAddress: request.locoAddress,
+        locoName: this.names.get().locos.get(request.locoAddress),
         rejections: resolved.rejections,
       });
       return { granted: false, rejections: resolved.rejections };
@@ -190,6 +195,7 @@ export class ReservationService implements IRouteLockView {
       this.log.warn('[ReservationService] Grant rejected', {
         layoutId,
         locoAddress: request.locoAddress,
+        locoName: this.names.get().locos.get(request.locoAddress),
         rejections: result.rejections,
       });
       return { granted: false, rejections: result.rejections };
@@ -220,6 +226,7 @@ export class ReservationService implements IRouteLockView {
       layoutId,
       routeId: persisted.id,
       locoAddress: persisted.locoAddress,
+      locoName: this.names.get().locos.get(persisted.locoAddress),
     });
     return { granted: true, reservation: persisted, changedBlocks, changedPoints };
   }
@@ -233,7 +240,13 @@ export class ReservationService implements IRouteLockView {
     }
     const unreleased = reservation.holds.filter((h) => !h.released);
     const outcome = await this.releaseAndPersist(routeId, unreleased, { status: 'cancelled', reason });
-    this.log.info('[ReservationService] Route cancelled', { layoutId, routeId, reason });
+    this.log.info('[ReservationService] Route cancelled', {
+      layoutId,
+      routeId,
+      locoAddress: reservation.locoAddress,
+      locoName: this.names.get().locos.get(reservation.locoAddress),
+      reason,
+    });
     return outcome;
   }
 
@@ -292,9 +305,16 @@ export class ReservationService implements IRouteLockView {
     const currentStep = reservation.path[reservation.confirmedIndex];
     const currentBlock = currentStep ? state.blocks.get(currentStep.blockId) : undefined;
     if (!currentBlock || currentBlock.occupancy !== 'occupied') {
+      // currentStep is only undefined for a malformed reservation (confirmedIndex
+      // out of range) — kept as the bare `undefined` interpolation from before
+      // #54 rather than routed through blockLabel, so this degenerate case's
+      // text is unchanged.
+      const blockText: string | undefined = currentStep
+        ? blockLabel(currentStep.blockId, this.names.get())
+        : undefined;
       return {
         resumed: false,
-        reason: `current block ${currentStep?.blockId} is ${currentBlock?.occupancy ?? 'unknown'}, not occupied`,
+        reason: `current block ${blockText} is ${currentBlock?.occupancy ?? 'unknown'}, not occupied`,
       };
     }
 
@@ -302,7 +322,10 @@ export class ReservationService implements IRouteLockView {
       const block = state.blocks.get(step.blockId);
       const occupancy = block?.occupancy ?? 'unknown';
       if (occupancy !== 'clear') {
-        return { resumed: false, reason: `block ${step.blockId} is ${occupancy}, not clear` };
+        return {
+          resumed: false,
+          reason: `block ${blockLabel(step.blockId, this.names.get())} is ${occupancy}, not clear`,
+        };
       }
     }
 
@@ -370,12 +393,17 @@ export class ReservationService implements IRouteLockView {
           reason: null,
           confirmedIndex: route.path.length - 1,
         });
-        this.log.info('[ReservationService] Route completed', { layoutId, routeId: route.id });
+        this.log.info('[ReservationService] Route completed', {
+          layoutId,
+          routeId: route.id,
+          locoAddress: route.locoAddress,
+          locoName: this.names.get().locos.get(route.locoAddress),
+        });
         return { ...outcome, ...quiet };
       }
       case 'unexpected-occupancy': {
         const unreleased = route.holds.filter((h) => !h.released);
-        const reason = `unexpected occupancy in block ${blockId} — not the route's next expected step`;
+        const reason = `unexpected occupancy in block ${blockLabel(blockId, this.names.get())} — not the route's next expected step`;
         const outcome = await this.releaseAndPersist(route.id, unreleased, {
           status: 'cancelled',
           reason,
@@ -384,6 +412,7 @@ export class ReservationService implements IRouteLockView {
           layoutId,
           routeId: route.id,
           blockId,
+          blockName: this.names.get().blocks.get(blockId),
         });
         return { ...outcome, unexpectedOccupancy: true, occupancyUnknownBlockId: null };
       }
@@ -396,6 +425,7 @@ export class ReservationService implements IRouteLockView {
           layoutId,
           routeId: route.id,
           blockId,
+          blockName: this.names.get().blocks.get(blockId),
         });
         return {
           reservation: route,

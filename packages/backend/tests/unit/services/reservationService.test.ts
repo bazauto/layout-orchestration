@@ -2,8 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ReservationService } from '../../../src/services/ReservationService';
 import { LayoutStateManager } from '../../../src/domain/layoutState';
 import { buildTrackGraph } from '../../../src/domain/graph';
+import { EMPTY_NAME_BOOK } from '../../../src/domain/naming';
 import { ILayoutRepository, LocoRecord } from '../../../src/ports/ILayoutRepository';
-import { BlockEdge, RouteHoldKind, RouteReservation, RouteStatus } from '../../../src/domain/types';
+import { INameBook } from '../../../src/ports/INameBook';
+import { BlockEdge, LayoutId, NameBook, RouteHoldKind, RouteReservation, RouteStatus } from '../../../src/domain/types';
+
+/** A fixed INameBook — no repository, no refresh — for tests asserting on a rendered name. */
+function staticNameBook(book: NameBook): INameBook {
+  return { get: () => book, refresh: async (_layoutId: LayoutId) => {} };
+}
 
 const LAYOUT = 'layout-1';
 
@@ -158,11 +165,14 @@ async function grantThreeBlockRoute(service: ReservationService, stateManager: L
   );
 }
 
-function makeService(locos: LocoRecord[] = [{ id: 'loco-1', layoutId: LAYOUT, name: 'Loco 3', address: 3, type: 'diesel', maxSpeed: 126, brakingFactor: 0.5 }]) {
+function makeService(
+  locos: LocoRecord[] = [{ id: 'loco-1', layoutId: LAYOUT, name: 'Loco 3', address: 3, type: 'diesel', maxSpeed: 126, brakingFactor: 0.5 }],
+  names?: INameBook,
+) {
   const repo = makeRepo(locos);
   const stateManager = new LayoutStateManager(LAYOUT);
   stateManager.setOnline();
-  const service = new ReservationService(repo, stateManager, silentLogger);
+  const service = new ReservationService(repo, stateManager, silentLogger, names);
   return { repo, stateManager, service };
 }
 
@@ -338,6 +348,31 @@ describe('ReservationService — resume', () => {
 
     const result = await service.resume(LAYOUT, outcome.reservation.id);
     expect(result.resumed).toBe(false);
+  });
+
+  it('#54: names the offending block when refused because a remaining block is not clear', async () => {
+    const book: NameBook = { ...EMPTY_NAME_BOOK, blocks: new Map([['b2', 'Up Loop']]) };
+    const { service, stateManager } = makeService(undefined, staticNameBook(book));
+    const reservation = await grantAndSuspend(service, stateManager);
+
+    stateManager.updateBlockOccupancy('b2', 'occupied');
+
+    const result = await service.resume(LAYOUT, reservation.id);
+    expect(result.resumed).toBe(false);
+    if (result.resumed) throw new Error('expected refusal');
+    expect(result.reason).toBe('block "Up Loop" (b2) is occupied, not clear');
+  });
+
+  it('#54: with no book, the refusal reason is byte-for-byte identical to today (D8)', async () => {
+    const { service, stateManager } = makeService();
+    const reservation = await grantAndSuspend(service, stateManager);
+
+    stateManager.updateBlockOccupancy('b2', 'occupied');
+
+    const result = await service.resume(LAYOUT, reservation.id);
+    expect(result.resumed).toBe(false);
+    if (result.resumed) throw new Error('expected refusal');
+    expect(result.reason).toBe('block b2 is occupied, not clear');
   });
 });
 

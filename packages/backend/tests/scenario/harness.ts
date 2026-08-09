@@ -323,7 +323,7 @@ export function createScenarioHarness(options?: { clearAfterValidReadings?: numb
   // can check that a book-supplied name reaches a Safe-Stop reason/log line,
   // not just that the id-only degradation path still works (unit-tested).
   const nameBook = new NameBookCache(repo, LAYOUT_ID);
-  const reservationService = new ReservationService(repo, stateManager, silentLogger);
+  const reservationService = new ReservationService(repo, stateManager, silentLogger, nameBook);
   const service = new LayoutService(
     dcc,
     mqtt,
@@ -339,6 +339,7 @@ export function createScenarioHarness(options?: { clearAfterValidReadings?: numb
     () => service.reloadTopology(),
     silentLogger,
     reservationService,
+    nameBook,
   );
 
   const events: LayoutEvent[] = [];

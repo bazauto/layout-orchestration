@@ -10,10 +10,13 @@
  * running layout.
  */
 
-import { MAX_EDGES_PER_LAYOUT, validateEdgeAgainstLayout, validateTopology } from '../domain/topology';
+import { MAX_EDGES_PER_LAYOUT, describeViolations, validateEdgeAgainstLayout, validateTopology } from '../domain/topology';
 import { BlockEdge, BlockEdgeId, LayoutId, PointId, TopologyViolation } from '../domain/types';
+import { blockLabel, edgeLabel, layoutLabel, pluralise, pointLabel } from '../domain/naming';
 import { ILayoutRepository, PointRecord } from '../ports/ILayoutRepository';
 import { IRouteLockView } from '../ports/IRouteLockView';
+import { INameBook } from '../ports/INameBook';
+import { INERT_NAME_BOOK } from './nameBook';
 
 export interface TopologyServiceLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -50,16 +53,20 @@ export class EdgeLimitExceededError extends Error {
     readonly layoutId: LayoutId,
     readonly limit: number,
     readonly current: number,
+    layoutLabelText?: string,
   ) {
-    super(`Layout ${layoutId} already has ${current} edges (limit ${limit})`);
+    super(`Layout ${layoutLabelText ?? layoutId} already has ${current} edges (limit ${limit})`);
     this.name = 'EdgeLimitExceededError';
   }
 }
 
 /** Thrown when an edge id does not resolve to an edge in the given layout. */
 export class EdgeNotFoundError extends Error {
-  constructor(readonly edgeId: BlockEdgeId) {
-    super(`Edge ${edgeId} not found`);
+  constructor(
+    readonly edgeId: BlockEdgeId,
+    edgeLabelText?: string,
+  ) {
+    super(`Edge ${edgeLabelText ?? edgeId} not found`);
     this.name = 'EdgeNotFoundError';
   }
 }
@@ -68,13 +75,18 @@ export class EdgeNotFoundError extends Error {
  * Thrown when a block or point id does not resolve to a record in the given
  * layout. Deleting by id alone would let a caller destroy another layout's
  * records by supplying any `:layoutId` in the path.
+ *
+ * The record is already gone by the time this throws, so the book usually
+ * misses and this degrades to the bare id — expected, not a bug: there is
+ * nothing left to name.
  */
 export class RecordNotFoundError extends Error {
   constructor(
     readonly kind: 'block' | 'point',
     readonly recordId: string,
+    recordLabelText?: string,
   ) {
-    super(`${kind} ${recordId} not found`);
+    super(`${kind} ${recordLabelText ?? recordId} not found`);
     this.name = 'RecordNotFoundError';
   }
 }
@@ -93,8 +105,9 @@ export class LockedByRouteError extends Error {
     readonly kind: 'edge' | 'block' | 'point',
     readonly targetId: string,
     readonly routeId: string,
+    targetLabelText?: string,
   ) {
-    super(`${kind} ${targetId} is held by route ${routeId}`);
+    super(`${kind} ${targetLabelText ?? targetId} is held by route ${routeId}`);
     this.name = 'LockedByRouteError';
   }
 }
@@ -114,6 +127,7 @@ export class TopologyService {
      * `ReservationService` dependency. Implemented by `ReservationService`.
      */
     private readonly lockView: IRouteLockView,
+    private readonly names: INameBook = INERT_NAME_BOOK,
   ) {}
 
   async listEdges(layoutId: LayoutId): Promise<BlockEdge[]> {
@@ -152,10 +166,16 @@ export class TopologyService {
     if (existingEdges.length >= MAX_EDGES_PER_LAYOUT) {
       this.log.warn('[TopologyService] Rejected edge create — layout at edge cap', {
         layoutId,
+        layoutName: this.names.get().layouts.get(layoutId),
         limit: MAX_EDGES_PER_LAYOUT,
         current: existingEdges.length,
       });
-      throw new EdgeLimitExceededError(layoutId, MAX_EDGES_PER_LAYOUT, existingEdges.length);
+      throw new EdgeLimitExceededError(
+        layoutId,
+        MAX_EDGES_PER_LAYOUT,
+        existingEdges.length,
+        layoutLabel(layoutId, this.names.get()),
+      );
     }
 
     const context = await this.buildContext(layoutId);
@@ -166,11 +186,15 @@ export class TopologyService {
     const violations = validateEdgeAgainstLayout(candidate, layoutId, context, existingEdges);
     if (violations.length > 0) {
       this.log.warn('[TopologyService] Rejected edge create', { layoutId, violations });
-      throw new TopologyRejectedError(violations);
+      throw new TopologyRejectedError(violations, describeViolations(violations, this.names.get()));
     }
 
     const created = await this.repo.createBlockEdge({ layoutId, ...data });
-    this.log.info('[TopologyService] Edge created', { layoutId, edgeId: created.id });
+    this.log.info('[TopologyService] Edge created', {
+      layoutId,
+      edgeId: created.id,
+      edgeLabel: edgeLabel(created.id, this.names.get()),
+    });
     await this.onTopologyChanged();
     return created;
   }
@@ -178,7 +202,7 @@ export class TopologyService {
   async updateEdge(layoutId: LayoutId, id: BlockEdgeId, patch: EdgeUpdateData): Promise<BlockEdge> {
     const existing = await this.repo.getBlockEdge(id);
     if (!existing || existing.layoutId !== layoutId) {
-      throw new EdgeNotFoundError(id);
+      throw new EdgeNotFoundError(id, edgeLabel(id, this.names.get()));
     }
     this.assertEdgeUnlocked(layoutId, id);
 
@@ -191,13 +215,18 @@ export class TopologyService {
       this.log.warn('[TopologyService] Rejected edge update', {
         layoutId,
         edgeId: id,
+        edgeLabel: edgeLabel(id, this.names.get()),
         violations,
       });
-      throw new TopologyRejectedError(violations);
+      throw new TopologyRejectedError(violations, describeViolations(violations, this.names.get()));
     }
 
     const updated = await this.repo.updateBlockEdge(id, patch);
-    this.log.info('[TopologyService] Edge updated', { layoutId, edgeId: id });
+    this.log.info('[TopologyService] Edge updated', {
+      layoutId,
+      edgeId: id,
+      edgeLabel: edgeLabel(id, this.names.get()),
+    });
     await this.onTopologyChanged();
     return updated;
   }
@@ -205,12 +234,16 @@ export class TopologyService {
   async deleteEdge(layoutId: LayoutId, id: BlockEdgeId): Promise<void> {
     const existing = await this.repo.getBlockEdge(id);
     if (!existing || existing.layoutId !== layoutId) {
-      throw new EdgeNotFoundError(id);
+      throw new EdgeNotFoundError(id, edgeLabel(id, this.names.get()));
     }
     this.assertEdgeUnlocked(layoutId, id);
 
     await this.repo.deleteBlockEdge(id);
-    this.log.info('[TopologyService] Edge deleted', { layoutId, edgeId: id });
+    this.log.info('[TopologyService] Edge deleted', {
+      layoutId,
+      edgeId: id,
+      edgeLabel: edgeLabel(id, this.names.get()),
+    });
     await this.onTopologyChanged();
   }
 
@@ -226,7 +259,7 @@ export class TopologyService {
     // layout actually owns it, because the delete is by id alone.
     const blocks = await this.repo.listBlocks(layoutId);
     if (!blocks.some((block) => block.id === blockId)) {
-      throw new RecordNotFoundError('block', blockId);
+      throw new RecordNotFoundError('block', blockId, blockLabel(blockId, this.names.get()));
     }
     this.assertBlockUnlocked(layoutId, blockId);
 
@@ -243,6 +276,7 @@ export class TopologyService {
     this.log.info('[TopologyService] Block deleted with edges', {
       layoutId,
       blockId,
+      blockName: this.names.get().blocks.get(blockId),
       removedEdges,
     });
     await this.onTopologyChanged();
@@ -262,7 +296,7 @@ export class TopologyService {
     // delete that strands the owning layout's edge conditions.
     const points = await this.repo.listPoints(layoutId);
     if (!points.some((point) => point.id === pointId)) {
-      throw new RecordNotFoundError('point', pointId);
+      throw new RecordNotFoundError('point', pointId, pointLabel(pointId, this.names.get()));
     }
     this.assertPointUnlocked(layoutId, pointId);
 
@@ -275,16 +309,27 @@ export class TopologyService {
       this.log.warn('[TopologyService] Rejected point delete — referenced by edges', {
         layoutId,
         pointId,
+        pointName: this.names.get().points.get(pointId),
         referencingEdgeIds,
       });
+      // Same truncation posture as describeViolations (D6): the list is
+      // bounded only by MAX_EDGES_PER_LAYOUT, so it must be capped here too.
+      const book = this.names.get();
+      const shown = referencingEdgeIds.slice(0, 5).map((id) => edgeLabel(id, book));
       throw new TopologyRejectedError(
         [],
-        `Point ${pointId} is referenced by edge(s): ${referencingEdgeIds.join(', ')}`,
+        `Point ${pointLabel(pointId, book)} is referenced by ${pluralise(referencingEdgeIds.length, 'edge')}: ${shown.join('; ')}${
+          referencingEdgeIds.length > 5 ? ' (first 5 shown)' : ''
+        }`,
       );
     }
 
     await this.repo.deletePoint(layoutId, pointId);
-    this.log.info('[TopologyService] Point deleted', { layoutId, pointId });
+    this.log.info('[TopologyService] Point deleted', {
+      layoutId,
+      pointId,
+      pointName: this.names.get().points.get(pointId),
+    });
   }
 
   /**
@@ -306,11 +351,15 @@ export class TopologyService {
   async updatePoint(layoutId: LayoutId, pointId: PointId, patch: PointUpdateData): Promise<PointRecord> {
     const points = await this.repo.listPoints(layoutId);
     if (!points.some((point) => point.id === pointId)) {
-      throw new RecordNotFoundError('point', pointId);
+      throw new RecordNotFoundError('point', pointId, pointLabel(pointId, this.names.get()));
     }
 
     const updated = await this.repo.updatePoint(pointId, patch);
-    this.log.info('[TopologyService] Point updated', { layoutId, pointId });
+    this.log.info('[TopologyService] Point updated', {
+      layoutId,
+      pointId,
+      pointName: updated.name,
+    });
     return updated;
   }
 
@@ -337,9 +386,10 @@ export class TopologyService {
       this.log.warn('[TopologyService] Rejected edge write — held by an active route', {
         layoutId,
         edgeId,
+        edgeLabel: edgeLabel(edgeId, this.names.get()),
         routeId,
       });
-      throw new LockedByRouteError('edge', edgeId, routeId);
+      throw new LockedByRouteError('edge', edgeId, routeId, edgeLabel(edgeId, this.names.get()));
     }
   }
 
@@ -349,9 +399,10 @@ export class TopologyService {
       this.log.warn('[TopologyService] Rejected block delete — held by an active route', {
         layoutId,
         blockId,
+        blockName: this.names.get().blocks.get(blockId),
         routeId,
       });
-      throw new LockedByRouteError('block', blockId, routeId);
+      throw new LockedByRouteError('block', blockId, routeId, blockLabel(blockId, this.names.get()));
     }
   }
 
@@ -361,9 +412,10 @@ export class TopologyService {
       this.log.warn('[TopologyService] Rejected point delete — held by an active route', {
         layoutId,
         pointId,
+        pointName: this.names.get().points.get(pointId),
         routeId,
       });
-      throw new LockedByRouteError('point', pointId, routeId);
+      throw new LockedByRouteError('point', pointId, routeId, pointLabel(pointId, this.names.get()));
     }
   }
 }
