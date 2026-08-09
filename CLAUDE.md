@@ -83,6 +83,16 @@ Migrations are applied automatically on backend startup from `MIGRATIONS_PATH`.
 **Any change to `src/adapters/db/schema.ts` requires a generated migration in the same
 commit** — this system is deployed to a live layout and cannot be reset.
 
+**Never run `npm audit fix --force` here.** Its only remaining suggestion is
+`drizzle-kit@0.18.1` — a major *downgrade* of the tool that generates migrations against
+that live database. The four residual moderate advisories it is offering to "fix" are all
+one chain: `drizzle-kit → @esbuild-kit/esm-loader → @esbuild-kit/core-utils →
+esbuild@0.18.20`. Nothing forward fixes it (drizzle-kit is already at latest and still
+declares the deprecated loader), and it is not reachable — drizzle-kit's shipped JS
+contains no reference to `@esbuild-kit` at all, and the advisory is about esbuild's dev
+*server*, which `core-utils` never starts (it calls `transform`/`transformSync` only).
+Plain `npm audit fix` is fine and is what cleared the rest.
+
 ## Modes
 
 Set in `.env`:
