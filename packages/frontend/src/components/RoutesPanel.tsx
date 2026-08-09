@@ -73,6 +73,14 @@ export function RoutesPanel({
     [blockRecords],
   );
 
+  // #54: names the loco holding a route/fault instead of just its DCC
+  // address — RoutesPanel already had blockName in scope for the path
+  // display, but rendered `Loco ${address}` bare.
+  const locoName = useMemo(
+    () => Object.fromEntries(locoRecords.map((l) => [l.address, l.name])),
+    [locoRecords],
+  );
+
   const liveRoutes = useMemo(
     () =>
       Object.values(routes)
@@ -119,7 +127,7 @@ export function RoutesPanel({
             <div key={f.routeId} style={s.faultRow}>
               <div style={s.faultText}>
                 <p style={s.faultLine}>
-                  <strong>Loco {f.locoAddress}</strong> — {f.reason}
+                  <strong>{locoName[f.locoAddress] ?? `Loco ${f.locoAddress}`}</strong> — {f.reason}
                 </p>
                 <p style={s.faultMeta}>
                   {f.kind}
@@ -210,7 +218,7 @@ export function RoutesPanel({
               <li key={r.id} style={s.routeRow}>
                 <div style={s.routeText}>
                   <p style={s.routeLine}>
-                    <strong>Loco {r.locoAddress}</strong>{' '}
+                    <strong>{locoName[r.locoAddress] ?? `Loco ${r.locoAddress}`}</strong>{' '}
                     <span style={r.status === 'active' ? s.statusActive : s.statusSuspended}>
                       {r.status}
                     </span>

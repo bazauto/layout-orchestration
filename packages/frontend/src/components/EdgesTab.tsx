@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useLayoutConfig } from '../hooks/useLayoutConfig';
+import { blockLabel, buildEdgeLabel, edgeLabel, NameBook, pointLabel } from '../naming';
 import { BlockEdgeRecord, BlockRecord, PointRecord, TopologyStatus, TopologyViolation } from '../types';
 
 type Ops = ReturnType<typeof useLayoutConfig>;
@@ -90,21 +91,27 @@ function endsForBlock(blockId: string, edges: BlockEdgeRecord[]): string[] {
   return Array.from(ends).sort();
 }
 
-/** Mirrors `describeViolation` in `domain/topology.ts` exactly — same wording, one violation at a time. */
-function describeViolation(v: TopologyViolation): string {
+/**
+ * Mirrors `describeViolation` in `domain/topology.ts` exactly — same
+ * wording, one violation at a time — now including its optional `NameBook`
+ * (#54). No `layouts` map is built here (`EdgesTab` has no layout records
+ * in scope), so `layout-mismatch` degrades to the raw layout id, same as
+ * the backend with no book (D8).
+ */
+function describeViolation(v: TopologyViolation, book?: NameBook): string {
   switch (v.kind) {
     case 'layout-mismatch':
-      return `edge ${v.edgeId} belongs to layout ${v.actualLayoutId}, not ${v.expectedLayoutId}`;
+      return `edge ${edgeLabel(v.edgeId, book)} belongs to layout ${v.actualLayoutId}, not ${v.expectedLayoutId}`;
     case 'duplicate-edge-id':
-      return `duplicate edge id ${v.edgeId}`;
+      return `duplicate edge id ${edgeLabel(v.edgeId, book)}`;
     case 'self-loop':
-      return `edge ${v.edgeId} is a self-loop on block ${v.blockId}`;
+      return `edge ${edgeLabel(v.edgeId, book)} is a self-loop on block ${blockLabel(v.blockId, book)}`;
     case 'unknown-block':
-      return `edge ${v.edgeId} references unknown block ${v.blockId}`;
+      return `edge ${edgeLabel(v.edgeId, book)} references unknown block ${blockLabel(v.blockId, book)}`;
     case 'unknown-point':
-      return `edge ${v.edgeId} references unknown point ${v.pointId}`;
+      return `edge ${edgeLabel(v.edgeId, book)} references unknown point ${pointLabel(v.pointId, book)}`;
     case 'duplicate-connection':
-      return `edge ${v.edgeId} duplicates the connection already defined by edge ${v.conflictingEdgeId}`;
+      return `edge ${edgeLabel(v.edgeId, book)} duplicates the connection already defined by edge ${edgeLabel(v.conflictingEdgeId, book)}`;
   }
 }
 
@@ -129,8 +136,26 @@ export function EdgesTab({ edges, topology, blocks, points, ops }: Props) {
   const fromEndOptions = useMemo(() => endsForBlock(form.fromBlockId, edges), [form.fromBlockId, edges]);
   const toEndOptions = useMemo(() => endsForBlock(form.toBlockId, edges), [form.toBlockId, edges]);
 
-  const blockName = (id: string) => blocks.find((b) => b.id === id)?.name ?? id;
-  const pointName = (id: string) => points.find((p) => p.id === id)?.name ?? id;
+  // #54: the props this component already receives (blocks, points, edges)
+  // are enough to build a NameBook locally — the same book that used to be
+  // a second, duplicated implementation of the backend's naming logic (the
+  // old blockName/pointName helpers this folds into).
+  const nameBook: NameBook = useMemo(() => {
+    const blockEntries = new Map(blocks.map((b) => [b.id, b.name] as const));
+    return {
+      layouts: new Map(),
+      blocks: blockEntries,
+      points: new Map(points.map((p) => [p.id, p.name] as const)),
+      sensors: new Map(),
+      locos: new Map(),
+      edges: new Map(
+        edges.map((e) => [e.id, buildEdgeLabel(e, (id) => blockEntries.get(id))] as const),
+      ),
+    };
+  }, [blocks, points, edges]);
+
+  const blockName = (id: string) => nameBook.blocks.get(id) ?? id;
+  const pointName = (id: string) => nameBook.points.get(id) ?? id;
 
   const addPointCondition = () => {
     setForm((f) => ({
@@ -179,7 +204,7 @@ export function EdgesTab({ edges, topology, blocks, points, ops }: Props) {
         <div style={s.violationBanner}>
           {topology.violations.map((v, i) => (
             <p key={i} style={s.violationLine}>
-              {describeViolation(v)}
+              {describeViolation(v, nameBook)}
             </p>
           ))}
         </div>
@@ -190,7 +215,7 @@ export function EdgesTab({ edges, topology, blocks, points, ops }: Props) {
           {submitError.violations && submitError.violations.length > 0 ? (
             submitError.violations.map((v, i) => (
               <p key={i} style={s.violationLine}>
-                {describeViolation(v)}
+                {describeViolation(v, nameBook)}
               </p>
             ))
           ) : (
