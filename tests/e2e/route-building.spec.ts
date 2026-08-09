@@ -141,8 +141,11 @@ test('a refused route shows the backend reason and leaves the form populated', a
       status: 422,
       contentType: 'application/json',
       body: JSON.stringify({
+        // #54: singular "reason", names rendered via the book (b2 is
+        // "Headshunt" in this fixture — see BLOCKS above), and the nested
+        // blocker in a bracketed sub-list rather than a second em-dash (D7).
         error:
-          'Route rejected: 1 reason(s) — no route exists to block b2 — block b2 is occupied',
+          'Route rejected: 1 reason — no route exists to block "Headshunt" (b2) [blocked by: block "Headshunt" (b2) is occupied]',
         rejections: [
           {
             kind: 'no-path',
@@ -158,8 +161,9 @@ test('a refused route shows the backend reason and leaves the form populated', a
   await fillRouteForm(page);
   await page.getByRole('button', { name: 'Request route' }).click();
 
-  // The operator is told what is in the way, not just "failed".
-  await expect(page.getByText(/block b2 is occupied/)).toBeVisible();
+  // The operator is told what is in the way, not just "failed" — and named,
+  // not a bare UUID (#54) — via the bracketed [blocked by: ...] sub-list.
+  await expect(page.getByText(/\[blocked by: block "Headshunt" \(b2\) is occupied\]/)).toBeVisible();
 
   // And the selections survive, so clearing the block and retrying is one
   // click rather than three.

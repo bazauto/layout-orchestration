@@ -174,7 +174,12 @@ test('a stubbed 422 renders the violation and leaves the form populated', async 
         status: 422,
         contentType: 'application/json',
         body: JSON.stringify({
-          error: 'Topology rejected: 1 violation(s)',
+          // #54/Q1: TopologyRejectedError's default message is now the
+          // rendered describeViolations output, not the old bare count.
+          // Inert for this test (violations is non-empty, so EdgesTab
+          // renders the structured list, not this fallback string) but
+          // kept realistic.
+          error: 'Topology invalid: 1 violation — edge __pending__ is a self-loop on block block-a',
           violations: [{ kind: 'self-loop', edgeId: '__pending__', blockId: 'block-a' }],
         }),
       });
@@ -191,7 +196,8 @@ test('a stubbed 422 renders the violation and leaves the form populated', async 
 
   await page.getByRole('button', { name: 'Add' }).click();
 
-  await expect(page.getByText(/self-loop on block block-a/)).toBeVisible();
+  // #54: block-a has a name in the BLOCKS fixture, so the banner renders it.
+  await expect(page.getByText(/self-loop on block "Block A" \(block-a\)/)).toBeVisible();
 
   // The operator's input must survive the rejection.
   await expect(page.getByLabel('From block')).toHaveValue('block-a');
@@ -203,6 +209,22 @@ test('a stubbed 422 renders the violation and leaves the form populated', async 
 test('a stubbed invalid topology renders the violation banner', async ({ page }) => {
   await installMockWebSocket(page);
   await stubApis(page, {
+    // edge-x is in the edges fixture (so it renders as a derived label) and
+    // references block-ghost, which is NOT in BLOCKS — the client-side
+    // degradation path (#54/D8): a raw id fallback in the middle of an
+    // otherwise-named string, worth asserting explicitly.
+    initialEdges: [
+      {
+        id: 'edge-x',
+        layoutId: 'layout-1',
+        fromBlockId: 'block-a',
+        fromEnd: 'east',
+        toBlockId: 'block-ghost',
+        toEnd: 'west',
+        pointConditions: [],
+        lengthMm: null,
+      },
+    ],
     topologyOverride: {
       valid: false,
       violations: [{ kind: 'unknown-block', edgeId: 'edge-x', blockId: 'block-ghost' }],
@@ -212,5 +234,7 @@ test('a stubbed invalid topology renders the violation banner', async ({ page })
 
   await openEdgesTab(page);
 
-  await expect(page.getByText(/edge edge-x references unknown block block-ghost/)).toBeVisible();
+  await expect(
+    page.getByText(/edge "Block A:east → block-ghost:west" \(edge-x\) references unknown block block-ghost/),
+  ).toBeVisible();
 });
