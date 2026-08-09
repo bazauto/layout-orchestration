@@ -48,7 +48,10 @@ phone opened on the sofa.
   route (blocks, points, sensors, locos, layouts, grid tiles, edges,
   `topology/revalidate`). Reads, and every WebSocket driving command
   (`THROTTLE_COMMAND`/`POINT_COMMAND`/`FUNCTION_COMMAND`/`SET_MODE`), are not
-  role-gated beyond requiring *some* authenticated session.
+  role-gated beyond requiring *some* authenticated session. The frontend
+  mirrors this by showing an operator only the screens they can act on — see
+  "Operator UI scope" below, which is an affordance rule, not a second
+  enforcement point.
 - **Sliding expiry** — 30 days (`domain/auth.ts#SESSION_TTL_MS`), refreshed
   on every validated request: `AuthService#validateSession` extends
   `sessions.expires_at` server-side, and the `onRequest` hook reissues the
@@ -195,7 +198,8 @@ later session does not re-open them piecemeal:
   carry `requireAdmin`; an operator's own identity is already available from
   `GET /api/auth/me`, and the pre-TLS threat model below argues for the
   smaller surface. The Configure screen's Users tab is rendered only for
-  `role === 'admin'`.
+  `role === 'admin'` — the only place the frontend consults `role` at all,
+  until "Operator UI scope" below widens that to the whole screen.
 - **Q5 — A new account's password is set by the admin at creation**,
   required in the `POST /api/users` payload, no invite or first-login flow —
   this is a local-first single-household system where the admin and the new
@@ -233,6 +237,76 @@ later session does not re-open them piecemeal:
   translating a SQLite constraint/trigger abort — so the port is the one
   contract both sides share, and neither imports the other's module for an
   error type.
+
+## Operator UI scope (issue #61)
+
+**Decided, not yet implemented.** This section records the call; #61 tracks
+the frontend change that makes it true. Until that lands, the behaviour
+described under "What this replaces" is what actually ships.
+
+**An operator sees the Operate screen and nothing else.** The Track Editor
+and Configure entries are absent from the nav for a non-admin, and their
+panels are not rendered. Absent, not disabled: a greyed-out control still
+poses a question ("why can't I?") whose honest answer is "you may not", and a
+nav entry that says so by not existing says it better than a tooltip does.
+
+### What this replaces
+
+`App.tsx` built its nav from a fixed `['operate', 'grid', 'configure']`
+array and never consulted `role`, even though `role` is in scope there and
+printed two lines away in the session label. `ConfigPanel` used it for
+exactly one thing, Q4's Users tab; `GridEditor` was not passed it at all. An
+operator was therefore offered all five authoring tabs, the per-row rename
+and delete controls, the sensor in-service checkbox and the whole track
+editor — and every save bounced off the backend's `requireAdmin` with a 403.
+The controls were real, the authority was not.
+
+### This is affordance, not authorisation
+
+The `requireAdmin` preHandler stays the enforcement, and stays load-bearing:
+hiding a tab does nothing to `curl`, a stale browser tab, or a second client.
+Nobody should later drop a route guard on the grounds that "the UI doesn't
+offer it" — the UI is a convenience over a boundary that is enforced
+server-side, in that order and not the other way round. What #61 fixes is
+that the frontend was misrepresenting the operator's authority to them, not
+that it was granting any.
+
+### What an operator keeps
+
+Hiding Configure deliberately costs an operator nothing they are permitted to
+do, which is worth stating because the two obvious candidates both look like
+casualties and are not:
+
+- **Sensor-fault acknowledgement** — `POST /sensors/:id/acknowledge-fault` is
+  the one non-admin write in the system (D5, `docs/sensor-fault-recovery.md`),
+  and it is reached from `SensorFaultBanner`, which renders *above* the nav
+  on every tab rather than inside Configure's Sensors tab. An operator
+  recovering a latched sensor fault never needed the Configure screen.
+- **Route-fault acknowledgement, cancel and resume** live in `RoutesPanel` on
+  the Operate tab.
+
+Changing their own password and logging out are in the nav's session block,
+which is not tab-scoped either.
+
+### Config *reads* stay ungated, and must
+
+The Operate screen is assembled from them: `useLayoutConfig`'s block, point,
+loco and sensor records feed `ThrottlePanel`, `LayoutPanel`, `RoutesPanel`
+and the fault banner's sensor names. "Operators don't get Configure" is a
+statement about the authoring UI only — turning it into a `requireAdmin` on
+`GET /api/layouts/:id/blocks` would empty the operator's own screen. The
+split stated under "Roles" above is unchanged by this decision.
+
+### Why not a read-only Configure or a read-only track view
+
+Because that is a different feature wearing this one's clothes. What an
+operator would actually want to see — live point positions, block occupancy,
+and which loco is where — is not "Configure with the buttons off"; it is a
+purpose-built situational-awareness view, and it is wanted by a third role
+that has no driving authority at all (a wall display at an open day). That is
+tracked separately as the `monitor` role, issue #63. Stubbing it here as a
+disabled editor would pre-empt that design with the wrong shape and then be
+the thing someone has to undo.
 
 ## CORS
 
