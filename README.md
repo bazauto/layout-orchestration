@@ -336,6 +336,14 @@ typed body and nothing more validated nothing at runtime — `blocks` `POST`/`PU
 and `points` `POST` were the remaining outliers and now carry `blockCreateSchema`,
 `blockUpdateSchema`, and `pointCreateSchema`.
 
+Operator-facing diagnostic strings (route rejections, topology violations, Safe-Stop
+reasons, HTTP 404 bodies) now name the block/point/sensor/loco involved instead of
+a bare UUID, wherever a `NameBook` reaches the call site (#54, `docs/naming.md`). One
+residual by design: a route-lock message (`block ... is locked by route <id>`) still
+names the *route*, not the train behind it — a route is runtime state with a
+different invalidation lifetime than the rest of the book, so this is deferred
+rather than solved here (`docs/naming.md` D3).
+
 ## Next Milestones
 
 1. Per-loco braking model (#6) and collision avoidance (#7)

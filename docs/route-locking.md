@@ -445,6 +445,14 @@ domain stays pure and deterministic — no `crypto`/`Date.now()` call inside
 early return — matching `validateTopology`'s existing posture in
 `docs/topology.md`.
 
+Since #54, `describeRejections` (the human-readable rendering of that list,
+for HTTP 422 bodies and log lines) takes an optional `NameBook` and renders
+every id it can as `"Name" (shortid)` — see `docs/naming.md` (D1–D10) before
+touching it or `domain/routeLocking.ts`'s `describeRejection`. Route ids
+themselves (`heldBy`, `loco-already-routed`'s `routeId`) stay bare by design
+(`docs/naming.md` D3) — a route is runtime state, not layout config, so it
+is deliberately not part of the `NameBook`.
+
 ---
 
 ## Out of scope

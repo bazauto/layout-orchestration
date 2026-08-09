@@ -96,6 +96,12 @@ sensor A leaves sensor B's fault latched, and the system stays in Safe-Stop
 until every fault is individually resolved. That is the only shape that makes
 "acknowledge" mean something specific.
 
+Since #54, `tripSensorFault`'s reason text (`LayoutService.ts`) names the
+sensor — `Malformed sensor payload from sensor "Platform Detector"
+(3c1dab82) on topic "..."` — instead of the bare sensor id, rendered through
+the `NameBook` `LayoutService` now owns. See `docs/naming.md` (D1–D10) before
+touching that reason string or any other `describe*`/error-message call site.
+
 ## D3 — Occupancy is derived from in-service sensors, and block detection outranks IR
 
 This is the change that makes per-sensor recovery *useful* rather than merely

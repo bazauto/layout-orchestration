@@ -20,6 +20,7 @@ style preferences.
 | `docs/sensor-fault-recovery.md` | Sensor-fault latch recovery and the per-sensor occupancy model |
 | `docs/braking.md` | Per-loco braking model, deceleration profile, and calibration (B1–B10) |
 | `docs/point-feedback.md` | Point position confirmation channel and fault model (D1–D10) |
+| `docs/naming.md` | Operator-facing names: the `NameBook`, its invalidation points, and the D8 degradation contract (D1–D10) |
 | `docs/claude-review.md`, `docs/gpt-review.md` | Open design questions |
 
 Never invent an MQTT topic or payload field. If `docs/mqtt-contract.md` does not cover
@@ -130,8 +131,13 @@ and quote real output — never claim passing tests you did not run.
     only one today is the lazy `SerialDccAdapter` load in `src/index.ts`; it is
     commented in place. Do not "fix" it to match the static rule.
   - **Frontend** — ESM (`"type": "module"`, `"module": "ESNext"`, bundler resolution).
-- Structured logging with Pino; always include `layoutId`, and `locoAddress` / `blockId` /
-  `pointId` where relevant.
+- Structured logging through a hand-rolled `{info,warn,error}` interface
+  (`LayoutServiceLogger` and its siblings), wired in `index.ts` to
+  `process.stdout.write(JSON.stringify(...))`. **Pino is not a dependency of any
+  workspace** — do not assume it. Always include `layoutId`, and `locoAddress` /
+  `blockId` / `pointId` / `sensorId` where relevant, each **paired with its `*Name`
+  counterpart** from the `NameBook` (#54) so a log line is both greppable by id and
+  readable by a human.
 - Prettier + ESLint run on pre-commit via Husky. Don't fight the formatter.
 - Commit only when asked. Branch off `main` rather than committing to it directly.
 - **Documentation moves with the code that invalidates it**, in the same PR — never as a
@@ -396,3 +402,44 @@ beside "Log out". Full decision record — why, not just what — is
 `docs/auth.md`'s "User and role management" section; read it before touching
 `AuthService`'s user-management methods, `domain/users.ts`, or the trigger
 migration.
+
+**#54 landed**: operator-facing diagnostic strings (route rejections, topology
+violations, Safe-Stop reasons, HTTP 404 bodies) name the block/point/sensor/loco
+involved instead of a bare UUID. `NameBook` (`domain/types.ts`) is six
+`ReadonlyMap`s — layouts, blocks, points, sensors, locos, edges (edges hold a
+*derived* label like `Down Platform:north → Up Loop:south`, not a name —
+`block_edges` has no name column) — and `domain/naming.ts` carries the pure
+rendering helpers (`label`/`blockLabel`/`pointLabel`/`sensorLabel`/`locoLabel`/
+`edgeLabel`/`layoutLabel`/`buildEdgeLabel`/`pluralise`) every `describe*`
+function in `domain/` now threads an optional trailing `book?: NameBook`
+through. With no book (or a book miss) every one of those renders the full raw
+id, byte-for-byte identical to before #54 (D8) — the plural/delimiter wording
+fixes D7 asked for are the one unconditional exception. `services/nameBook.ts`
+holds the impure half: `buildNameBook` (pure over plain record arrays) and
+`NameBookCache`, the `INameBook` (`ports/INameBook.ts`) implementation
+`LayoutService`/`ReservationService`/`TopologyService` each take as an optional
+trailing constructor parameter, defaulting to the inert `INERT_NAME_BOOK` so
+the ~60 pre-#54 test construction sites kept compiling untouched. The cache is
+refreshed at four points — startup, every topology write (via
+`LayoutService.reloadTopology`, before it loads topology so a fatal-violation
+Safe-Stop reason is already named), every sensor-config write, and every
+block/point/loco route handler after its repo write — a missed refresh costs a
+stale display name, never unsafe behaviour. `NameBookCache.refresh` narrowly
+catches `BlockEdgeRowInvalidError` only, falling back to an empty edges map, so
+a corrupt `block_edges` row can never let the name-book refresh (which now runs
+before `loadTopology` inside `reloadTopology`) regress #10's Safe-Stop-not-throw
+guarantee. Persisted/published reasons (a reservation's `reason`, a
+`RouteFault`/`SensorFault`, `SystemHealth.topologyReason`) render through the
+book at generation time, not on demand — `system/status.reason` goes out over
+MQTT and cannot be re-rendered later; the one HTTP-422-body exception renders
+at the transport edge, since that body is neither persisted nor published.
+Route ids stay bare everywhere (`block-locked`/`point-locked`/
+`loco-already-routed`, braking's `manual-authority`/`route-not-active`) — a
+route is runtime state with a different invalidation lifetime than the rest of
+the book, deliberately deferred. Frontend: `packages/frontend/src/naming.ts`
+mirrors the backend helpers (no shared workspace package exists to import
+instead) and `EdgesTab`/`RoutesPanel` build a local `NameBook` from props
+already in scope rather than re-implementing `describeViolation` a second
+time. Full design record (D1–D10, Q1–Q3) is `docs/naming.md` — read it before
+touching `domain/naming.ts`, `services/nameBook.ts`, or any `describe*`
+function.
