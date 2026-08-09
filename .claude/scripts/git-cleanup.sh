@@ -9,10 +9,16 @@
 # against the default branch, which is correct but misses branches that merged
 # main into themselves before landing.
 #
-# Two passes: first remove agent worktrees under .claude/worktrees/ whose branch
-# has merged, then delete local branches whose remote is gone. Worktrees are
-# removed without --force, so one holding uncommitted or untracked work is
-# reported and kept rather than discarded.
+# Three passes: sweep directories under .claude/worktrees/ that git no longer
+# knows about, then remove agent worktrees whose branch has merged, then delete
+# local branches whose remote is gone. Worktrees are removed without --force, so
+# one holding uncommitted or untracked work is reported and kept rather than
+# discarded, quoting git's own refusal.
+#
+# Everything kept is named. A worktree held by an unmerged branch is listed
+# explicitly rather than folded into the skip count — otherwise a worktree the
+# script has quietly decided to leave alone forever is indistinguishable from
+# having nothing to do.
 #
 # Never touches: the current branch, the default branch, worktrees outside
 # .claude/worktrees/, or any branch with unmerged work.
@@ -52,7 +58,26 @@ worktree_list() {
     /^branch refs\/heads\//{print substr($0,19) "\t" p}'
 }
 
-wt_gone=(); wt_dirty=(); wt_foreign=(); freed=()
+wt_gone=(); wt_dirty=(); wt_foreign=(); wt_orphan=(); wt_swept=(); wt_stray=(); freed=()
+
+# Pass 0 — directories under .claude/worktrees/ that git no longer tracks.
+# Usually what a `git worktree remove` leaves when it unregisters the worktree
+# and empties it but cannot delete the folder itself — the Windows open-handle
+# case. Nothing else in the script can see these, so without this they linger
+# unreported forever. Empty ones are swept; anything still holding content is
+# reported and left alone.
+REGISTERED=$(git worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+for dir in "$AGENT_WT"*; do
+  [ -d "$dir" ] || continue
+  printf '%s\n' "$REGISTERED" | grep -qxF -- "$dir" && continue
+  if [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+    wt_stray+=("${dir#$AGENT_WT} — not a registered worktree, but not empty")
+  elif [ "$APPLY" = 0 ] || rmdir "$dir" 2>/dev/null; then
+    wt_swept+=("${dir#$AGENT_WT}")
+  else
+    wt_stray+=("${dir#$AGENT_WT} — empty, but could not be removed")
+  fi
+done
 
 # Pass 1 — retire agent worktrees whose branch has already merged.
 while IFS=$'\t' read -r branch path; do
@@ -65,10 +90,17 @@ while IFS=$'\t' read -r branch path; do
   esac
   if [ "$APPLY" = 0 ]; then
     wt_gone+=("$path"); freed+=("$branch")
-  elif git worktree remove "$path" 2>/dev/null; then
+  elif err=$(git worktree remove "$path" 2>&1); then
     wt_gone+=("$path"); freed+=("$branch")
+  elif [ -e "$path/.git" ]; then
+    # Refused, and nothing was touched: dirty, locked, whatever git says it is.
+    err=${err%%$'\n'*}
+    wt_dirty+=("${path#$AGENT_WT} — ${err#fatal: }")
   else
-    wt_dirty+=("$path")
+    # The .git link is gone, so git did unregister and empty it and only failed
+    # to delete the directory. The branch is free even though the folder is not;
+    # pass 0 sweeps the leftover on the next run.
+    wt_orphan+=("$path"); freed+=("$branch")
   fi
 done < <(worktree_list)
 
@@ -80,7 +112,7 @@ held_by() {
   printf '%s\n' "$HELD" | awk -F'\t' -v b="$1" '$1==b{print $2}'
 }
 
-del=(); keep_unmerged=(); keep_local=(); merged_live=(); held=(); skipped=0
+del=(); keep_unmerged=(); keep_local=(); merged_live=(); held_unmerged=(); skipped=0
 
 while read -r branch upstream track; do
   [ -n "$branch" ] || continue
@@ -88,8 +120,12 @@ while read -r branch upstream track; do
 
   wt=$(held_by "$branch")
   if [ -n "$wt" ]; then
-    merged "$branch" && held+=("$branch -> $wt")
-    skipped=$((skipped+1)); continue
+    # Pass 1 has already reported every *merged* branch still held by a
+    # worktree, as removed, refused, or foreign. Unmerged ones it skipped
+    # silently, and a worktree left alone on every run must not look like
+    # nothing to do — so name them here.
+    merged "$branch" || held_unmerged+=("$branch -> ${wt#$AGENT_WT}")
+    continue
   fi
 
   if [ -n "$upstream" ] && [ "$track" = "[gone]" ]; then
@@ -122,8 +158,12 @@ fi
 [ ${#keep_unmerged[@]} -gt 0 ] && { echo "Kept — remote gone but NOT merged (check before deleting):"; printf '  %s\n' "${keep_unmerged[@]}"; }
 [ ${#keep_local[@]} -gt 0 ] && { echo "Kept — local only, unmerged work:"; printf '  %s\n' "${keep_local[@]}"; }
 [ ${#merged_live[@]} -gt 0 ] && { echo "Merged, but the remote branch still exists (kept — delete it on GitHub first):"; printf '  %s\n' "${merged_live[@]}"; }
-[ ${#wt_dirty[@]} -gt 0 ] && { echo "Worktree kept — uncommitted or untracked files inside:"; printf '  %s\n' "${wt_dirty[@]#$AGENT_WT}"; }
+[ ${#wt_dirty[@]} -gt 0 ] && { echo "Worktree kept — git refused to remove it:"; printf '  %s\n' "${wt_dirty[@]}"; }
+[ ${#wt_orphan[@]} -gt 0 ] && { echo "Worktree unregistered, but its directory could not be deleted (delete it yourself, or re-run):"; printf '  %s\n' "${wt_orphan[@]#$AGENT_WT}"; }
+[ ${#wt_swept[@]} -gt 0 ] && { [ "$APPLY" = 1 ] && echo "Swept ${#wt_swept[@]} empty leftover director(ies) git no longer tracks:" \
+                                                || echo "Would sweep ${#wt_swept[@]} empty leftover director(ies) git no longer tracks:"; printf '  %s\n' "${wt_swept[@]}"; }
+[ ${#wt_stray[@]} -gt 0 ] && { echo "Kept — directory under .claude/worktrees/ that git does not track:"; printf '  %s\n' "${wt_stray[@]}"; }
 [ ${#wt_foreign[@]} -gt 0 ] && { echo "Merged, but held by a worktree outside .claude/worktrees/ (yours to remove):"; printf '  %s\n' "${wt_foreign[@]}"; }
-[ ${#held[@]} -gt 0 ] && { echo "Merged, but still held by a worktree:"; printf '  %s\n' "${held[@]}"; }
-[ "$skipped" -gt 0 ] && echo "Skipped $skipped (current / default / active remote / in a worktree)."
+[ ${#held_unmerged[@]} -gt 0 ] && { echo "Kept — worktree held by a branch with unmerged work:"; printf '  %s\n' "${held_unmerged[@]}"; }
+[ "$skipped" -gt 0 ] && echo "Skipped $skipped (current / default / active remote)."
 exit 0
