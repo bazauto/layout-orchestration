@@ -103,6 +103,49 @@ test('a mocked 409 on DELETE /api/users/:id renders the backend message in the U
   await expect(page.getByText('Cannot remove the last admin account')).toBeVisible();
 });
 
+/**
+ * Reported from the live layout: adding an operator with a short password
+ * showed only "Invalid user payload". The actionable text is in `details`,
+ * which the frontend used to discard.
+ */
+test('a 400 with Zod field errors renders the actionable message, not the generic label', async ({
+  page,
+}) => {
+  await installMockAuth(page, { role: 'admin' });
+  await installMockWebSocket(page);
+  await stubConfigApis(page);
+
+  await page.route('**://localhost:3000/api/users', (route: Route) => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(USERS) });
+    }
+    if (route.request().method() === 'POST') {
+      return route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: 'Invalid user payload',
+          details: {
+            formErrors: [],
+            fieldErrors: { password: ['Password must be at least 8 characters'] },
+          },
+        }),
+      });
+    }
+    return route.continue();
+  });
+
+  await openConfigureScreen(page);
+  await page.getByRole('button', { name: /^Users/ }).click();
+
+  await page.getByPlaceholder('Username').fill('shortpw');
+  await page.getByPlaceholder('Password').fill('1234567');
+  await page.getByRole('button', { name: 'Add' }).click();
+
+  await expect(page.getByText(/Password must be at least 8 characters/)).toBeVisible();
+  await expect(page.getByText('Invalid user payload', { exact: true })).toHaveCount(0);
+});
+
 test('as operator, the Users tab is not rendered', async ({ page }) => {
   await installMockAuth(page, { role: 'operator' });
   await installMockWebSocket(page);

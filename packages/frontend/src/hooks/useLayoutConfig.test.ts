@@ -34,6 +34,7 @@
 import { act, renderHook, waitFor, type RenderHookResult } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  mutate,
   useLayoutConfig,
   type DeleteBlockResult,
   type MutationResult,
@@ -385,6 +386,91 @@ describe('useLayoutConfig', () => {
         await result.current.requestRoute({ locoAddress: 37, startBlockId: 'block-1', destinationBlockId: 'block-2' });
       });
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  /**
+   * A Zod 400 carries the only actionable text in `details`, not `error`.
+   * Reported from the live layout: adding an operator with a short password
+   * showed "Invalid user payload" and nothing else.
+   */
+  describe('error message extraction', () => {
+    it('surfaces a Zod field error rather than the generic error label', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: 'Invalid user payload',
+            details: {
+              formErrors: [],
+              fieldErrors: { password: ['Password must be at least 8 characters'] },
+            },
+          },
+          400,
+        ),
+      );
+
+      const result = await mutate('/api/users', { method: 'POST' });
+
+      expect(result.ok).toBe(false);
+      expect(result.message).toBe('password: Password must be at least 8 characters');
+    });
+
+    it('joins multiple field errors and includes form-level errors', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: 'Invalid user payload',
+            details: {
+              formErrors: ['Unrecognized key: nickname'],
+              fieldErrors: {
+                username: ['Username is required'],
+                password: ['Password must be at least 8 characters'],
+              },
+            },
+          },
+          400,
+        ),
+      );
+
+      const result = await mutate('/api/users', { method: 'POST' });
+
+      expect(result.message).toBe(
+        'Unrecognized key: nickname; username: Username is required; password: Password must be at least 8 characters',
+      );
+    });
+
+    it('falls back to the error field when there are no details', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ error: 'Cannot demote the last admin account' }, 409),
+      );
+
+      const result = await mutate('/api/users/u1', { method: 'PATCH' });
+
+      expect(result.message).toBe('Cannot demote the last admin account');
+    });
+
+    it('falls back to the error field when details carry no usable strings', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ error: 'Invalid user payload', details: { formErrors: [], fieldErrors: {} } }, 400),
+      );
+
+      const result = await mutate('/api/users', { method: 'POST' });
+
+      expect(result.message).toBe('Invalid user payload');
+    });
+
+    it('falls back to the status when the body is not JSON', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 502,
+        json: async () => {
+          throw new Error('not JSON');
+        },
+      } as Response);
+
+      const result = await mutate('/api/users', { method: 'POST' });
+
+      expect(result.message).toBe('HTTP 502');
     });
   });
 });

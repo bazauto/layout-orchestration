@@ -197,7 +197,7 @@ describe('User management routes — admin CRUD', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('create with a 7-character password returns 400', async () => {
+  it('create with a 7-character password returns 400 and says how to fix it', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/users',
@@ -205,6 +205,14 @@ describe('User management routes — admin CRUD', () => {
       payload: { username: 'shortpw', password: '1234567', role: 'operator' },
     });
     expect(res.statusCode).toBe(400);
+
+    // The admin only ever sees `details` — the frontend surfaces the field
+    // errors in preference to the generic `error` label. Zod's default text
+    // ("String must contain at least 8 character(s)") is not an instruction.
+    const body = res.json() as { details: { fieldErrors: Record<string, string[]> } };
+    expect(body.details.fieldErrors.password).toEqual([
+      'Password must be at least 8 characters',
+    ]);
   });
 
   it('create with a duplicate username returns 409', async () => {
