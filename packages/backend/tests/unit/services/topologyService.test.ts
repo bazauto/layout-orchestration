@@ -8,9 +8,16 @@ import {
   LockedByRouteError,
 } from '../../../src/services/TopologyService';
 import { MAX_EDGES_PER_LAYOUT } from '../../../src/domain/topology';
-import { BlockEdge } from '../../../src/domain/types';
+import { EMPTY_NAME_BOOK } from '../../../src/domain/naming';
+import { BlockEdge, LayoutId, NameBook } from '../../../src/domain/types';
 import { ILayoutRepository } from '../../../src/ports/ILayoutRepository';
 import { IRouteLockView } from '../../../src/ports/IRouteLockView';
+import { INameBook } from '../../../src/ports/INameBook';
+
+/** A fixed INameBook — no repository, no refresh — for tests asserting on a rendered name. */
+function staticNameBook(book: NameBook): INameBook {
+  return { get: () => book, refresh: async (_layoutId: LayoutId) => {} };
+}
 
 const silentLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -423,6 +430,57 @@ describe('TopologyService — deletePointIfUnreferenced', () => {
     );
     await expect(service.deletePointIfUnreferenced(LAYOUT, 'p1')).rejects.toThrow(/e1/);
     expect(repo.deletePoint).not.toHaveBeenCalled();
+  });
+
+  it('#54: names the point and the referencing edges when a book is supplied', async () => {
+    const book: NameBook = {
+      ...EMPTY_NAME_BOOK,
+      points: new Map([['p1', 'Yard Points']]),
+      blocks: new Map([
+        ['b1', 'Down Platform'],
+        ['b2', 'Up Loop'],
+      ]),
+      edges: new Map([['e1', 'Down Platform:east → Up Loop:west']]),
+    };
+    const repo = makeRepo({
+      listBlockEdges: vi.fn().mockResolvedValue([
+        edge({ id: 'e1', fromBlockId: 'b1', toBlockId: 'b2', pointConditions: [{ pointId: 'p1', requiredPosition: 'normal' }] }),
+      ]),
+    });
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks, staticNameBook(book));
+
+    await expect(service.deletePointIfUnreferenced(LAYOUT, 'p1')).rejects.toThrow(
+      'Point "Yard Points" (p1) is referenced by 1 edge: "Down Platform:east → Up Loop:west" (e1)',
+    );
+  });
+
+  it('#54: shows exactly 5 referencing edges and says "(first 5 shown)" for a sixth', async () => {
+    const referencingEdges = Array.from({ length: 6 }, (_, i) =>
+      edge({
+        id: `e${i}`,
+        fromBlockId: 'b1',
+        toBlockId: 'b2',
+        fromEnd: `e${i}-out`,
+        toEnd: `e${i}-in`,
+        pointConditions: [{ pointId: 'p1', requiredPosition: 'normal' }],
+      }),
+    );
+    const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue(referencingEdges) });
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
+
+    let caught: unknown;
+    try {
+      await service.deletePointIfUnreferenced(LAYOUT, 'p1');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TopologyRejectedError);
+    const message = (caught as Error).message;
+    expect(message).toContain('6 edges');
+    expect(message).toContain('(first 5 shown)');
+    expect(message).toContain('e0');
+    expect(message).toContain('e4');
+    expect(message).not.toContain('e5');
   });
 });
 

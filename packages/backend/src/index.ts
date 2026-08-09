@@ -16,6 +16,7 @@ import { DrizzleAuthRepository } from './adapters/db/authRepository';
 import { LayoutService } from './services/LayoutService';
 import { TopologyService } from './services/TopologyService';
 import { ReservationService } from './services/ReservationService';
+import { NameBookCache } from './services/nameBook';
 import { AuthService } from './services/AuthService';
 import { bootstrapAdminIfNeeded } from './services/bootstrapAdmin';
 import { buildServer } from './transport/http/server';
@@ -122,7 +123,10 @@ async function main() {
   // TopologyService depends on it only through the read-only IRouteLockView
   // port (D10).
   const stateManager = new LayoutStateManager(activeLayoutId);
-  const reservationService = new ReservationService(repo, stateManager, adapterLogger);
+  // #54: one cache, bound to the running layout, shared by all three
+  // services (and the transport layer below) — see docs/naming.md D4.
+  const nameBook = new NameBookCache(repo, activeLayoutId);
+  const reservationService = new ReservationService(repo, stateManager, adapterLogger, nameBook);
   const layoutService = new LayoutService(
     dcc,
     mqtt,
@@ -131,12 +135,14 @@ async function main() {
     reservationService,
     adapterLogger,
     config.sensors,
+    nameBook,
   );
   const topologyService = new TopologyService(
     repo,
     () => layoutService.reloadTopology(),
     adapterLogger,
     reservationService,
+    nameBook,
   );
   const authService = new AuthService(authRepo, adapterLogger);
   await layoutService.start(activeLayoutId);
