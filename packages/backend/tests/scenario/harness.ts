@@ -15,6 +15,7 @@ import { randomUUID } from 'crypto';
 import { LayoutService, LayoutServiceLogger } from '../../src/services/LayoutService';
 import { TopologyService, TopologyServiceLogger } from '../../src/services/TopologyService';
 import { ReservationService, ReservationServiceLogger } from '../../src/services/ReservationService';
+import { NameBookCache } from '../../src/services/nameBook';
 import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
@@ -271,6 +272,8 @@ export interface ScenarioHarness {
   service: LayoutService;
   topologyService: TopologyService;
   reservationService: ReservationService;
+  /** The `INameBook` injected into `service` (and, from step 5, the other two) — exposed so a scenario can assert a rendered name reached a Safe-Stop reason or force a refresh directly. */
+  nameBook: NameBookCache;
   /** All LayoutEvents emitted by `service`, in order, since harness creation. */
   events: LayoutEvent[];
   /**
@@ -316,6 +319,10 @@ export function createScenarioHarness(options?: { clearAfterValidReadings?: numb
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
   const stateManager = new LayoutStateManager(LAYOUT_ID);
+  // #54: exercises the whole naming chain end to end, so scenario assertions
+  // can check that a book-supplied name reaches a Safe-Stop reason/log line,
+  // not just that the id-only degradation path still works (unit-tested).
+  const nameBook = new NameBookCache(repo, LAYOUT_ID);
   const reservationService = new ReservationService(repo, stateManager, silentLogger);
   const service = new LayoutService(
     dcc,
@@ -325,6 +332,7 @@ export function createScenarioHarness(options?: { clearAfterValidReadings?: numb
     reservationService,
     silentLogger,
     options,
+    nameBook,
   );
   const topologyService = new TopologyService(
     repo,
@@ -343,6 +351,7 @@ export function createScenarioHarness(options?: { clearAfterValidReadings?: numb
     service,
     topologyService,
     reservationService,
+    nameBook,
     events,
     clock: () => new Date(),
     start: () => service.start(LAYOUT_ID),

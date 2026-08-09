@@ -7,6 +7,7 @@ import {
   SensorNotFoundError,
 } from '../../../src/services/LayoutService';
 import { ReservationService } from '../../../src/services/ReservationService';
+import { NameBookCache } from '../../../src/services/nameBook';
 import { LayoutStateManager } from '../../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../../src/adapters/mqtt/SimulatedMqttAdapter';
@@ -417,6 +418,28 @@ describe('LayoutService — sensor-driven block state', () => {
     expect(status.status).toBe('safe-stop');
     expect(status.reason).toMatch(/s1/);
     expect(status.reason).toMatch(/layout\/test\/sensor\/s1\/reading/);
+
+    await service.stop();
+  });
+
+  it('#54: with a populated NameBookCache, the Safe-Stop reason names the sensor (D9 — baked at generation time)', async () => {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    vi.mocked(repo.listSensors).mockResolvedValue([{ ...SENSOR_S1, name: 'Platform Detector' }]);
+    const stateManager = new LayoutStateManager('test');
+    const reservations = new ReservationService(repo, stateManager, silentLogger);
+    const names = new NameBookCache(repo, 'test');
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, reservations, silentLogger, undefined, names);
+    await service.start('test');
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', { badField: 'nonsense' });
+    await new Promise((r) => setImmediate(r));
+
+    const status = service.getSystemStatus();
+    expect(status.status).toBe('safe-stop');
+    expect(status.reason).toContain('Platform Detector');
+    expect(status.reason).toContain('s1');
 
     await service.stop();
   });

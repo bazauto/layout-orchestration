@@ -170,6 +170,10 @@ describe('scenario: invalid topology triggers Safe-Stop', () => {
 
     expect(h.service.getSystemStatus().status).toBe('safe-stop');
     expect(h.service.getSystemStatus().reason).toMatch(/duplicates the connection/i);
+    // #54: the reason names the blocks the duplicated edges connect, not
+    // just their UUIDs — proving a name reaches system/status.reason.
+    expect(h.service.getSystemStatus().reason).toContain('Block 0');
+    expect(h.service.getSystemStatus().reason).toContain('Block 1');
     expect(h.service.getTrackGraph()).toBeNull();
 
     // Healing case from D1: deleting one of the duplicate pair must clear
@@ -247,11 +251,24 @@ describe('scenario: invalid topology triggers Safe-Stop', () => {
       lengthMm: null,
     });
 
+    // #54/D10 regression guard: `reloadTopology` now calls `NameBookCache.refresh`
+    // BEFORE `loadTopology` — and `refresh` runs its OWN `listBlockEdges` call,
+    // which hits the same corrupt row and throws the same
+    // `BlockEdgeRowInvalidError`. If the refresh's catch were not narrowed to
+    // that error alone (or were missing), this would surface as an unhandled
+    // rejection out of `start()` rather than a Safe-Stop — exactly the #10
+    // regression D10 exists to prevent.
     await expect(h.start()).resolves.toBeUndefined();
 
     expect(h.service.getSystemStatus().status).toBe('safe-stop');
     expect(h.service.getSystemStatus().reason).toMatch(/failed validation/i);
     expect(h.service.getTrackGraph()).toBeNull();
+
+    // The name book itself must not be the thing that failed: it falls back
+    // to an empty edges map but still resolves, and everything it fetched
+    // independently of the corrupt edge (blocks) is still populated.
+    expect(h.nameBook.get().edges.size).toBe(0);
+    expect(h.nameBook.get().blocks.get('b1')).toBe('Block 1');
 
     await h.service.stop();
   });
