@@ -5,6 +5,7 @@ import {
   BRAKING_TICK_MS,
   MIN_STOPPING_DISTANCE_MM,
   buildStopExpectation,
+  describeBrakingRefusal,
   isBrakingOverrun,
   planBrakingSchedule,
   remainingRouteDistanceMm,
@@ -12,7 +13,8 @@ import {
   scalarStoppingDistance,
 } from '../../../src/domain/braking';
 import { buildTrackGraph } from '../../../src/domain/graph';
-import { BlockEdge, BrakingProfile, RoutePathStep, RouteReservation } from '../../../src/domain/types';
+import { EMPTY_NAME_BOOK } from '../../../src/domain/naming';
+import { BlockEdge, BrakingProfile, NameBook, RoutePathStep, RouteReservation } from '../../../src/domain/types';
 
 const LAYOUT = 'layout-1';
 const NOW = new Date('2026-08-08T00:00:00Z');
@@ -317,5 +319,52 @@ describe('buildStopExpectation / isBrakingOverrun', () => {
     const expectation = buildStopExpectation(r, 2);
     expect(isBrakingOverrun(expectation, 'b3', 'clear')).toBe(false);
     expect(isBrakingOverrun(expectation, 'b3', 'unknown')).toBe(false);
+  });
+});
+
+describe('describeBrakingRefusal', () => {
+  it('degrades to raw ids, byte-for-byte, with no book (D8)', () => {
+    expect(describeBrakingRefusal({ kind: 'unmeasured-track', edgeId: 'e1' })).toBe(
+      'edge e1 has no measured length — unsafe for automated braking',
+    );
+    expect(describeBrakingRefusal({ kind: 'unknown-edge', edgeId: 'e1' })).toBe(
+      'edge e1 does not exist in the current track graph',
+    );
+    expect(describeBrakingRefusal({ kind: 'already-stopped', locoAddress: 3 })).toBe(
+      'loco 3 is already stopped',
+    );
+    expect(describeBrakingRefusal({ kind: 'unknown-loco', locoAddress: 3 })).toBe(
+      'loco 3 is not in the roster',
+    );
+    expect(describeBrakingRefusal({ kind: 'ambiguous-loco', locoAddress: 3, count: 2 })).toBe(
+      'loco 3 has 2 roster entries',
+    );
+    expect(describeBrakingRefusal({ kind: 'unknown-loco-state', locoAddress: 3 })).toBe(
+      'loco 3 has no known commanded state',
+    );
+  });
+
+  it('renders quoted names when a book is supplied', () => {
+    const book: NameBook = {
+      ...EMPTY_NAME_BOOK,
+      edges: new Map([['e1', 'Down Platform:north → Up Loop:south']]),
+      locos: new Map([[3, 'Jinty']]),
+    };
+    expect(describeBrakingRefusal({ kind: 'unmeasured-track', edgeId: 'e1' }, book)).toBe(
+      'edge "Down Platform:north → Up Loop:south" (e1) has no measured length — unsafe for automated braking',
+    );
+    expect(describeBrakingRefusal({ kind: 'already-stopped', locoAddress: 3 }, book)).toBe(
+      'loco "Jinty" (3) is already stopped',
+    );
+  });
+
+  it('keeps route ids bare even with a book (D3 — routes are not in the NameBook)', () => {
+    const book: NameBook = { ...EMPTY_NAME_BOOK, locos: new Map([[3, 'Jinty']]) };
+    expect(describeBrakingRefusal({ kind: 'manual-authority', routeId: 'route-1' }, book)).toBe(
+      'route route-1 is manual authority',
+    );
+    expect(describeBrakingRefusal({ kind: 'route-not-active', routeId: 'route-1', status: 'cancelled' }, book)).toBe(
+      'route route-1 is cancelled, not active',
+    );
   });
 });

@@ -35,10 +35,12 @@ import {
   BrakingStep,
   BrakingStopExpectation,
   Direction,
+  NameBook,
   Occupancy,
   RouteReservation,
 } from './types';
 import { TrackGraph } from './graph';
+import { edgeLabel, locoLabel } from './naming';
 
 // ─── Constants (B1, B3, B5) ────────────────────────────────────────────────────
 
@@ -336,26 +338,26 @@ function describeBrakingModelFault(fault: BrakingModelFault): string {
 }
 
 /** Human-readable summary of a refusal, for HTTP error bodies and log messages, mirroring `describeRejections`. */
-export function describeBrakingRefusal(reason: BrakingRefusal): string {
+export function describeBrakingRefusal(reason: BrakingRefusal, book?: NameBook): string {
   switch (reason.kind) {
     case 'model-unavailable':
       return `braking model unavailable: ${describeBrakingModelFault(reason.fault)}`;
     case 'already-stopped':
-      return `loco ${reason.locoAddress} is already stopped`;
+      return `loco ${locoLabel(reason.locoAddress, book)} is already stopped`;
     case 'insufficient-distance':
       return `required stopping distance ${reason.requiredMm}mm exceeds available distance ${reason.availableMm}mm`;
     case 'unmeasured-track':
-      return `edge ${reason.edgeId} has no measured length — unsafe for automated braking`;
+      return `edge ${edgeLabel(reason.edgeId, book)} has no measured length — unsafe for automated braking`;
     case 'unknown-edge':
-      return `edge ${reason.edgeId} does not exist in the current track graph`;
+      return `edge ${edgeLabel(reason.edgeId, book)} does not exist in the current track graph`;
     case 'target-behind-train':
       return `target index ${reason.targetIndex} is not ahead of confirmed index ${reason.confirmedIndex}`;
     case 'unknown-loco':
-      return `loco ${reason.locoAddress} is not in the roster`;
+      return `loco ${locoLabel(reason.locoAddress, book)} is not in the roster`;
     case 'ambiguous-loco':
-      return `loco ${reason.locoAddress} has ${reason.count} roster entries`;
+      return `loco ${locoLabel(reason.locoAddress, book)} has ${reason.count} roster entries`;
     case 'unknown-loco-state':
-      return `loco ${reason.locoAddress} has no known commanded state`;
+      return `loco ${locoLabel(reason.locoAddress, book)} has no known commanded state`;
     case 'system-not-online':
       return `system is ${reason.status}, not online`;
     case 'auto-not-permitted':
