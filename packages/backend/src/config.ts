@@ -69,6 +69,14 @@ export const config = {
      * acknowledge (clear) the fault.
      */
     clearAfterValidReadings: parseInt(process.env.SENSOR_FAULT_CLEAR_READINGS ?? '3', 10),
+    /**
+     * #65: bench-testing tool. When true the process can FABRICATE sensor
+     * readings — it can make the orchestrator believe a block is clear while
+     * a train stands in it. Off by default; never enabled on a live layout.
+     * Gates constructing SensorSimulationService at all (D2), not a runtime
+     * check.
+     */
+    simulationEnabled: process.env.SENSOR_SIMULATION === 'true',
   },
   log: {
     level: process.env.LOG_LEVEL ?? 'info',

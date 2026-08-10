@@ -16,6 +16,7 @@ import { DrizzleAuthRepository } from './adapters/db/authRepository';
 import { LayoutService } from './services/LayoutService';
 import { TopologyService } from './services/TopologyService';
 import { ReservationService } from './services/ReservationService';
+import { SensorSimulationService } from './services/SensorSimulationService';
 import { NameBookCache } from './services/nameBook';
 import { AuthService } from './services/AuthService';
 import { bootstrapAdminIfNeeded } from './services/bootstrapAdmin';
@@ -134,7 +135,10 @@ async function main() {
     stateManager,
     reservationService,
     adapterLogger,
-    config.sensors,
+    // #65 R6: narrowed rather than passing `config.sensors` wholesale —
+    // structural typing would let `simulationEnabled` compile straight
+    // through, which is misleading: LayoutService has no use for the flag.
+    { clearAfterValidReadings: config.sensors.clearAfterValidReadings },
     nameBook,
   );
   const topologyService = new TopologyService(
@@ -145,6 +149,20 @@ async function main() {
     nameBook,
   );
   const authService = new AuthService(authRepo, adapterLogger);
+
+  // #65 D2: the flag gates constructing the service at all, not a runtime
+  // check inside it — with SENSOR_SIMULATION unset (the default), this
+  // process never has the ability to fabricate a reading.
+  const sensorSimulation = config.sensors.simulationEnabled
+    ? new SensorSimulationService(mqtt, repo, adapterLogger, activeLayoutId, nameBook)
+    : undefined;
+  if (sensorSimulation) {
+    adapterLogger.warn(
+      '[Bootstrap] SENSOR SIMULATION ENABLED — this process can fabricate sensor readings',
+      { layoutId: activeLayoutId },
+    );
+  }
+
   await layoutService.start(activeLayoutId);
 
   const server = await buildServer(
@@ -159,6 +177,7 @@ async function main() {
       corsAllowedOrigins: config.cors.allowedOrigins,
     },
     nameBook,
+    sensorSimulation,
   );
   await server.listen({ port: config.http.port, host: config.http.host });
 

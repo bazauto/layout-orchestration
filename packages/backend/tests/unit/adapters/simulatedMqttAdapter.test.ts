@@ -73,4 +73,50 @@ describe('SimulatedMqttAdapter — retained flag', () => {
       true,
     );
   });
+
+  it('publish records qos and retain in publishLog', async () => {
+    const adapter = new SimulatedMqttAdapter();
+
+    await adapter.publish('layout/test/sensor/s1/reading', { state: 'occupied' }, { qos: 1, retain: true });
+    await adapter.publish('layout/test/sensor/s1/reading', { state: 'clear' });
+
+    expect(adapter.publishLog[0]).toMatchObject({ qos: 1, retain: true });
+    expect(adapter.publishLog[1]).toMatchObject({ qos: 1, retain: false });
+  });
+});
+
+describe('SimulatedMqttAdapter — clearRetained (#65 D6/R1)', () => {
+  it('deletes the retained value, so a later subscribe replays nothing', async () => {
+    const adapter = new SimulatedMqttAdapter();
+    await adapter.publish('layout/test/sensor/s1/reading', { state: 'occupied' }, { retain: true });
+
+    await adapter.clearRetained('layout/test/sensor/s1/reading');
+
+    const handler = vi.fn();
+    await adapter.subscribe('layout/test/sensor/s1/reading', handler);
+    await new Promise((r) => setImmediate(r));
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("delivers '' to an already-subscribed handler with retained: false", async () => {
+    const adapter = new SimulatedMqttAdapter();
+    const handler = vi.fn();
+    await adapter.subscribe('layout/test/sensor/s1/reading', handler);
+
+    await adapter.clearRetained('layout/test/sensor/s1/reading');
+    await new Promise((r) => setImmediate(r));
+
+    expect(handler).toHaveBeenCalledWith('', 'layout/test/sensor/s1/reading', false);
+  });
+
+  it("records { payload: '', qos: 1, retain: true } in publishLog", async () => {
+    const adapter = new SimulatedMqttAdapter();
+
+    await adapter.clearRetained('layout/test/sensor/s1/reading');
+
+    expect(adapter.publishLog).toContainEqual(
+      expect.objectContaining({ topic: 'layout/test/sensor/s1/reading', payload: '', qos: 1, retain: true }),
+    );
+  });
 });

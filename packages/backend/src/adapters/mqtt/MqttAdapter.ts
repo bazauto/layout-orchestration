@@ -162,6 +162,19 @@ export class MqttAdapter implements IMqttAdapter {
     });
   }
 
+  /** See the doc comment on `IMqttAdapter.clearRetained` (#65 D6/R1). */
+  async clearRetained(topic: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.client?.connected) {
+        return reject(new Error('MQTT client is not connected'));
+      }
+      this.client.publish(topic, Buffer.alloc(0), { qos: 1, retain: true }, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
   async subscribe(topic: string, handler: MqttMessageHandler): Promise<void> {
     this.subscriptions.set(topic, handler);
     return new Promise((resolve, reject) => {

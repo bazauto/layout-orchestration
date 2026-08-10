@@ -301,6 +301,45 @@ export const sensorUpdateSchema = sensorCreateSchema.partial().strict();
 
 export type SensorUpdateInput = z.infer<typeof sensorUpdateSchema>;
 
+/**
+ * Write schema for `POST .../sensors/:sensorId/simulate-reading` (#65 R5).
+ * One route, one discriminated body — the four operator actions differ only
+ * in the bytes published and share lookup/in-service/logging/response, so
+ * four routes would mean four copies of the 404/409 mapping.
+ *
+ * Strictly validated even though `malformed`'s PUBLISHED bytes are
+ * deliberately invalid on purpose: the variant is selected BY NAME from a
+ * server-side table (D5), never client-supplied bytes, so a bad REQUEST body
+ * here is an ordinary 400 (CLAUDE.md's "a malformed operator UI request is a
+ * 400, not a layout halt" rule) — a wholly different boundary from the
+ * malformed payload that later round-trips through MQTT and correctly
+ * Safe-Stops.
+ *
+ * `clear-retained` carries NO `retain` field, and `.strict()` rejects one — a
+ * non-retained zero-byte publish clears nothing, so accepting `retain: false`
+ * there would be a silent no-op. `retain` defaults to `true` elsewhere (D6),
+ * matching `sensor/*\/reading`'s contract retention.
+ */
+export const simulateReadingSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('reading'),
+      state: z.enum(['occupied', 'clear']),
+      retain: z.boolean().default(true),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('malformed'),
+      variant: z.enum(['bad-enum', 'missing-field', 'not-an-object']),
+      retain: z.boolean().default(true),
+    })
+    .strict(),
+  z.object({ action: z.literal('clear-retained') }).strict(),
+]);
+
+export type SimulateReadingInput = z.infer<typeof simulateReadingSchema>;
+
 // ─── Route Reservations ────────────────────────────────────────────────────
 //
 // Same posture as block_edges above: full-row Zod, no coercion, no defaults,

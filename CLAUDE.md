@@ -21,6 +21,7 @@ style preferences.
 | `docs/braking.md` | Per-loco braking model, deceleration profile, and calibration (B1–B10) |
 | `docs/point-feedback.md` | Point position confirmation channel and fault model (D1–D10) |
 | `docs/naming.md` | Operator-facing names: the `NameBook`, its invalidation points, and the D8 degradation contract (D1–D10) |
+| `docs/sensor-simulation.md` | Flag-gated sensor simulation panel: decision record and mechanical resolutions (D1–D13, R1–R6) |
 | `docs/claude-review.md`, `docs/gpt-review.md` | Open design questions |
 
 Never invent an MQTT topic or payload field. If `docs/mqtt-contract.md` does not cover
@@ -171,6 +172,7 @@ row rather than appending the new story beneath the old one.**
 | **Sensor-fault recovery** (#34, supersedes #27's scalar pair) | `SystemHealth.sensorFaults` is a keyed collection, one latched fault per sensor, with `acknowledgeSensorFault` and `sensors.in_service` for recovery. Block occupancy is **derived**, not last-write-wins: `domain/occupancy.ts#deriveBlockOccupancy` is the only thing that feeds `ReservationService.onOccupancyChange`. | `docs/sensor-fault-recovery.md` |
 | **Local auth** (#20) and **user/role management** (#53) | argon2id + session tokens pure in `domain/auth.ts`; one Fastify `onRequest` hook rejects unauthenticated requests before any route, including the `/ws` upgrade. `AuthService` owns all user policy; the repository stays storage. `requireAdmin` on every topology/config write and all of `/api/users`. `POST /api/emergency-stop` is the single deliberately unauthenticated path. | `docs/auth.md` |
 | **Operator-facing names** (#54) | `NameBook` (`domain/types.ts`) + pure helpers in `domain/naming.ts`; every `describe*` takes an optional trailing `book?: NameBook` and, without one, renders raw ids byte-for-byte as before. `NameBookCache` (`services/nameBook.ts`) behind the `INameBook` port is injected into the three services as an optional trailing constructor parameter. | `docs/naming.md` |
+| **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) bench tool: `SensorSimulationService` publishes a fabricated reading to the sensor's own `mqttTopic` and the broker echoes it back through the ordinary ingestion path — byte-identical to hardware, no marker field. `GET /api/capabilities` gates the Operate-pane panel and fails closed. | `docs/sensor-simulation.md` |
 
 ### Traps
 
@@ -194,6 +196,12 @@ Things that look like bugs or oversights and are not. Each was a deliberate deci
 - **`ReservationService.resume` returning `resumed: true` is provisional.** The service has
   no DCC access; `LayoutService.resumeRoute` must re-command every held point before the
   resume counts, and rolls back to `suspended` with locks retained if any is rejected.
+- **An empty payload on a sensor topic is a retained-clear, not a malformed reading** —
+  `handleSensorReading` step 2b returns before the Zod parse and raises no fault (#65 D7,
+  `docs/sensor-fault-recovery.md` D9). It looks like a hole in the "malformed payload is a
+  Safe-Stop" rule and is not: an empty message asserts nothing about occupancy, and halting
+  the layout because someone cleared a retained flag is a nuisance, not a safety win.
+  `null`, `{}` and whitespace-only payloads all still fault.
 
 ### Open limits
 

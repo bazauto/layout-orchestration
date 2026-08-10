@@ -39,8 +39,19 @@ export class SimulatedMqttAdapter implements IMqttAdapter {
   private readonly subscriptions = new Map<string, MqttMessageHandler>();
   /** Retained messages — keyed by topic. */
   private readonly retained = new Map<string, unknown>();
-  /** Full record of every published message. Useful for test assertions. */
-  public readonly publishLog: Array<{ ts: Date; topic: string; payload: unknown }> = [];
+  /**
+   * Full record of every published message, including `clearRetained` calls
+   * (recorded with `payload: ''`, matching what a real broker's zero-length
+   * publish looks like on the wire). `qos`/`retain` are asserted on by the
+   * #65 D6 clear-retained tests.
+   */
+  public readonly publishLog: Array<{
+    ts: Date;
+    topic: string;
+    payload: unknown;
+    qos: 0 | 1 | 2;
+    retain: boolean;
+  }> = [];
 
   async connect(): Promise<void> {
     this.connected = true;
@@ -61,7 +72,13 @@ export class SimulatedMqttAdapter implements IMqttAdapter {
   }
 
   async publish(topic: string, payload: unknown, options?: PublishOptions): Promise<void> {
-    this.publishLog.push({ ts: new Date(), topic, payload });
+    this.publishLog.push({
+      ts: new Date(),
+      topic,
+      payload,
+      qos: options?.qos ?? 1,
+      retain: options?.retain ?? false,
+    });
 
     if (options?.retain) {
       this.retained.set(topic, payload);
@@ -75,6 +92,26 @@ export class SimulatedMqttAdapter implements IMqttAdapter {
       if (topicMatchesPattern(topic, pattern)) {
         // Deliver asynchronously to match real broker behaviour
         setImmediate(() => handler(payload, topic, false));
+      }
+    }
+  }
+
+  /**
+   * See the doc comment on `IMqttAdapter.clearRetained` (#65 D6/R1). Deletes
+   * the stored retained value (so a later `subscribe` replays nothing — D6's
+   * explicit requirement, or clear-retained would be untested in simulator
+   * mode) and delivers `''` live to every matching subscriber with
+   * `retained: false`, exactly like `publish` — a real broker's empty
+   * retained PUBLISH is still delivered to current subscribers; clearing the
+   * retained store is a side effect, not a substitute for delivery.
+   */
+  async clearRetained(topic: string): Promise<void> {
+    this.publishLog.push({ ts: new Date(), topic, payload: '', qos: 1, retain: true });
+    this.retained.delete(topic);
+
+    for (const [pattern, handler] of this.subscriptions) {
+      if (topicMatchesPattern(topic, pattern)) {
+        setImmediate(() => handler('', topic, false));
       }
     }
   }

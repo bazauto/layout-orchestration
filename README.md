@@ -105,6 +105,10 @@ Important mode flags:
 
 Default local development is typically best in hybrid mode.
 
+`SENSOR_SIMULATION=true` exposes a bench-testing panel and API that FABRICATE sensor
+readings — off by default; **do not enable on a live layout**. See
+`docs/sensor-simulation.md`.
+
 `INITIAL_ADMIN_PASSWORD` is required the first time the backend starts against
 an empty database — it bootstraps a single `admin` account and the backend
 refuses to start without it. That first admin can then create every other
@@ -206,6 +210,11 @@ Current automated coverage includes:
   the path); live routes with their progress along the path, Cancel, and Resume; latched
   route faults with Acknowledge. A refused request shows the backend's reason — "no route
   exists to block 4 — block b2 is occupied" — and leaves the form populated
+- Sensor simulation panel (#65): visible only when the backend has `SENSOR_SIMULATION=true`
+  and reports it via `GET /api/capabilities` (fails closed on any error). Injects an
+  occupied/clear reading, a canned-malformed payload, or a retained-clear at a chosen
+  sensor, through the same MQTT round trip real hardware uses — see
+  `docs/sensor-simulation.md`
 
 ### Configure
 - CRUD for blocks, sensors, points, locos, and edges
@@ -345,6 +354,14 @@ residual by design: a route-lock message (`block ... is locked by route <id>`) s
 names the *route*, not the train behind it — a route is runtime state with a
 different invalidation lifetime than the rest of the book, so this is deferred
 rather than solved here (`docs/naming.md` D3).
+
+Sensor simulation (#65) is single-shot only — there is no timed or scripted sequence, no
+record/replay, and no cancellation semantics; each button press is one MQTT publish. The
+"last injected" history shown in the panel is client-side and resets on reload — it is not
+persisted, and it is not part of the WebSocket `STATE_SNAPSHOT` (deliberately; see
+`docs/sensor-fault-recovery.md`'s note that per-sensor last-reading stays out of that
+snapshot). The flag is off by default and must not be enabled on a live layout — see the
+safety preamble in `docs/sensor-simulation.md`.
 
 ## Next Milestones
 

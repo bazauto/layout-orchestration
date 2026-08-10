@@ -18,6 +18,8 @@ import {
   RouteReservation,
   SensorFaultView,
   SensorRecord,
+  SimulateReadingRequest,
+  SimulateReadingResponse,
   SystemStatus,
   TopologyStatus,
   TopologyViolation,
@@ -366,6 +368,22 @@ export function useLayoutConfig(layoutId: string | null) {
       method: 'POST',
     });
 
+  // #65: bench-testing tool, gated on `capabilities.sensorSimulation` at the
+  // App level — this hook doesn't know or care whether the flag is on.
+  // Deliberately does NOT call `refresh()` on success: the effect of an
+  // injection (a block/sensor-fault change) arrives over the WebSocket, and
+  // a config refresh here would only race it, same posture as
+  // `acknowledgeSensorFault` above.
+  const simulateSensorReading = async (
+    sensorId: string,
+    body: SimulateReadingRequest,
+  ): Promise<MutationResult<SimulateReadingResponse>> =>
+    mutate<SimulateReadingResponse>(`/api/layouts/${layoutId}/sensors/${sensorId}/simulate-reading`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
   // ── Routes (#4, see docs/pathfinding.md) ────────────────────────────────
   //
   // No `refresh()` on success: route state arrives over the WebSocket
@@ -489,6 +507,7 @@ export function useLayoutConfig(layoutId: string | null) {
     updateSensor,
     deleteSensor,
     acknowledgeSensorFault,
+    simulateSensorReading,
     requestRoute,
     cancelRoute,
     resumeRoute,
