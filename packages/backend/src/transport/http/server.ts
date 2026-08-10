@@ -11,6 +11,7 @@ import fastifyRateLimit from '@fastify/rate-limit';
 import { LayoutService } from '../../services/LayoutService';
 import { TopologyService } from '../../services/TopologyService';
 import { AuthService } from '../../services/AuthService';
+import { SensorSimulationService } from '../../services/SensorSimulationService';
 import { INERT_NAME_BOOK } from '../../services/nameBook';
 import { ILayoutRepository } from '../../ports/ILayoutRepository';
 import { INameBook } from '../../ports/INameBook';
@@ -26,6 +27,8 @@ import { routeRoutes } from './routes/routes';
 import { authRoutes } from './routes/auth';
 import { userRoutes } from './routes/users';
 import { emergencyStopRoutes } from './routes/emergencyStop';
+import { capabilityRoutes } from './routes/capabilities';
+import { sensorSimulationRoutes } from './routes/sensorSimulation';
 import { registerAuthHook } from './auth/hook';
 import { registerWebSocket } from '../websocket/index';
 
@@ -43,6 +46,12 @@ export async function buildServer(
   authService: AuthService,
   authConfig: AuthTransportConfig,
   nameBook: INameBook = INERT_NAME_BOOK,
+  // #65 D2/R3: undefined in every mode except SENSOR_SIMULATION=true. The
+  // six existing call sites below this parameter (every test file building
+  // a server) keep compiling unchanged and all report `sensorSimulation:
+  // false` — the capability is literally "the service exists in this
+  // process".
+  sensorSimulation?: SensorSimulationService,
 ) {
   const fastify = Fastify({ logger: { level: logLevel } });
 
@@ -86,6 +95,12 @@ export async function buildServer(
   await edgeRoutes(fastify, topologyService);
   await topologyRoutes(fastify, layoutService, topologyService);
   await routeRoutes(fastify, layoutService);
+  await capabilityRoutes(fastify, { sensorSimulation: sensorSimulation !== undefined });
+  // D2: mounted only when the flag constructed the service — an absent
+  // route (404), never a route that exists but refuses (403/409).
+  if (sensorSimulation) {
+    await sensorSimulationRoutes(fastify, sensorSimulation);
+  }
 
   // WebSocket — the upgrade itself is gated by the onRequest hook above;
   // no auth logic lives in the WS transport handler.

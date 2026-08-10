@@ -67,6 +67,33 @@ export interface SensorFaultView {
   armed: boolean;
 }
 
+// ─── Sensor Simulation (#65, see docs/sensor-simulation.md) ───────────────────
+
+export type MalformedVariant = 'bad-enum' | 'missing-field' | 'not-an-object';
+
+/** Mirrors the backend's `simulateReadingSchema` discriminated union exactly (#65 R5). */
+export type SimulateReadingRequest =
+  | { action: 'reading'; state: 'occupied' | 'clear'; retain: boolean }
+  | { action: 'malformed'; variant: MalformedVariant; retain: boolean }
+  | { action: 'clear-retained' };
+
+/** Wire shape of `POST .../simulate-reading`'s 202 body — the exact bytes published. */
+export interface SimulateReadingResponse {
+  sensorId: string;
+  sensorName: string | null;
+  topic: string;
+  action: 'reading' | 'malformed' | 'clear-retained';
+  /** The exact JSON value published. `null` for clear-retained (zero bytes, no JSON). */
+  payload: unknown;
+  retain: boolean;
+  publishedAt: string;
+}
+
+/** Wire shape of `GET /api/capabilities` (#65 D3). Fails closed — see `useCapabilities`. */
+export interface Capabilities {
+  sensorSimulation: boolean;
+}
+
 // ─── Route reservations (mirror backend domain/types.ts) ─────────────────────
 
 export type RouteStatus = 'active' | 'suspended' | 'released' | 'cancelled';

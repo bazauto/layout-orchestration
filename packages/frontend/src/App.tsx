@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './hooks/useAuth';
+import { useCapabilities } from './hooks/useCapabilities';
 import { useLayoutSocket } from './hooks/useLayoutSocket';
 import { useLayoutConfig } from './hooks/useLayoutConfig';
 import { StatusBar } from './components/StatusBar';
@@ -7,6 +8,7 @@ import { LoginScreen } from './components/LoginScreen';
 import { ThrottlePanel } from './components/ThrottlePanel';
 import { LayoutPanel } from './components/LayoutPanel';
 import { RoutesPanel } from './components/RoutesPanel';
+import { SensorSimulationPanel } from './components/SensorSimulationPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { GridEditor } from './components/GridEditor';
 import { SensorFaultBanner } from './components/SensorFaultBanner';
@@ -43,6 +45,7 @@ function AuthenticatedApp({
   // change has already revoked every session the user holds server-side
   // (Q3, docs/auth.md) — this is the client-side mirror, resetting local
   // auth state back to LoginScreen the same way a deliberate "Log out" does.
+  const capabilities = useCapabilities();
   const { snapshot, connectionState, send } = useLayoutSocket();
   const { systemStatus, systemMode, safeStopReason, blocks, points, locos, routes, sensorFaults, routeFaults } =
     snapshot;
@@ -133,30 +136,52 @@ function AuthenticatedApp({
               disabled={isDisabled}
               send={send as (msg: ClientMessage) => void}
             />
-            <RoutesPanel
-              routes={routes}
-              routeFaults={routeFaults}
-              blocks={blocks}
-              blockRecords={layoutConfig.config.blocks}
-              locoRecords={layoutConfig.config.locos}
-              disabled={isDisabled}
-              onRequest={async (req) => {
-                const r = await layoutConfig.requestRoute(req);
-                return { ok: r.ok, message: r.message };
-              }}
-              onCancel={async (routeId) => {
-                const r = await layoutConfig.cancelRoute(routeId);
-                return { ok: r.ok, message: r.message };
-              }}
-              onResume={async (routeId) => {
-                const r = await layoutConfig.resumeRoute(routeId);
-                return { ok: r.ok, message: r.message };
-              }}
-              onAcknowledgeFault={async (routeId) => {
-                const r = await layoutConfig.acknowledgeRouteFault(routeId);
-                return { ok: r.ok, message: r.message };
-              }}
-            />
+            {(() => {
+              const routesPanel = (
+                <RoutesPanel
+                  routes={routes}
+                  routeFaults={routeFaults}
+                  blocks={blocks}
+                  blockRecords={layoutConfig.config.blocks}
+                  locoRecords={layoutConfig.config.locos}
+                  disabled={isDisabled}
+                  onRequest={async (req) => {
+                    const r = await layoutConfig.requestRoute(req);
+                    return { ok: r.ok, message: r.message };
+                  }}
+                  onCancel={async (routeId) => {
+                    const r = await layoutConfig.cancelRoute(routeId);
+                    return { ok: r.ok, message: r.message };
+                  }}
+                  onResume={async (routeId) => {
+                    const r = await layoutConfig.resumeRoute(routeId);
+                    return { ok: r.ok, message: r.message };
+                  }}
+                  onAcknowledgeFault={async (routeId) => {
+                    const r = await layoutConfig.acknowledgeRouteFault(routeId);
+                    return { ok: r.ok, message: r.message };
+                  }}
+                />
+              );
+              // Two-arm conditional, not an always-present wrapper, so that
+              // Operate is byte-identical to before #65 when the flag is
+              // off — a `<div style={styles.operateRow}>` around a single
+              // panel would still change the DOM even with nothing inside it.
+              return capabilities.sensorSimulation ? (
+                <div style={styles.operateRow}>
+                  {routesPanel}
+                  <SensorSimulationPanel
+                    sensors={layoutConfig.config.sensors}
+                    onInject={async (sensorId, body) => {
+                      const r = await layoutConfig.simulateSensorReading(sensorId, body);
+                      return { ok: r.ok, message: r.message, data: r.data };
+                    }}
+                  />
+                </div>
+              ) : (
+                routesPanel
+              );
+            })()}
           </>
         )}
         {appTab === 'grid' && (
@@ -228,6 +253,15 @@ const styles = {
     padding: 16,
     display: 'flex',
     flexDirection: 'column',
+    gap: 12,
+    flex: 1,
+    minHeight: 0,
+  } as React.CSSProperties,
+  // #65: RoutesPanel (flex: 1, minWidth: 0) and SensorSimulationPanel
+  // (flex: 0 0 340px) share this row, wrapping on a narrow viewport.
+  operateRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
     gap: 12,
     flex: 1,
     minHeight: 0,

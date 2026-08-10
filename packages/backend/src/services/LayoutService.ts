@@ -57,6 +57,7 @@ import {
   SystemHealth,
 } from '../domain/safety';
 import { deriveBlockOccupancy, isSensorFaultArmed, toSensorFaultView } from '../domain/occupancy';
+import { isEmptySensorPayload } from '../domain/sensorPayload';
 import { TrackGraph } from '../domain/graph';
 import { toRouteFaultView } from '../domain/routeLocking';
 import { blockLabel, layoutLabel, pluralise, pointLabel, sensorLabel } from '../domain/naming';
@@ -739,6 +740,16 @@ export class LayoutService extends EventEmitter {
    *     trusted, which would make the escape hatch unusable. This is
    *     defence in depth; `subscribeSensors` not subscribing at all is the
    *     primary mechanism (DD4).
+   *  2b. Empty-payload check, BEFORE the Zod parse (#65 D7, D9 in
+   *     docs/sensor-fault-recovery.md). A genuinely zero-byte payload is an
+   *     MQTT retained-clear, not a malformed reading — the sensor simulation
+   *     panel's "clear retained" action publishes one to tidy up after a
+   *     bench test, and treating it as malformed would Safe-Stop the layout
+   *     every time an operator did that. Logged `info` and dropped: no
+   *     fault, no counter change, no `recomputeBlock`. A *retained* empty
+   *     payload cannot arrive here — a real broker never stores one, and
+   *     `SimulatedMqttAdapter.clearRetained` deletes rather than stores —
+   *     so there is deliberately no `retained` branch on this check.
    *  3. Zod parse. Failure trips/re-latches the fault (`tripSensorFault`)
    *     and returns — block state is never touched by the parse failure
    *     itself; the de-contribution that DOES happen is inside
@@ -772,6 +783,22 @@ export class LayoutService extends EventEmitter {
         '[LayoutService] Sensor reading from an out-of-service sensor — dropping before validation',
         { layoutId: this.layoutId, sensorId, sensorName: this.names.get().sensors.get(sensorId), topic },
       );
+      return;
+    }
+
+    if (isEmptySensorPayload(rawPayload)) {
+      // #65 D7 / docs/sensor-fault-recovery.md D9: a zero-byte payload is a
+      // retained-clear, not a malformed reading — it asserts nothing about
+      // occupancy, so derived state stays exactly where the last real
+      // reading left it.
+      this.log.info('[LayoutService] Empty (retained-clear) sensor payload — ignored, not a fault', {
+        layoutId: this.layoutId,
+        sensorId,
+        sensorName: this.names.get().sensors.get(sensorId),
+        blockId: obs.blockId,
+        blockName: obs.blockId ? this.names.get().blocks.get(obs.blockId) : undefined,
+        topic,
+      });
       return;
     }
 

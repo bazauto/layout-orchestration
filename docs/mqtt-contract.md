@@ -29,7 +29,7 @@ layout/{layoutId}/system/heartbeat
 |---|---|---|---|---|
 | `loco/{address}/command` | Backend → ESP | 1 | **NO** | Throttle command for a specific DCC address |
 | `loco/{address}/state` | Backend → Subscribers | 1 | YES | Broadcast current loco state |
-| `sensor/{sensorId}/reading` | Sensor HW → Backend | 1 | YES | Sensor occupancy change |
+| `sensor/{sensorId}/reading` | Sensor HW (or backend sim) → Backend | 1 | YES | Sensor occupancy change |
 | `point/{pointId}/command` | Backend → DCC | 1 | **NO** | Point position command |
 | `point/{pointId}/state` | Backend → Subscribers | 1 | YES | Broadcast current point state |
 | `point/{pointId}/reading` | Point Controller → Backend | 1 | **NO** | Physical position as observed by the point controller |
@@ -118,6 +118,28 @@ Published by sensor hardware (block detectors, IR sensors) when occupancy change
 |---|---|---|
 | `state` | `"occupied"` \| `"clear"` | Current sensor reading |
 | `updatedAt` | ISO 8601 string | Timestamp on the sensor device |
+
+#### Simulated readings (test only)
+
+When `SENSOR_SIMULATION=true` (#65, see `docs/sensor-simulation.md`), the backend itself
+may publish to a sensor's own `sensor/{sensorId}/reading` topic — the same topic hardware
+publishes to, at the same QoS and retention, so the broker echoes it back into the
+backend's existing subscription exactly as if it had come from a real device. The payload
+is **byte-identical** to a hardware reading and carries **no marker field**; nothing about
+the wire format distinguishes a fabricated reading from a genuine one. The flag is off by
+default and MUST NOT be enabled on a live layout — see the safety preamble in
+`docs/sensor-simulation.md`. **The ESP firmware in `bazauto/esp-layout-controller` is
+unchanged by this** and needs no rebuild: it neither knows nor cares that the backend can
+also publish here.
+
+#### Clearing a retained reading
+
+A zero-length (empty-body) retained publish to `sensor/{sensorId}/reading` clears the
+broker's retained value for that topic. This is the only defined zero-length payload
+anywhere in this contract. The backend treats an empty payload on a sensor topic as a
+retained-clear and **ignores it** — it asserts nothing about occupancy and is explicitly
+**not** a Fail-Safe Trigger (see the exception on item 3 below, and D9 in
+`docs/sensor-fault-recovery.md`).
 
 ---
 
@@ -265,6 +287,8 @@ The following MQTT conditions MUST trigger a Safe-Stop in the backend:
 1. MQTT broker disconnection (detected via client `close` event) lasting more than 5 seconds.
 2. Receiving `system/status` with `status: "offline"` from another orchestrator instance on the same broker.
 3. Receiving a malformed payload that fails Zod validation on a sensor,
-   feedback, or control topic.
+   feedback, or control topic — **except a zero-length payload on
+   `sensor/*/reading`, which is a retained-clear (see Clearing a retained
+   reading)**.
 4. Receiving a `point/{pointId}/reading` whose payload `pointId` does not match
    the `{pointId}` topic segment.

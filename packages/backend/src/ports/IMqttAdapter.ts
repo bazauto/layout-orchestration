@@ -34,6 +34,15 @@ export interface IMqttAdapter {
   publish(topic: string, payload: unknown, options?: PublishOptions): Promise<void>;
 
   /**
+   * Clears the broker's retained message on `topic` by publishing a zero-length
+   * retained message — the only thing MQTT accepts as "forget this" (#65 D6).
+   * Always QoS 1, always retain:true; no other combination clears anything.
+   * Deliberately takes NO payload: this is not a widening of `publish` for raw
+   * bytes (D5), it is a single named operation with one meaning.
+   */
+  clearRetained(topic: string): Promise<void>;
+
+  /**
    * Subscribes to a topic pattern. The handler receives the deserialized JSON payload.
    * Supports MQTT wildcards (+ and #).
    */

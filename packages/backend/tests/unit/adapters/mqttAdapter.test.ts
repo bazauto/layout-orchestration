@@ -144,4 +144,52 @@ describe('MqttAdapter — non-JSON payload handling', () => {
 
     expect(handler).toHaveBeenCalledWith('not-json{{{', 'layout/test/sensor/s1/reading', true);
   });
+
+  it('a zero-byte incoming message is delivered to the subscriber as \'\' (not dropped, not parsed) — #65 D6/D7', async () => {
+    const adapter = await buildConnectedAdapter();
+    const handler = vi.fn();
+    await adapter.subscribe('layout/test/sensor/s1/reading', handler);
+
+    fakeClient.emit(
+      'message',
+      'layout/test/sensor/s1/reading',
+      Buffer.alloc(0),
+      { retain: true },
+    );
+
+    expect(handler).toHaveBeenCalledWith('', 'layout/test/sensor/s1/reading', true);
+  });
+});
+
+describe('MqttAdapter — clearRetained (#65 D6/R1)', () => {
+  beforeEach(() => {
+    silentLogger.info.mockClear();
+    silentLogger.warn.mockClear();
+    silentLogger.error.mockClear();
+  });
+
+  it('publishes a zero-length buffer with { qos: 1, retain: true }', async () => {
+    const adapter = await buildConnectedAdapter();
+    // FakeMqttClient's `connected` field mirrors the real mqtt.js client's,
+    // which the adapter's own `publish`/`clearRetained` check directly — the
+    // 'connect' event alone (emitted by buildConnectedAdapter) doesn't flip it.
+    fakeClient.connected = true;
+
+    await adapter.clearRetained('layout/test/sensor/s1/reading');
+
+    expect(fakeClient.publish).toHaveBeenCalledWith(
+      'layout/test/sensor/s1/reading',
+      Buffer.alloc(0),
+      { qos: 1, retain: true },
+      expect.any(Function),
+    );
+  });
+
+  it('rejects when the client is not connected', async () => {
+    const adapter = new MqttAdapter({ url: 'mqtt://localhost', clientId: 'test' }, silentLogger);
+
+    await expect(adapter.clearRetained('layout/test/sensor/s1/reading')).rejects.toThrow(
+      /not connected/i,
+    );
+  });
 });

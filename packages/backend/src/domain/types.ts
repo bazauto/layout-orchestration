@@ -174,6 +174,37 @@ export interface SensorFaultView {
   armed: boolean;
 }
 
+// ─── Sensor Simulation (see docs/sensor-simulation.md, #65) ───────────────────
+
+/** The three canned malformed payloads (D5) — chosen for three DISTINCT Zod failures. */
+export type MalformedVariant = 'bad-enum' | 'missing-field' | 'not-an-object';
+
+/**
+ * What `SensorSimulationService.inject` publishes, one member per operator
+ * action (D4). Never carries operator free-text: `reading`/`clear` pick a
+ * `state`, `malformed` picks a variant BY NAME from a server-side table
+ * (D5) — no client ever supplies payload bytes.
+ */
+export type SimulatedReadingAction =
+  | { action: 'reading'; state: 'occupied' | 'clear'; retain: boolean }
+  | { action: 'malformed'; variant: MalformedVariant; retain: boolean }
+  | { action: 'clear-retained' };
+
+/**
+ * The echo `SensorSimulationService.inject` returns — a record of what
+ * actually went on the wire, which is what the panel's client-side "last
+ * injected" history (D8) displays.
+ */
+export interface SimulatedInjection {
+  sensorId: SensorId;
+  sensorName: string | null;
+  topic: string;
+  action: SimulatedReadingAction['action'];
+  payload: unknown;
+  retain: boolean;
+  publishedAt: Date;
+}
+
 // ─── Runtime State ────────────────────────────────────────────────────────────
 
 export interface BlockState {

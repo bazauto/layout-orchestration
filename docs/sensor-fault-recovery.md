@@ -273,6 +273,55 @@ already provides it as `packet.retain`), implemented in both `MqttAdapter` and
 `SimulatedMqttAdapter` so the simulator can exercise the reconnect-replay case
 without a broker.
 
+## D9 — An empty payload is a retained-clear, not a malformed reading (#65)
+
+`sensor/{sensorId}/reading` is retained (§Topic Reference,
+`docs/mqtt-contract.md`), and #65's sensor simulation panel needs a way to
+tidy up after itself — a fabricated reading for a detector that is not wired
+yet must not replay into the backend on every restart, forever (see
+`docs/sensor-simulation.md` D6). The only thing MQTT accepts as "forget this"
+is a zero-length retained publish to the same topic.
+
+Before this decision that zero-length message would have been treated as any
+other payload: `JSON.parse('')` throws, `MqttAdapter` forwards the raw empty
+string for the subscriber to validate (`MqttAdapter.ts:96-111`, deliberate —
+see the comment there), `sensorReadingSchema.safeParse('')` fails, and
+`tripSensorFault` would Safe-Stop the layout. So tidying up after a bench test
+would have halted the layout every time — a rule this document already
+distinguishes from a genuine defect (D1's "device publishing malformed
+payloads cannot be trusted"): an empty message is not a malformed *assertion*
+about occupancy, it is the absence of one. Ignoring it leaves derived
+occupancy exactly where the last real reading left it, which is the correct
+behaviour — halting because someone cleared a retained flag is a nuisance,
+not a safety win.
+
+**Where.** `LayoutService.handleSensorReading` gains step 2b, between the
+existing step 2 (the in-service check) and step 3 (the Zod parse):
+
+- **After the in-service check.** D1/Q1's ordering — an out-of-service
+  sensor's payload is dropped before anything else looks at it — applies
+  here too. An empty payload from a sensor nobody trusts is still a drop,
+  logged as the in-service drop, not the 2b drop, so an operator reading the
+  log sees why the message was actually ignored.
+- **Before the Zod parse.** That is the entire fix: today `''` reaches Zod
+  and fails it. Step 2b intercepts first.
+- **What "empty" means.** `domain/sensorPayload.ts#isEmptySensorPayload` —
+  strict equality to a zero-length string. `null`, `{}`, and a
+  whitespace-only body are all still malformed and still fault; only a
+  genuinely empty string qualifies. See the function's own doc comment for
+  why each of those must NOT be swallowed here.
+- **Effect.** Logged `info` (not `warn` — an expected, benign event, not a
+  degradation), naming layoutId/layoutName, sensorId/sensorName,
+  blockId/blockName and topic, then return. No fault, no counter change, no
+  `recomputeBlock` call. Derived occupancy is untouched.
+
+**A *retained* empty payload cannot arrive in practice.** A real broker never
+stores a zero-length message as a retained value — publishing one is what
+*clears* the broker's retained store, not what populates it — and
+`SimulatedMqttAdapter.clearRetained` (see `docs/sensor-simulation.md` R1)
+deletes from its `retained` map rather than storing `''` there. So step 2b
+has no `retained` branch to speak of, and none should be added speculatively.
+
 ## Deferred, and stated so nobody has to ask
 
 - **Per-sensor `clearAfterValidReadings` override** — layout-wide config only

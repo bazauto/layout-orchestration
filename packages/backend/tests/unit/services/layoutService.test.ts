@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   LayoutService,
   PointLockedError,
@@ -464,6 +464,89 @@ describe('LayoutService — sensor-driven block state', () => {
     expect(stateManager.getBlock('b1')?.occupancy).toBe('unknown');
     expect(stateManager.getBlock('b1')?.locoAddress).toBeNull();
     expect(service.getSystemStatus().status).toBe('safe-stop');
+
+    await service.stop();
+  });
+});
+
+describe('LayoutService — empty sensor payload is a retained-clear, not a fault (#65 D7, docs/sensor-fault-recovery.md D9)', () => {
+  // `silentLogger` is a module-level singleton shared by every test in this
+  // file with no reset — cleared here (scoped to this describe only, same
+  // pattern as mqttAdapter.test.ts) so the ordering-guard test below can
+  // assert on which log line fired without tripping over an identical call
+  // recorded by an earlier test in this same block.
+  beforeEach(() => {
+    silentLogger.info.mockClear();
+    silentLogger.warn.mockClear();
+    silentLogger.error.mockClear();
+  });
+
+  it('an empty sensor payload is ignored: no fault, no Safe-Stop, occupancy unchanged', async () => {
+    const { service, mqtt, stateManager } = await buildStartedService();
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', {
+      state: 'occupied',
+      updatedAt: new Date().toISOString(),
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('occupied');
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', '');
+    await new Promise((r) => setImmediate(r));
+
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('occupied');
+    expect(service.getSystemStatus().status).toBe('online');
+    expect(service.getSensorFaults()).toEqual([]);
+
+    await service.stop();
+  });
+
+  it('an empty payload from an out-of-service sensor is dropped by the in-service check, not 2b', async () => {
+    const { service, mqtt, stateManager } = await buildStartedService();
+    // Simulates DD4's "a handler that somehow still fires" case (a stale
+    // subscription) — the registry is told the sensor is out of service
+    // WITHOUT going through updateSensorConfig, which would also unsubscribe
+    // and make the topic undeliverable, short-circuiting the very ordering
+    // this test exists to prove.
+    stateManager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: false });
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', '');
+    await new Promise((r) => setImmediate(r));
+
+    expect(silentLogger.warn).toHaveBeenCalledWith(
+      '[LayoutService] Sensor reading from an out-of-service sensor — dropping before validation',
+      expect.objectContaining({ sensorId: 's1' }),
+    );
+    expect(silentLogger.info).not.toHaveBeenCalledWith(
+      '[LayoutService] Empty (retained-clear) sensor payload — ignored, not a fault',
+      expect.anything(),
+    );
+    expect(stateManager.getBlock('b1')?.occupancy).toBe('unknown');
+    expect(service.getSystemStatus().status).toBe('online');
+
+    await service.stop();
+  });
+
+  it('a whitespace-only payload is still malformed and trips a sensor fault', async () => {
+    const { service, mqtt } = await buildStartedService();
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', ' ');
+    await new Promise((r) => setImmediate(r));
+
+    expect(service.getSystemStatus().status).toBe('safe-stop');
+    expect(service.getSensorFaults()).toHaveLength(1);
+
+    await service.stop();
+  });
+
+  it('a null payload is still malformed and trips a sensor fault', async () => {
+    const { service, mqtt } = await buildStartedService();
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', null);
+    await new Promise((r) => setImmediate(r));
+
+    expect(service.getSystemStatus().status).toBe('safe-stop');
+    expect(service.getSensorFaults()).toHaveLength(1);
 
     await service.stop();
   });

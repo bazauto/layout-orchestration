@@ -15,6 +15,7 @@ import { randomUUID } from 'crypto';
 import { LayoutService, LayoutServiceLogger } from '../../src/services/LayoutService';
 import { TopologyService, TopologyServiceLogger } from '../../src/services/TopologyService';
 import { ReservationService, ReservationServiceLogger } from '../../src/services/ReservationService';
+import { SensorSimulationService } from '../../src/services/SensorSimulationService';
 import { NameBookCache } from '../../src/services/nameBook';
 import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
@@ -27,7 +28,14 @@ import {
   PointRecord,
   SensorRecord,
 } from '../../src/ports/ILayoutRepository';
-import { BlockEdge, LayoutEvent, RouteHoldKind, RouteReservation, RouteStatus } from '../../src/domain/types';
+import {
+  BlockEdge,
+  LayoutEvent,
+  RouteHoldKind,
+  RouteReservation,
+  RouteStatus,
+  SimulatedReadingAction,
+} from '../../src/domain/types';
 import { parseBlockEdgeRow } from '../../src/services/validation';
 
 export const LAYOUT_ID = 'scenario-layout';
@@ -272,6 +280,13 @@ export interface ScenarioHarness {
   service: LayoutService;
   topologyService: TopologyService;
   reservationService: ReservationService;
+  /**
+   * #65: constructed unconditionally — the `SENSOR_SIMULATION` flag gate is
+   * an `index.ts` concern, not a harness one. Exposed so a scenario can
+   * assert directly on it if needed; most scenarios go through `inject`
+   * below instead.
+   */
+  sensorSimulation: SensorSimulationService;
   /** The `INameBook` injected into `service` (and, from step 5, the other two) — exposed so a scenario can assert a rendered name reached a Safe-Stop reason or force a refresh directly. */
   nameBook: NameBookCache;
   /** All LayoutEvents emitted by `service`, in order, since harness creation. */
@@ -302,6 +317,14 @@ export interface ScenarioHarness {
     state: 'occupied' | 'clear',
     options?: { retained?: boolean },
   ): Promise<void>;
+  /**
+   * Injects through the REAL SensorSimulationService → SimulatedMqttAdapter →
+   * LayoutService round trip — the whole point of #65 D1 is that this is the
+   * hardware path, so scenarios must not shortcut it with simulateIncoming.
+   * Flushes twice: once for the adapter's setImmediate delivery, once for
+   * handleSensorReading's own awaits.
+   */
+  inject(sensorId: string, action: SimulatedReadingAction): Promise<void>;
 }
 
 /**
@@ -341,6 +364,10 @@ export function createScenarioHarness(options?: { clearAfterValidReadings?: numb
     reservationService,
     nameBook,
   );
+  // #65: unconditional — see the interface field's doc comment. The
+  // scenario's LAYOUT_ID is always the layout `service.start` is called
+  // against, so this never needs LayoutNotRunningError exercised here.
+  const sensorSimulation = new SensorSimulationService(mqtt, repo, silentLogger, LAYOUT_ID, nameBook);
 
   const events: LayoutEvent[] = [];
   service.on('event', (event: LayoutEvent) => events.push(event));
@@ -352,10 +379,18 @@ export function createScenarioHarness(options?: { clearAfterValidReadings?: numb
     service,
     topologyService,
     reservationService,
+    sensorSimulation,
     nameBook,
     events,
     clock: () => new Date(),
     start: () => service.start(LAYOUT_ID),
+    inject: async (sensorId: string, action: SimulatedReadingAction) => {
+      await sensorSimulation.inject(LAYOUT_ID, sensorId, action, { username: 'scenario-test' });
+      // One flush for the adapter's setImmediate delivery back into
+      // LayoutService, one for handleSensorReading's own awaits.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+    },
     sensorReports: async (
       sensorId: string,
       state: 'occupied' | 'clear',
