@@ -1,4 +1,5 @@
 import { BlockState, BlockRecord, ClientMessage, PointState, PointRecord } from '../types';
+import { LOCK, OCCUPANCY, POINT_POSITION, type StateEncoding } from '../diagram/encoding';
 
 interface Props {
   blocks: Record<string, BlockState>;
@@ -9,17 +10,22 @@ interface Props {
   send: (msg: ClientMessage) => void;
 }
 
-const OCCUPANCY_COLOUR: Record<string, string> = {
-  occupied: '#f38ba8',
-  clear: '#a6e3a1',
-  unknown: '#f9e2af',
-};
+/**
+ * This file used to hold two ad-hoc colour maps, `OCCUPANCY_COLOUR` and
+ * `POSITION_COLOUR`, which were the pattern #81 was filed to stop spreading.
+ * The encodings now come from `diagram/encoding.ts`, shared with the Track
+ * Editor and with whatever the monitor view (#63) turns out to be.
+ *
+ * The badges here already carried their state as text, so colour was never
+ * the sole carrier on this screen — the glyph is added because the state word
+ * is the first thing to be dropped when a layout gets tight, and the glyph
+ * survives that.
+ */
+const UNSET = '#6c7086';
 
-const POSITION_COLOUR: Record<string, string> = {
-  normal: '#89b4fa',
-  reverse: '#cba6f7',
-  unknown: '#f9e2af',
-};
+function badgeOf(map: Record<string, StateEncoding>, state: string): StateEncoding | null {
+  return map[state] ?? null;
+}
 
 export function LayoutPanel({ blocks, points, blockRecords, pointRecords, disabled, send }: Props) {
   const blockList = Object.values(blocks);
@@ -56,10 +62,11 @@ export function LayoutPanel({ blocks, points, blockRecords, pointRecords, disabl
                     <span
                       style={{
                         ...styles.badge,
-                        background: OCCUPANCY_COLOUR[b.occupancy] ?? '#6c7086',
+                        background: badgeOf(OCCUPANCY, b.occupancy)?.colour ?? UNSET,
                         color: '#1e1e2e',
                       }}
                     >
+                      <span aria-hidden="true">{badgeOf(OCCUPANCY, b.occupancy)?.glyph}</span>{' '}
                       {b.occupancy}
                     </span>
                   </td>
@@ -93,14 +100,23 @@ export function LayoutPanel({ blocks, points, blockRecords, pointRecords, disabl
                     <span
                       style={{
                         ...styles.badge,
-                        background: POSITION_COLOUR[p.position] ?? '#6c7086',
+                        background: badgeOf(POINT_POSITION, p.position)?.colour ?? UNSET,
                         color: '#1e1e2e',
                       }}
                     >
+                      <span aria-hidden="true">{badgeOf(POINT_POSITION, p.position)?.glyph}</span>{' '}
                       {p.position}
                     </span>
                   </td>
-                  <td style={styles.td}>{p.locked ? '🔒' : '—'}</td>
+                  <td style={styles.td}>
+                    {p.locked ? (
+                      <span title={`${LOCK.label} by route ${p.lockedByRoute}`}>
+                        {LOCK.glyph} {LOCK.label}
+                      </span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                   <td style={styles.td}>
                     <button
                       onClick={() => throwPoint(p.pointId, p.position)}
