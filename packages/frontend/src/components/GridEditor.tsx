@@ -10,8 +10,10 @@
  *   Scroll wheel       — zoom
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGridEditor } from '../hooks/useGridEditor';
+import { assignRunTints, findBlockRuns } from '../diagram/blockRuns';
+import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, OCCUPANCY, SURFACE } from '../diagram/encoding';
 import { TileType } from '../types';
 import { BlockRecord, PointRecord } from '../types';
 
@@ -139,6 +141,14 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
   const [selectedRotation, setSelectedRotation] = useState(0);
   const [selectedBlockId, setSelectedBlockId] = useState<string>('');
   const [selectedPointId, setSelectedPointId] = useState<string>('');
+
+  /**
+   * Label density (#68 item 4). The useful density genuinely differs between
+   * authoring — where you are checking every tile carries the block you meant
+   * — and reading, where the labels are clutter over track you already know.
+   * Defaults to `always`, which is the authoring case and the screen this is.
+   */
+  const [labelDensity, setLabelDensity] = useState<'always' | 'hover' | 'off'>('always');
 
   // Viewport pan/zoom
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -276,6 +286,52 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [rotateBackward, rotateForward]);
 
+  // Parsed once per grid change rather than per tile per render: the render
+  // loop used to `JSON.parse` every tile's metadata on every frame, and the
+  // run detection below needs the same parse anyway.
+  const parsedMeta = useMemo(() => {
+    const out = new Map<string, { rotation?: number; blockId?: string; pointId?: string }>();
+    for (const tile of grid.values()) {
+      try {
+        out.set(`${tile.x},${tile.y}`, JSON.parse(tile.metadata));
+      } catch {
+        out.set(`${tile.x},${tile.y}`, {});
+      }
+    }
+    return out;
+  }, [grid]);
+
+  const runs = useMemo(
+    () =>
+      findBlockRuns(
+        Array.from(grid.values()).map((t) => ({
+          x: t.x,
+          y: t.y,
+          blockId: parsedMeta.get(`${t.x},${t.y}`)?.blockId,
+        })),
+      ),
+    [grid, parsedMeta],
+  );
+
+  const tintOf = useMemo(() => assignRunTints(runs, BLOCK_TINTS.length), [runs]);
+
+  /**
+   * Whether a label at this tile should be drawn, per the density control.
+   *
+   * `hover` shows the labels of the run under the cursor and its immediate
+   * surroundings, which is what you want when checking one area without
+   * repainting the whole diagram with text.
+   */
+  const labelsVisible = useCallback(
+    (x: number, y: number) => {
+      if (labelDensity === 'always') return true;
+      if (labelDensity === 'off') return false;
+      if (!hoverCell) return false;
+      return Math.abs(hoverCell.x - x) <= 2 && Math.abs(hoverCell.y - y) <= 2;
+    },
+    [labelDensity, hoverCell],
+  );
+
   const gridW = GRID_COLS * TILE_SIZE;
   const gridH = GRID_ROWS * TILE_SIZE;
 
@@ -350,6 +406,20 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
           </div>
         </label>
 
+        <label style={st.toolLabel}>
+          Labels
+          <select
+            value={labelDensity}
+            onChange={(e) => setLabelDensity(e.target.value as typeof labelDensity)}
+            style={st.toolSelect}
+            title="Label density — authoring wants every label, reading wants few"
+          >
+            <option value="always">Always</option>
+            <option value="hover">On hover</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+
         <div style={st.toolSep} />
 
         <button
@@ -420,29 +490,92 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
               />
             ))}
 
-            {/* Placed tiles */}
+            {/* Placed tiles. The block name is NOT drawn here — one label per
+                contiguous run is drawn below instead (#68). */}
             {Array.from(grid.values()).map((tile) => {
-              const meta = (() => { try { return JSON.parse(tile.metadata); } catch { return {}; } })();
-              const bName = meta.blockId ? blocks.find((b) => b.id === meta.blockId)?.name : null;
+              const meta = parsedMeta.get(`${tile.x},${tile.y}`) ?? {};
               const rotation = typeof meta.rotation === 'number' ? meta.rotation : 0;
+              const tint =
+                meta.blockId !== undefined ? tintOf.get(meta.blockId) : undefined;
+              // Same raw-id fallback as the block labels below: a point tile
+              // that draws no name at all is the specific complaint in #68.
+              const pName = meta.pointId
+                ? (points.find((p) => p.id === meta.pointId)?.name ?? meta.pointId)
+                : null;
               return (
                 <g key={tile.id || `${tile.x},${tile.y}`}
                   transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}>
-                  <rect width={T} height={T} fill="#1e1e2e" />
+                  <rect width={T} height={T} fill={SURFACE.tile} />
+                  {/* Block tint: a wash under the track, never over it, so the
+                      drawing stays exactly as legible as it was. */}
+                  {tint !== undefined && (
+                    <rect
+                      width={T}
+                      height={T}
+                      fill={BLOCK_TINTS[tint]}
+                      opacity={BLOCK_TINT_OPACITY}
+                    />
+                  )}
                   <g transform={`rotate(${rotation}, ${H}, ${H})`}>
                     <TilePath type={tile.tileType as TileType} />
                   </g>
-                  {bName && (
-                    <text x={T / 2} y={T - 4} textAnchor="middle"
-                      fontSize={6} fill="#a6e3a1" fontFamily="monospace">
-                      {bName}
+                  {/* Point names sit on their own tile — a point is a single
+                      tile, so there is no run to collapse — and are drawn in a
+                      deliberately different style from block labels: points and
+                      blocks are different namespaces and must not look alike. */}
+                  {pName && labelsVisible(tile.x, tile.y) && (
+                    <text
+                      x={H}
+                      y={9}
+                      textAnchor="middle"
+                      fontSize={7}
+                      fill={INK.primary}
+                      fontFamily="monospace"
+                      fontStyle="italic"
+                      stroke={SURFACE.tile}
+                      strokeWidth={2.5}
+                      paintOrder="stroke"
+                    >
+                      ⌥{pName}
                     </text>
                   )}
                 </g>
               );
             })}
 
-            {/* Ghost preview tile under cursor */}
+            {/* One block label per contiguous run, at a tile of that run. */}
+            {runs.map((run) => {
+              // Falls back to the raw id rather than rendering nothing, the
+              // same degradation the NameBook contract takes (docs/naming.md
+              // D8). If the block records fail to load, the tint would
+              // otherwise be the only thing distinguishing one block from the
+              // next — which is exactly the colour-alone encoding #81 forbids.
+              const name = blocks.find((b) => b.id === run.blockId)?.name ?? run.blockId;
+              if (!labelsVisible(run.labelAt.x, run.labelAt.y)) return null;
+              return (
+                <text
+                  key={`${run.blockId}@${run.labelAt.x},${run.labelAt.y}`}
+                  x={run.labelAt.x * TILE_SIZE + H}
+                  y={run.labelAt.y * TILE_SIZE + T - 5}
+                  textAnchor="middle"
+                  fontSize={9}
+                  fill={INK.primary}
+                  fontFamily="monospace"
+                  // Halo, so a label crossing the track stays readable without
+                  // needing a background box that would hide the drawing.
+                  stroke={SURFACE.canvas}
+                  strokeWidth={3}
+                  paintOrder="stroke"
+                >
+                  {name}
+                </text>
+              );
+            })}
+
+            {/* Ghost preview tile under cursor.
+                "This cell is already taken" is carried by the corner wedge as
+                well as the colour, so the warning survives colour being
+                removed (#81) — it was previously a red tint and nothing else. */}
             {hoverCell && (() => {
               const previewMetaBlock = selectedBlockId
                 ? blocks.find((b) => b.id === selectedBlockId)?.name
@@ -454,16 +587,24 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
                     width={T}
                     height={T}
                     fill={occupied ? '#f38ba822' : '#89b4fa22'}
-                    stroke={occupied ? '#f38ba8' : '#89b4fa'}
+                    stroke={occupied ? OCCUPANCY.occupied.colour : '#89b4fa'}
                     strokeWidth={1}
                     strokeDasharray="3 2"
                   />
+                  {occupied && (
+                    <path
+                      d={`M ${T - 11} 0 L ${T} 0 L ${T} 11 Z`}
+                      fill={OCCUPANCY.occupied.colour}
+                    />
+                  )}
                   <g opacity={0.45} transform={`rotate(${selectedRotation}, ${H}, ${H})`}>
                     <TilePath type={selectedType} />
                   </g>
                   {previewMetaBlock && (
-                    <text x={T / 2} y={T - 4} textAnchor="middle"
-                      fontSize={6} fill="#a6e3a1" fontFamily="monospace" opacity={0.7}>
+                    <text x={T / 2} y={T - 5} textAnchor="middle"
+                      fontSize={9} fill={INK.secondary} fontFamily="monospace"
+                      stroke={SURFACE.canvas} strokeWidth={3} paintOrder="stroke"
+                      opacity={0.8}>
                       {previewMetaBlock}
                     </text>
                   )}
