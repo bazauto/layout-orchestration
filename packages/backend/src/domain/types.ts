@@ -120,6 +120,69 @@ export type TopologyViolation =
   | { kind: 'unknown-point'; edgeId: BlockEdgeId; pointId: PointId }
   | { kind: 'duplicate-connection'; edgeId: BlockEdgeId; conflictingEdgeId: BlockEdgeId };
 
+// ─── Grid Tiles (the Track Editor's drawing — see docs/track-grid.md) ─────────
+
+/**
+ * The closed vocabulary of tile shapes the Track Editor can draw.
+ *
+ * Presentational, and deliberately so: the grid is a *drawing*, not the track
+ * model. `block_edges` is the model (`docs/topology.md`), and nothing in the
+ * backend reads a tile. This lives here anyway because it is the vocabulary
+ * the frontend mirrors and, since #70, the closed set the write path
+ * validates against — `tile_type` is a bare `text` column, so this array is
+ * the only thing standing between a typo and a row that renders as an
+ * invisible tile which still occupies its cell.
+ *
+ * `'empty'` is deliberately absent. The absence of a tile is expressed by
+ * DELETE, not by a persisted row claiming to be nothing; accepting it would
+ * reintroduce exactly the invisible-but-occupied cell this enum exists to
+ * prevent. The legacy `straight-v` and named `curve-*` entries are the
+ * opposite call — they are in already-authored grids and must keep
+ * round-tripping.
+ */
+export const TILE_TYPES = [
+  'straight-h',
+  'straight-v',
+  'straight-45',
+  'curve',
+  'curve-ne',
+  'curve-nw',
+  'curve-se',
+  'curve-sw',
+  'point-left',
+  'point-right',
+  'buffer',
+  'platform',
+  'crossing',
+] as const;
+
+export type TileType = (typeof TILE_TYPES)[number];
+
+/** Rotation is authored in 45° steps (`GridEditor`'s R / Shift+R), so the set is closed. */
+export const TILE_ROTATIONS = [0, 45, 90, 135, 180, 225, 270, 315] as const;
+
+export type TileRotation = (typeof TILE_ROTATIONS)[number];
+
+/**
+ * The **closed** shape of a tile's `metadata` JSON blob.
+ *
+ * Closed rather than a passthrough record because every later addition to the
+ * drawing — the decorative/unassigned classification (#71), tile annotations
+ * (#74) — lands here, and a schema that silently accepts unknown keys cannot
+ * tell an unfinished feature from a typo. New keys are added to this type and
+ * its Zod schema together.
+ *
+ * `blockId` and `pointId` are *drawing* assertions: which block's tint this
+ * tile draws in, which point this tile depicts. They are checked to exist in
+ * the same layout (#70) but carry no railway authority — an edge's
+ * `pointConditions`, not a tile, is what routes are planned against.
+ */
+export interface GridTileMetadata {
+  rotation?: TileRotation;
+  blockId?: BlockId;
+  pointId?: PointId;
+}
+
 // ─── Sensors (see docs/sensor-fault-recovery.md) ──────────────────────────────
 
 /**
