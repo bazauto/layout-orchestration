@@ -1,46 +1,92 @@
-import { FastifyInstance } from 'fastify';
-import { ILayoutRepository } from '../../../ports/ILayoutRepository';
+import { FastifyInstance, FastifyReply } from 'fastify';
+import {
+  GridService,
+  LayoutNotFoundError,
+  TileReferenceError,
+} from '../../../services/GridService';
+import {
+  gridTileCoordinateQuerySchema,
+  gridTileWriteSchema,
+} from '../../../services/validation';
 import { requireAdmin } from '../auth/hook';
 
+/**
+ * Track Editor grid routes.
+ *
+ * Parse, validate, delegate — no decision is taken here (CLAUDE.md safety
+ * rule 2). The `Body: unknown` + `safeParse` pairing is the same one every
+ * other config route uses and is the point: a Fastify `Body` generic is
+ * erased at compile time and validates nothing at runtime, so the Zod schema
+ * is the only real gate (#70, the gap #36 left behind when it closed the same
+ * hole on blocks and sensors).
+ *
+ * Every rejection below is a 4xx. A malformed grid write is an ordinary 400,
+ * never a Safe-Stop — this is an admin config surface, not a sensor or control
+ * topic (CLAUDE.md Traps).
+ *
+ * The success shapes are unchanged: 200 + the tile on upsert, 204 on both
+ * deletes. #70 closes a validation hole; it does not renegotiate the contract
+ * the editor and its e2e specs are written against.
+ */
 export async function gridRoutes(
   fastify: FastifyInstance,
-  repo: ILayoutRepository,
+  gridService: GridService,
 ): Promise<void> {
   // GET all tiles for a layout
   fastify.get<{ Params: { layoutId: string } }>(
     '/api/layouts/:layoutId/grid',
-    async (req) => repo.listGridTiles(req.params.layoutId),
+    async (req) => gridService.listTiles(req.params.layoutId),
   );
 
   // PUT (upsert) a single tile — track editing is config, admin-only.
-  fastify.put<{
-    Params: { layoutId: string };
-    Body: { x: number; y: number; tileType: string; metadata?: Record<string, unknown> };
-  }>('/api/layouts/:layoutId/grid', { preHandler: requireAdmin }, async (req, reply) => {
-    const tile = await repo.upsertGridTile({
-      layoutId: req.params.layoutId,
-      x: req.body.x,
-      y: req.body.y,
-      tileType: req.body.tileType,
-      metadata: JSON.stringify(req.body.metadata ?? {}),
-    });
-    return reply.status(200).send(tile);
-  });
+  fastify.put<{ Params: { layoutId: string }; Body: unknown }>(
+    '/api/layouts/:layoutId/grid',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const parsed = gridTileWriteSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ error: 'Invalid grid tile payload', details: parsed.error.flatten() });
+      }
 
-  // DELETE a single tile by position
+      try {
+        const tile = await gridService.upsertTile(req.params.layoutId, parsed.data);
+        return reply.status(200).send(tile);
+      } catch (err) {
+        return mapGridError(err, reply);
+      }
+    },
+  );
+
+  // DELETE a single tile by position.
+  //
+  // Erasing a cell that holds no tile stays a 204, not a 404: right-drag
+  // erase sweeps across cells that may or may not hold one, and answering
+  // 404 to half a drag would turn ordinary authoring into a stream of errors
+  // the operator must dismiss. A *malformed* coordinate is different, and is
+  // a 400 — `?x=abc` previously reached `parseInt`, became `NaN`, matched no
+  // tile, and was reported as a successful delete.
   fastify.delete<{
     Params: { layoutId: string };
-    Querystring: { x: string; y: string };
+    Querystring: unknown;
   }>(
     '/api/layouts/:layoutId/grid/tile',
     { preHandler: requireAdmin },
     async (req, reply) => {
-      const x = parseInt(req.query.x, 10);
-      const y = parseInt(req.query.y, 10);
-      const tiles = await repo.listGridTiles(req.params.layoutId);
-      const tile = tiles.find((t) => t.x === x && t.y === y);
-      if (tile) await repo.deleteTile(tile.id);
-      return reply.status(204).send();
+      const parsed = gridTileCoordinateQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ error: 'Invalid tile coordinate', details: parsed.error.flatten() });
+      }
+
+      try {
+        await gridService.deleteTileAt(req.params.layoutId, parsed.data.x, parsed.data.y);
+        return reply.status(204).send();
+      } catch (err) {
+        return mapGridError(err, reply);
+      }
     },
   );
 
@@ -49,8 +95,30 @@ export async function gridRoutes(
     '/api/layouts/:layoutId/grid',
     { preHandler: requireAdmin },
     async (req, reply) => {
-      await repo.clearGrid(req.params.layoutId);
-      return reply.status(204).send();
+      try {
+        await gridService.clearGrid(req.params.layoutId);
+        return reply.status(204).send();
+      } catch (err) {
+        return mapGridError(err, reply);
+      }
     },
   );
+}
+
+/**
+ * Maps a `GridService` rejection to its status code.
+ *
+ * A `TileReferenceError` is a 400 rather than a 422 deliberately: 422 in this
+ * codebase means the topology graph refused a proposal
+ * (`TopologyRejectedError`, carrying `violations` the operator can act on). A
+ * tile naming a block that is not there is just a bad field in a config write.
+ */
+function mapGridError(err: unknown, reply: FastifyReply): FastifyReply {
+  if (err instanceof LayoutNotFoundError) {
+    return reply.status(404).send({ error: err.message });
+  }
+  if (err instanceof TileReferenceError) {
+    return reply.status(400).send({ error: err.message });
+  }
+  throw err;
 }

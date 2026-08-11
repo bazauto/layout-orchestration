@@ -14,6 +14,7 @@ style preferences.
 | `docs/project-plan.md` | Phase roadmap (0–3) |
 | `docs/mqtt-contract.md` | **Binding** MQTT topics, payloads, QoS, retention |
 | `docs/topology.md` | Track graph (`block_edges`): validation, deferred items |
+| `docs/track-grid.md` | `grid_tiles` — the Track Editor's **drawing**, its validated write path, and why a tile carries no authority (D1–D6) |
 | `docs/route-locking.md` | Route reservation and locking (D1–D14) decision record |
 | `docs/pathfinding.md` | Pathfinding, setting the road, and route faults (P1–P8) |
 | `docs/auth.md` | Local authentication scheme and the pre-TLS threat model |
@@ -174,6 +175,7 @@ row rather than appending the new story beneath the old one.**
 | **Local auth** (#20) and **user/role management** (#53) | argon2id + session tokens pure in `domain/auth.ts`; one Fastify `onRequest` hook rejects unauthenticated requests before any route, including the `/ws` upgrade. `AuthService` owns all user policy; the repository stays storage. `requireAdmin` on every topology/config write and all of `/api/users`. `POST /api/emergency-stop` is the single deliberately unauthenticated path. | `docs/auth.md` |
 | **Operator-facing names** (#54) | `NameBook` (`domain/types.ts`) + pure helpers in `domain/naming.ts`; every `describe*` takes an optional trailing `book?: NameBook` and, without one, renders raw ids byte-for-byte as before. `NameBookCache` (`services/nameBook.ts`) behind the `INameBook` port is injected into the three services as an optional trailing constructor parameter. | `docs/naming.md` |
 | **Diagram encoding** (#81, #68) | `diagram/encoding.ts` is the single source of track-diagram colour; every state ships a pattern/glyph/label so colour is never the sole carrier. Block tints are **four** validator-checked colours assigned by graph colouring over adjacency (`diagram/blockRuns.ts`), marking block *boundaries* — a tint never identifies a block, the label does. Don't add a fifth tint: it fails CVD checks. | `docs/diagram-encoding.md` |
+| **Track grid** (#70) | `grid_tiles` is the Track Editor's *drawing*, not the track model — no domain decision reads a tile. Writes go through `GridService` (layout existence, `blockId`/`pointId` resolve **in this layout**) behind `gridTileWriteSchema`: closed `tileType` enum from `TILE_TYPES`, bounded integer coordinates, and a **closed** `metadata` schema every later field (#71, #74) must be added to. Rejections are 400/404 — never Safe-Stop. | `docs/track-grid.md` |
 | **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) bench tool: `SensorSimulationService` publishes a fabricated reading to the sensor's own `mqttTopic` and the broker echoes it back through the ordinary ingestion path — byte-identical to hardware, no marker field. `GET /api/capabilities` gates the Operate-pane panel and fails closed. | `docs/sensor-simulation.md` |
 
 ### Traps
