@@ -190,6 +190,7 @@ function AuthenticatedApp({
               layoutId={layoutId}
               blocks={layoutConfig.config.blocks}
               points={layoutConfig.config.points}
+              sensors={layoutConfig.config.sensors}
             />
           </div>
         )}

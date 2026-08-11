@@ -1,11 +1,14 @@
 # Track Editor authoring ergonomics
 
-Decision record for #69 — the canvas extent, undo, and view persistence.
+Decision record for #69 — the canvas extent, undo, and view persistence — and
+for the wave-2 authoring affordances (#71, #72, #73, #74, #84).
 
 Scope note: this document is about **authoring the drawing**. What a tile *is*
-and how its writes are validated is `docs/track-grid.md` (#70); how the drawing
-is coloured and labelled is `docs/diagram-encoding.md` (#81, #68). The running
-order for the wider work stream is issue #80.
+and how its writes are validated is `docs/track-grid.md` (#70, plus D7–D11 for
+the wave-2 fields); what a block end is and how its label is generated is
+`docs/topology.md`; how the drawing is coloured and labelled is
+`docs/diagram-encoding.md` (#81, #68). The running order for the wider work
+stream is issue #80.
 
 ---
 
@@ -112,3 +115,80 @@ spec.
 
 **The undo stack is cleared when the layout changes.** Its coordinates mean
 something else in a different drawing.
+
+---
+
+## D6 — Annotating is a mode, not a modifier
+
+**Decision (#74).** The toolbar has a Track/Annotate mode. In Annotate mode a
+click toggles the selected entity's annotation on an existing tile; it never
+creates or erases a tile, and clicking an empty cell says so rather than
+painting one.
+
+**Why a mode.** An annotation is a different kind of edit: it changes an
+existing tile's metadata only. Overloading a modifier onto the paint gesture
+would make a slipped key place a sensor instead of a tile — and unlike a stray
+paint stroke, that one is invisible until you look for it.
+
+**Why a toggle rather than an add.** Clicking the same sensor on the same tile
+twice removes it. Without that, correcting a misplacement means repainting the
+tile and losing everything else on it.
+
+**Repainting a tile preserves its annotations.** Changing a curve to a straight
+is a change to the drawing; it is not a statement that the sensor sitting there
+has moved. Losing authored placement to a cosmetic edit would be a silent data
+loss on the exact surface #62 was about.
+
+---
+
+## D7 — The point leg mapping is captured while the point is placed
+
+**Decision (#73).** Painting a point tile with a point selected writes a default
+road mapping, and a "Divergent = normal" checkbox — shown only when it applies —
+swaps it.
+
+**Why defaulted rather than left empty.** The mapping is only cheap to capture
+*while the points are being placed*. An empty default means an authoring step
+nobody performs, and the retrofit is revisiting every point tile on the layout
+by hand. The default is the conventional wiring; the checkbox covers the rest.
+
+The mapping is drawn on the tile as an `N`/`R` letter at the leg's outer edge.
+That is the editor's whole contribution to a piece of data nothing can validate
+(`docs/track-grid.md` D9): make it visible, and make it one click to correct.
+
+---
+
+## D8 — Regeneration of end labels is a button
+
+**Decision (#72).** `Ends ⟳` regenerates block end labels on demand and reports
+what it adopted, created, removed and refused to name.
+
+**Why not on every grid write.** An end label is the only link between an edge
+and a block end, so regeneration renames things the track graph depends on.
+Doing that as a side effect of redrawing a corner of the layout would change the
+graph while the operator believed they were tidying the picture. Pinned labels
+are never touched, but the operator should still see the change happen.
+
+Generated labels are drawn plain; pinned ones are drawn in `[brackets]`, so you
+can see at a glance which names are load-bearing. A `⊣` marks an end a buffer
+terminates.
+
+---
+
+## D9 — Diagnostics are a panel, and unfinished work is not an error
+
+**Decision (#71, #84).** A toolbar button shows `⚠ warnings/todos` and toggles a
+panel listing every finding in words, with ids paired with names.
+
+**Why counts and not a coloured dot.** A bare red dot says something is wrong
+without saying how much or of what kind, and colour is never the sole carrier of
+meaning (#81).
+
+**Why two severities that look different.** Half of what this produces on
+Westgate Hollow today is a to-do list — unclassified tiles, ends with no edges
+yet. An unfinished layout is a normal state, and rendering it as a wall of
+errors is how an operator learns to ignore the findings that matter.
+
+**Recomputed at the end of a gesture, not per cell.** The findings are derived
+from the whole layout, so recomputing per painted cell of a drag would be one
+round trip per tile for a result nobody reads until the drag stops.

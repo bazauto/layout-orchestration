@@ -38,6 +38,103 @@ accident. A `block_edges` row that fails this pattern (e.g. `'North'`,
 un-normalised) did not come through the API and is treated as DB corruption —
 see "Safe-Stop on invalid topology" below.
 
+Since #72 the labels are also **generated and stored** in a `block_ends` table
+— see the next section. The contract above is unchanged: `fromEnd`/`toEnd` stay
+free text, stay un-FK'd, and an end label with no other referent stays legal.
+
+## Block ends: derived by default, authored by exception (#72)
+
+### The problem
+
+Authoring an edge meant looking at the drawing, deciding that the left-hand end
+of Fiddle Yard 1 was the one you previously called `north`, and typing it
+correctly — every time, for every edge, with **no feedback if you got it
+wrong**. Nothing on the track diagram showed which end of a block was which.
+
+A transposed pair produces a valid-looking edge that connects the wrong ends,
+and the pathfinder plans through it happily: `(block, end entered by)` is its
+search state (`domain/pathfinding.ts`) and it has no independent notion of
+geometry. This is a plausible contributor to the Westgate Hollow edge set being
+mostly unauthored — the task was tedious *and* unverifiable.
+
+### The decision
+
+**Generate end labels from the drawn geometry as 8-point cardinal directions,
+with north at the top of the diagram, and let a manual override stick.**
+
+- **Vocabulary**: `north`, `northeast`, `east`, `southeast`, `south`,
+  `southwest`, `west`, `northwest` (`CARDINAL_END_LABELS`). All satisfy
+  `blockEndLabelSchema`, so no contract change was needed.
+- **Generated vs pinned**: `block_ends.pinned` records that a label was
+  authored. Regeneration replaces unpinned rows and never touches pinned ones.
+- **Existing labels are pinned on adoption.** Any label already referenced by a
+  `block_edges` row is pinned the first time `generate` runs. This is why the
+  feature needed **no migration and no rename machinery**: Westgate Hollow's
+  authored edges protect their own labels.
+- **Collisions are refused, not suffixed.** Two openings of one block that face
+  the same way from different places produce a reported collision and no label
+  at all. A silently suffixed `east_2` is exactly the kind of name that gets
+  typed wrong later in an edge.
+- **Regeneration is on demand**, never on a grid write. Redrawing a corner of
+  the layout must not silently rename ends underneath the edges referencing
+  them.
+
+### Why a table, and not tile metadata
+
+Deliberately the **opposite** call to #71's tile classification and #74's
+annotations, which both landed in `grid_tiles.metadata` in the same wave. The
+distinction is the point:
+
+- A tile's classification and an entity's diagram placement are properties of
+  **the drawing**.
+- A block end is a property of **the block**. It is referenced as free text by
+  `block_edges`, it is the anchor #79 attaches signals to and #84 resolves
+  buffers against, and it survives the drawing being re-laid. Burying it in a
+  tile blob would make the one thing edges depend on the least durable record
+  in the system.
+
+### No foreign key from `block_edges`, deliberately
+
+`fromEnd`/`toEnd` are **not** FK'd to `block_ends` and must not become so:
+
+- the existing model deliberately tolerates an end label with no other referent;
+- a malformed label is DB corruption handled by the Safe-Stop path, not by
+  referential integrity — an FK would change that failure mode to "write
+  refused", a regression against #10;
+- the adoption pass would become a chicken-and-egg problem against its own
+  constraint.
+
+`tests/integration/migrations.test.ts` asserts the absence of that FK directly.
+
+### A rename is a track-graph change, and is refused
+
+An end label is the **only** link between an edge and a block end, so renaming
+one silently re-points every edge referencing it. `BlockEndService` therefore
+answers **409** to a rename or delete of a label any edge uses, rather than
+cascading. The operator edits the edges, or keeps the name.
+
+### Known property: a cardinal label describes the diagram, not the railway
+
+The drawing is explicitly not to scale and its orientation is a drawing
+convention (see `docs/track-grid.md`). If the diagram is re-laid or rotated, a
+*generated* label regenerates to match — but a *pinned* one does not, and
+neither do the `block_edges` rows referencing either.
+
+That is the correct behaviour: an end label is a name, and once edges reference
+it its meaning is frozen. But it means **a block end called `north` can end up
+pointing east on the drawing.** Recorded here so nobody later "fixes" it and
+rewrites the track graph as a side effect.
+
+### Geometry can propose connectivity; it can never supply length
+
+`services/gridGeometry.ts` derives openings from tile adjacency. It does not,
+and must not, derive distance. Tile count bears no relation to physical extent —
+the Westgate Hollow entry feeder is drawn long and is short in reality, and is
+not a block at all. `block_edges.lengthMm` stays authored, with
+nullable-means-unmeasured (`docs/braking.md` B4). This sharpens the deferred
+"derive edges from grid tiles" note below: #78 can propose complete rows
+*except* `lengthMm`, and the reason is now known rather than assumed.
+
 ## Why `(from_block_id, from_end)` is NOT unique
 
 A naive schema might make `(layout_id, from_block_id, from_end)` unique, on

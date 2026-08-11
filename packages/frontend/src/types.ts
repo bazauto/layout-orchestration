@@ -236,6 +236,38 @@ export type TileType =
 /** Mirrors `TILE_ROTATIONS` — the eight 45° steps the editor authors. */
 export type TileRotation = 0 | 45 | 90 | 135 | 180 | 225 | 270 | 315;
 
+/** Mirrors `TILE_EDGES` — the eight edges of a tile in its own **unrotated** frame (#73). */
+export type TileEdge = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
+
+/** Mirrors `ANNOTATION_ENTITY_TYPES`. A discriminator, not a convenience: an id alone cannot be resolved back to a table. */
+export type AnnotationEntityType = 'sensor';
+
+/**
+ * Mirrors `TileAnnotation` (#74). "An entity of type T with id X sits at this
+ * tile" — presentational placement, deliberately generic so signals (#79) and
+ * RFID readers (#39) need no second mechanism. Nothing may assume an
+ * annotation is an IR sensor.
+ */
+export interface TileAnnotation {
+  entityType: AnnotationEntityType;
+  entityId: string;
+  /** Cosmetic only: which way a beam points on the diagram. The system models no detection direction. */
+  orientation?: TileRotation;
+}
+
+/**
+ * Mirrors `TilePointRoad` (#73). Which drawn legs are joined when a set of
+ * points stands in a set of positions.
+ *
+ * `when` is a list and `legs` is a pair, both so three-way points and slips
+ * are not foreclosed (#83) — a slip is one piece of track carrying two
+ * independently switched mechanisms.
+ */
+export interface TilePointRoad {
+  when: Array<{ pointId: string; position: 'normal' | 'reverse' }>;
+  legs: [TileEdge, TileEdge];
+}
+
 /**
  * Mirrors the backend's `GridTileMetadata`. Closed: the write path rejects an
  * unknown key, so a field added here without its backend counterpart is a 400
@@ -245,7 +277,113 @@ export interface GridTileMetadata {
   rotation?: TileRotation;
   blockId?: string;
   pointId?: string;
+  /** #71 — the positive assertion "deliberately not part of any block". Mutually exclusive with `blockId`. */
+  trackRole?: 'decorative';
+  annotations?: TileAnnotation[];
+  pointRoads?: TilePointRoad[];
 }
+
+/**
+ * The three-way classification of a tile (#71), derived rather than stored.
+ *
+ * "Untagged" cannot be an error — the Westgate Hollow entry feeder is plain
+ * track the system neither detects nor reserves, and warning on it would light
+ * up the whole run. But a tile that *should* have been tagged and was not is
+ * silently invisible to live state. Both used to be the same absent key.
+ */
+export type TileClassification = 'block' | 'decorative' | 'unclassified';
+
+export function classifyTile(metadata: GridTileMetadata): TileClassification {
+  if (metadata.blockId !== undefined) return 'block';
+  if (metadata.trackRole === 'decorative') return 'decorative';
+  return 'unclassified';
+}
+
+// ─── Block ends (#72) ─────────────────────────────────────────────────────────
+
+/**
+ * A named opening of a block, plus where it currently sits on the drawing.
+ *
+ * `pinned` means authored — either set by hand or adopted because an edge
+ * already referenced the label. Regeneration never touches a pinned end, which
+ * is what stops a redraw from silently renaming the thing every edge depends
+ * on.
+ *
+ * `geometry: null` means the drawing has no opening by that name any more.
+ * For an end edges reference, that is a real mismatch worth showing.
+ */
+export interface BlockEndView {
+  id: string;
+  layoutId: string;
+  blockId: string;
+  label: string;
+  pinned: boolean;
+  geometry: { x: number; y: number; terminated: boolean } | null;
+}
+
+export interface GenerateEndsSummary {
+  adopted: Array<{ blockId: string; label: string }>;
+  created: Array<{ blockId: string; label: string }>;
+  removed: Array<{ blockId: string; label: string }>;
+  collisions: Array<{ blockId: string; label: string; at: Array<{ x: number; y: number }> }>;
+}
+
+// ─── Grid diagnostics ─────────────────────────────────────────────────────────
+
+/**
+ * Mirrors `GridDiagnostic`. Advisory only — nothing here refuses a write.
+ *
+ * `warning` means two representations disagree, or a known hazard is drawn.
+ * `info` means authoring is unfinished, which is a normal state for a layout
+ * being built and must not be styled as an error.
+ */
+export type GridDiagnostic =
+  | { kind: 'unclassified-tile'; severity: 'info'; at: { x: number; y: number } }
+  | { kind: 'tile-metadata-unreadable'; severity: 'warning'; at: { x: number; y: number } }
+  | {
+      kind: 'dangling-tile-reference';
+      severity: 'warning';
+      at: { x: number; y: number };
+      refKind: 'block' | 'point' | 'sensor';
+      recordId: string;
+    }
+  | {
+      kind: 'point-tile-unmapped';
+      severity: 'info';
+      at: { x: number; y: number };
+      pointId: string;
+    }
+  | {
+      kind: 'duplicate-annotation';
+      severity: 'warning';
+      entityType: AnnotationEntityType;
+      entityId: string;
+      at: Array<{ x: number; y: number }>;
+    }
+  | { kind: 'diamond-blind-spot'; severity: 'warning'; at: { x: number; y: number } }
+  | {
+      kind: 'buffer-contradicted-by-edge';
+      severity: 'warning';
+      blockId: string;
+      label: string;
+      edgeIds: string[];
+    }
+  | {
+      kind: 'end-unfinished';
+      severity: 'info';
+      blockId: string;
+      label: string;
+      at: { x: number; y: number };
+    }
+  | { kind: 'end-not-on-diagram'; severity: 'warning'; blockId: string; label: string }
+  | {
+      kind: 'end-label-collision';
+      severity: 'warning';
+      blockId: string;
+      label: string;
+      at: Array<{ x: number; y: number }>;
+    }
+  | { kind: 'block-without-detection'; severity: 'info'; blockId: string };
 
 export interface GridTileRecord {
   id: string;

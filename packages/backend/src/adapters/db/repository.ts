@@ -17,8 +17,20 @@ import {
   SensorRecord,
   GridTileRecord,
 } from '../../ports/ILayoutRepository';
-import { BlockEdge, RouteHoldKind, RouteId, RouteReservation, RouteStatus } from '../../domain/types';
-import { parseBlockEdgeRow, parseReservationRow, parseSensorRow } from '../../services/validation';
+import {
+  BlockEdge,
+  BlockEnd,
+  RouteHoldKind,
+  RouteId,
+  RouteReservation,
+  RouteStatus,
+} from '../../domain/types';
+import {
+  parseBlockEdgeRow,
+  parseBlockEndRow,
+  parseReservationRow,
+  parseSensorRow,
+} from '../../services/validation';
 import {
   layouts,
   locos,
@@ -27,6 +39,7 @@ import {
   sensors,
   gridTiles,
   blockEdges,
+  blockEnds,
   routeReservations,
   routeHolds,
 } from './schema';
@@ -284,6 +297,77 @@ export class DrizzleRepository implements ILayoutRepository {
 
   async deleteBlockEdge(id: string): Promise<void> {
     this.db.delete(blockEdges).where(eq(blockEdges.id, id)).run();
+  }
+
+  // ─── Block Ends ─────────────────────────────────────────────────────────────
+
+  async listBlockEnds(layoutId: string): Promise<BlockEnd[]> {
+    const rows = this.db.select().from(blockEnds).where(eq(blockEnds.layoutId, layoutId)).all();
+    return rows.map(parseBlockEndRow);
+  }
+
+  async getBlockEnd(id: string): Promise<BlockEnd | null> {
+    const rows = this.db.select().from(blockEnds).where(eq(blockEnds.id, id)).all();
+    return rows.length > 0 ? parseBlockEndRow(rows[0]) : null;
+  }
+
+  async createBlockEnd(data: Omit<BlockEnd, 'id'>): Promise<BlockEnd> {
+    const id = randomUUID();
+    this.db.insert(blockEnds).values({ id, ...data }).run();
+    return { id, ...data };
+  }
+
+  async updateBlockEnd(id: string, data: { label?: string; pinned?: boolean }): Promise<BlockEnd> {
+    this.db.update(blockEnds).set(data).where(eq(blockEnds.id, id)).run();
+    const updated = await this.getBlockEnd(id);
+    if (!updated) throw new Error(`Block end ${id} not found after update`);
+    return updated;
+  }
+
+  async deleteBlockEnd(id: string): Promise<void> {
+    this.db.delete(blockEnds).where(eq(blockEnds.id, id)).run();
+  }
+
+  /**
+   * Swaps this block's generated ends for a new set, in one transaction.
+   *
+   * Transactional because a regeneration that deleted the old labels and then
+   * failed to insert the new ones would leave a block with no ends at all —
+   * and a block whose ends have silently vanished looks exactly like a block
+   * nobody has authored yet, which is the state #84's to-do list is trying to
+   * distinguish.
+   *
+   * Pinned rows are excluded from the delete AND their labels are excluded
+   * from the insert. Skipping the second half would collide with the unique
+   * index on `(block_id, label)`: a generated `north` regenerating against a
+   * pinned `north` is the ordinary case, not an error.
+   */
+  async replaceGeneratedBlockEnds(
+    layoutId: string,
+    blockId: string,
+    labels: readonly string[],
+  ): Promise<void> {
+    this.db.transaction((tx) => {
+      const pinnedLabels = new Set(
+        tx
+          .select()
+          .from(blockEnds)
+          .where(and(eq(blockEnds.blockId, blockId), eq(blockEnds.pinned, true)))
+          .all()
+          .map((r) => r.label),
+      );
+
+      tx.delete(blockEnds)
+        .where(and(eq(blockEnds.blockId, blockId), eq(blockEnds.pinned, false)))
+        .run();
+
+      for (const label of new Set(labels)) {
+        if (pinnedLabels.has(label)) continue;
+        tx.insert(blockEnds)
+          .values({ id: randomUUID(), layoutId, blockId, label, pinned: false })
+          .run();
+      }
+    });
   }
 
   // ─── Route Reservations ─────────────────────────────────────────────────────

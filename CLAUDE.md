@@ -14,7 +14,7 @@ style preferences.
 | `docs/project-plan.md` | Phase roadmap (0–3) |
 | `docs/mqtt-contract.md` | **Binding** MQTT topics, payloads, QoS, retention |
 | `docs/topology.md` | Track graph (`block_edges`): validation, deferred items |
-| `docs/track-grid.md` | `grid_tiles` — the Track Editor's **drawing**, its validated write path, and why a tile carries no authority (D1–D6) |
+| `docs/track-grid.md` | `grid_tiles` — the Track Editor's **drawing**, its validated write path, and why a tile carries no authority (D1–D11) |
 | `docs/route-locking.md` | Route reservation and locking (D1–D14) decision record |
 | `docs/pathfinding.md` | Pathfinding, setting the road, and route faults (P1–P8) |
 | `docs/auth.md` | Local authentication scheme and the pre-TLS threat model |
@@ -24,7 +24,7 @@ style preferences.
 | `docs/naming.md` | Operator-facing names: the `NameBook`, its invalidation points, and the D8 degradation contract (D1–D10) |
 | `docs/sensor-simulation.md` | Flag-gated sensor simulation panel: decision record and mechanical resolutions (D1–D13, R1–R6) |
 | `docs/diagram-encoding.md` | Track-diagram encoding: colour is never the sole carrier of meaning (D1–D6) |
-| `docs/track-editor.md` | Track Editor authoring: derived canvas extent, per-stroke undo, view persistence (D1–D5) |
+| `docs/track-editor.md` | Track Editor authoring: derived canvas extent, per-stroke undo, view persistence, and the wave-2 affordances (D1–D9) |
 | `docs/claude-review.md`, `docs/gpt-review.md` | Open design questions |
 
 Never invent an MQTT topic or payload field. If `docs/mqtt-contract.md` does not cover
@@ -184,7 +184,9 @@ row rather than appending the new story beneath the old one.**
 | **Operator-facing names** (#54) | `NameBook` (`domain/types.ts`) + pure helpers in `domain/naming.ts`; every `describe*` takes an optional trailing `book?: NameBook` and, without one, renders raw ids byte-for-byte as before. `NameBookCache` (`services/nameBook.ts`) behind the `INameBook` port is injected into the three services as an optional trailing constructor parameter. | `docs/naming.md` |
 | **Track Editor authoring** (#69) | Canvas extent derives from content plus a margin — there is no fixed grid to hit, and `MAX_COORDINATE` is admission control, not an edge. Undo is client-side and **per stroke**, so a stray right-drag is one click to reverse; it is never persisted. `⌂` fits content. Pan/zoom persist per layout. | `docs/track-editor.md` |
 | **Diagram encoding** (#81, #68) | `diagram/encoding.ts` is the single source of track-diagram colour; every state ships a pattern/glyph/label so colour is never the sole carrier. Block tints are **four** validator-checked colours assigned by graph colouring over adjacency (`diagram/blockRuns.ts`), marking block *boundaries* — a tint never identifies a block, the label does. Don't add a fifth tint: it fails CVD checks. | `docs/diagram-encoding.md` |
-| **Track grid** (#70) | `grid_tiles` is the Track Editor's *drawing*, not the track model — no domain decision reads a tile. Writes go through `GridService` (layout existence, `blockId`/`pointId` resolve **in this layout**) behind `gridTileWriteSchema`: closed `tileType` enum from `TILE_TYPES`, bounded integer coordinates, and a **closed** `metadata` schema every later field (#71, #74) must be added to. Rejections are 400/404 — never Safe-Stop. | `docs/track-grid.md` |
+| **Track grid** (#70, #71, #73, #74) | `grid_tiles` is the Track Editor's *drawing*, not the track model — no domain decision reads a tile. Writes go through `GridService` (layout existence; `blockId`/`pointId`/annotation ids resolve **in this layout**) behind `gridTileWriteSchema`: closed `tileType` enum, bounded coordinates, and a **closed** `metadata` schema every later field must be added to. `metadata` now also carries `trackRole` (#71 — only ever asserts *decorative*; `classifyTile` derives the three-way state), `annotations` (#74 — generic `{entityType, entityId}` list, never assume "sensor") and `pointRoads` (#73 — leg-list shaped, keyed by a position *tuple*, so slips and three-ways stay open). Rejections are 400/404 — never Safe-Stop. | `docs/track-grid.md` |
+| **Block ends** (#72) | `block_ends` (`(blockId, label)` unique) names a block's openings — the referent of `block_edges.fromEnd`/`toEnd`. Labels are **generated** as 8-point cardinals from the drawing by `services/gridGeometry.ts` and **pinned** when authored or when an edge already references them. Regeneration is on demand only, never touches a pinned row, and a rename or delete of an edge-referenced label is a **409, never a cascade**. Deliberately **no FK** from `block_edges`. | `docs/topology.md` |
+| **Grid diagnostics** (#84, #83, #71) | `GET .../grid/diagnostics` — read-only, advisory, never a gate. `warning` = two representations disagree or a hazard is drawn (buffer contradicted by an edge, dangling reference, duplicate annotation, drawn plain diamond per #26); `info` = authoring unfinished (unclassified tile, end with no edges and no buffer, unmapped point tile). Nothing in `domain/` reads a tile, and `TopologyService` never refuses an edge write because of one. | `docs/track-grid.md` D11 |
 | **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) bench tool: `SensorSimulationService` publishes a fabricated reading to the sensor's own `mqttTopic` and the broker echoes it back through the ordinary ingestion path — byte-identical to hardware, no marker field. `GET /api/capabilities` gates the Operate-pane panel and fails closed. | `docs/sensor-simulation.md` |
 
 ### Traps
@@ -209,6 +211,11 @@ Things that look like bugs or oversights and are not. Each was a deliberate deci
 - **`ReservationService.resume` returning `resumed: true` is provisional.** The service has
   no DCC access; `LayoutService.resumeRoute` must re-command every held point before the
   resume counts, and rolls back to `suspended` with locks retained if any is rejected.
+- **A `grid_tiles.metadata` blob that fails to parse reads as `{}` instead of throwing**,
+  unlike every other row parser in `validation.ts`. Deliberate (`docs/track-grid.md` D10):
+  a bad `block_edges` row Safe-Stops because the pathfinder plans on it, while a tile
+  decides nothing — and refusing to open the Track Editor over one legacy cell removes
+  the only tool that can fix it. The diagnostics report it rather than swallow it.
 - **An empty payload on a sensor topic is a retained-clear, not a malformed reading** —
   `handleSensorReading` step 2b returns before the Zod parse and raises no fault (#65 D7,
   `docs/sensor-fault-recovery.md` D9). It looks like a hole in the "malformed payload is a
@@ -223,7 +230,17 @@ Recorded rather than closed — do not treat any of these as bugs to fix in pass
 - **A point lock is an authority guarantee, not a physical position guarantee.** There is
   still no point-position feedback channel (#25).
 - **Two routes fouling at a plain (non-switched) diamond crossing is not caught**, since
-  neither shares a block or a point (#26). Westgate Hollow has none today.
+  neither shares a block or a point (#26). Westgate Hollow has none today; the editor now
+  says so when one is drawn (`diamond-blind-spot`), which is a warning, not a fix.
+- **A point tile's leg mapping is unverifiable authored data.** Nothing can check which
+  way round a physical point is wired, and `pointConditions` carries no geometry to check
+  it against (`docs/track-grid.md` D9).
+- **The classification pass over the existing Westgate Hollow grid is manual** and not yet
+  done — every untagged tile reports as `unclassified` until it is. That is the intended
+  state, not a bug: a defaulting rule would have to guess which track is monitored.
+- **`findBlockRuns` exists twice** — `services/gridGeometry.ts` (backend, for end
+  generation) and `diagram/blockRuns.ts` (frontend, for tints and labels). #75 is the
+  issue that unifies the two renderers; until then, a change to one wants the other.
 - **The pathfinder does not search around a point-position conflict**, so a path can exist
   that it will not find (P5 in `docs/pathfinding.md`).
 - **Driving a granted route is manual.** #4 sets and reserves the road; it does not drive
