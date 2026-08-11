@@ -5,7 +5,14 @@
  * Implementation: DrizzleRepository (SQLite via Drizzle ORM).
  */
 
-import { BlockEdge, RouteHoldKind, RouteId, RouteReservation, RouteStatus } from '../domain/types';
+import {
+  BlockEdge,
+  BlockEnd,
+  RouteHoldKind,
+  RouteId,
+  RouteReservation,
+  RouteStatus,
+} from '../domain/types';
 
 export interface LayoutRecord {
   id: string;
@@ -124,6 +131,28 @@ export interface ILayoutRepository {
   createBlockEdge(data: Omit<BlockEdge, 'id'>): Promise<BlockEdge>;
   updateBlockEdge(id: string, data: Partial<Omit<BlockEdge, 'id' | 'layoutId'>>): Promise<BlockEdge>;
   deleteBlockEdge(id: string): Promise<void>;
+
+  // Block Ends (see docs/topology.md, #72)
+  listBlockEnds(layoutId: string): Promise<BlockEnd[]>;
+  getBlockEnd(id: string): Promise<BlockEnd | null>;
+  createBlockEnd(data: Omit<BlockEnd, 'id'>): Promise<BlockEnd>;
+  updateBlockEnd(id: string, data: { label?: string; pinned?: boolean }): Promise<BlockEnd>;
+  deleteBlockEnd(id: string): Promise<void>;
+  /**
+   * Replaces every **unpinned** end of `blockId` with `labels`, atomically.
+   *
+   * One method rather than a delete loop plus an insert loop because that is
+   * what regeneration is: a pinned end must survive it untouched, and a
+   * half-applied regeneration would leave a block briefly holding neither the
+   * old generated ends nor the new ones. Implementations MUST NOT touch a row
+   * with `pinned = true`, and MUST skip a label a pinned row already holds —
+   * the unique index on `(block_id, label)` is the backstop, not the plan.
+   */
+  replaceGeneratedBlockEnds(
+    layoutId: string,
+    blockId: string,
+    labels: readonly string[],
+  ): Promise<void>;
 
   // Route Reservations (see docs/route-locking.md)
   listReservations(layoutId: string, statuses?: RouteStatus[]): Promise<RouteReservation[]>;

@@ -38,6 +38,22 @@ export async function gridRoutes(
     async (req) => gridService.listTiles(req.params.layoutId),
   );
 
+  // Everything the drawing and the track graph disagree about (#71, #73, #74,
+  // #83, #84). Read-only and advisory: nothing here refuses a write, and an
+  // unfinished layout reports `info`, not `warning` — a to-do list styled as
+  // errors trains the operator to ignore it. Not admin-gated, for the same
+  // reason the grid read is not.
+  fastify.get<{ Params: { layoutId: string } }>(
+    '/api/layouts/:layoutId/grid/diagnostics',
+    async (req, reply) => {
+      try {
+        return await gridService.diagnose(req.params.layoutId);
+      } catch (err) {
+        return mapGridError(err, reply);
+      }
+    },
+  );
+
   // PUT (upsert) a single tile — track editing is config, admin-only.
   fastify.put<{ Params: { layoutId: string }; Body: unknown }>(
     '/api/layouts/:layoutId/grid',

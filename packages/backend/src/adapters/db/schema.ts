@@ -139,6 +139,55 @@ export const blockEdges = sqliteTable(
   ],
 );
 
+// ─── Block Ends (see docs/topology.md, #72) ───────────────────────────────────
+
+/**
+ * A named opening of a block: the referent of `block_edges.from_end`/`to_end`.
+ *
+ * A real table rather than tile metadata (#72), deliberately the opposite call
+ * to the drawing-shaped fields that landed in `grid_tiles.metadata` in the same
+ * wave. An end is a property of the *block* — it survives the diagram being
+ * re-laid, and every edge depends on it.
+ *
+ * `pinned` distinguishes an authored label from a generated one. A generated
+ * label is a function of the drawn geometry and is replaced when the drawing
+ * changes; a pinned one outranks geometry permanently.
+ *
+ * **There is deliberately NO foreign key from `block_edges.from_end`/`to_end`
+ * to this table, and there must not be one.** Three reasons, all recorded in
+ * #72: the existing model tolerates an end label with no other referent;
+ * `docs/topology.md` already treats a malformed label as DB corruption handled
+ * by the Safe-Stop path rather than by referential integrity, and an FK would
+ * change that failure mode to "write refused" (a regression against #10); and
+ * the adoption pass — which pins every label an edge already uses — would
+ * become a chicken-and-egg problem against its own constraint.
+ */
+export const blockEnds = sqliteTable(
+  'block_ends',
+  {
+    id: text('id').primaryKey(),
+    layoutId: text('layout_id')
+      .notNull()
+      .references(() => layouts.id, { onDelete: 'cascade' }),
+    blockId: text('block_id')
+      .notNull()
+      .references(() => blocks.id, { onDelete: 'cascade' }),
+    /** Normalised the same way `block_edges` ends are — lower-case slug, see `blockEndLabelSchema`. */
+    label: text('label').notNull(),
+    /** True = manually authored or adopted from an existing edge. Regeneration never touches it. */
+    pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
+  },
+  (table) => [
+    index('block_ends_layout_idx').on(table.layoutId),
+    index('block_ends_block_idx').on(table.blockId),
+    // One label per block. Two ends of one block called 'north' is the
+    // collision the generator refuses rather than suffixes, and the DB says so
+    // too — a suffixed name is exactly the kind that gets typed wrong later.
+    uniqueIndex('block_ends_block_label_unq').on(table.blockId, table.label),
+    check('block_ends_label_non_empty', sql`length(trim(${table.label})) > 0`),
+  ],
+);
+
 // ─── Route Reservations (see docs/route-locking.md) ───────────────────────────
 
 /**
@@ -325,6 +374,8 @@ export type GridTile = typeof gridTiles.$inferSelect;
 export type NewGridTile = typeof gridTiles.$inferInsert;
 export type BlockEdgeRow = typeof blockEdges.$inferSelect;
 export type NewBlockEdgeRow = typeof blockEdges.$inferInsert;
+export type BlockEndRow = typeof blockEnds.$inferSelect;
+export type NewBlockEndRow = typeof blockEnds.$inferInsert;
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
 export type SessionRow = typeof sessions.$inferSelect;

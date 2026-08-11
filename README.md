@@ -305,9 +305,17 @@ closes: a point lock guarantees no other software authority will command the poi
 that the point is physically in the required position — there is still no point-position
 feedback channel from the DCC controller (#25) — and the model does not catch two routes
 fouling at a plain (non-switched) diamond crossing, since neither shares a block or a
-point (#26; Westgate Hollow has none today). Edges are authored explicitly through the
-Edges tab rather than derived from grid tiles — track-editor tiles and the topology graph
-are two independent representations today. Each layout is capped at 2,000 `block_edges` —
+point (#26; Westgate Hollow has none today — and the Track Editor now says so when one is
+drawn, which is a warning rather than a fix). Edges are still authored explicitly through
+the Edges tab rather than derived from grid tiles (#78), but the two representations are
+no longer entirely unchecked against each other: block ends are generated from the drawing
+as 8-point cardinal labels with a sticky manual override (#72), buffer stops assert that an
+end has no onward connection, and `GET .../grid/diagnostics` reports where the drawing and
+the graph disagree (#84). All of it is advisory — nothing in `domain/` reads a tile, and no
+diagnostic can refuse a write or halt a layout. The classification pass marking which
+existing Westgate Hollow tiles are deliberately decorative (#71) is manual and still to be
+done; until it is, untagged tiles report as unclassified to-dos. Each layout is capped at
+2,000 `block_edges` —
 a deliberate admission-control limit on `POST .../edges` (not a physical layout constraint;
 Westgate Hollow is ~40 edges), enforced only on create and only in `TopologyService`, not
 the database or the load path — see `docs/topology.md`.

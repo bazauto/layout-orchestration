@@ -12,15 +12,20 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGridEditor } from '../hooks/useGridEditor';
+import { useBlockEnds } from '../hooks/useBlockEnds';
+import { useGridDiagnostics } from '../hooks/useGridDiagnostics';
 import { assignRunTints, findBlockRuns } from '../diagram/blockRuns';
 import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, OCCUPANCY, SURFACE } from '../diagram/encoding';
-import { TileType } from '../types';
-import { BlockRecord, PointRecord } from '../types';
+import { describeDiagnostic, partitionDiagnostics } from '../diagram/diagnostics';
+import { defaultPointRoads, edgeAnchor, isPointTile, roadLabel } from '../diagram/pointRoads';
+import { GridTileMetadata, TileType, classifyTile } from '../types';
+import { BlockRecord, PointRecord, SensorRecord } from '../types';
 
 interface Props {
   layoutId: string | null;
   blocks: BlockRecord[];
   points: PointRecord[];
+  sensors: SensorRecord[];
 }
 
 const TILE_SIZE = 40;
@@ -195,8 +200,20 @@ function loadView(layoutId: string | null): SavedView | null {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function GridEditor({ layoutId, blocks, points }: Props) {
+export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
   const { grid, loading, loadError, placeTile, eraseTile } = useGridEditor(layoutId);
+
+  /**
+   * Bumped when a gesture ends, not when a cell is painted.
+   *
+   * Diagnostics are derived from the whole layout, so recomputing them per
+   * painted cell of a drag would be one round trip per tile for a result
+   * nobody reads until the drag stops.
+   */
+  const [gridRevision, setGridRevision] = useState(0);
+
+  const { ends, generate: generateEnds } = useBlockEnds(layoutId);
+  const { diagnostics } = useGridDiagnostics(layoutId, gridRevision);
 
   /**
    * The last refused write, held here rather than in the hook (#62).
@@ -215,6 +232,41 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
   const [selectedRotation, setSelectedRotation] = useState(0);
   const [selectedBlockId, setSelectedBlockId] = useState<string>('');
   const [selectedPointId, setSelectedPointId] = useState<string>('');
+
+  /**
+   * Painting track versus placing an entity on track that is already drawn.
+   *
+   * Two modes rather than a modifier key, because an annotation is a different
+   * kind of edit: it changes an existing tile's metadata and never creates or
+   * destroys a tile. Clicking an empty cell in annotate mode does nothing —
+   * there is nothing to annotate — and says so, rather than silently painting
+   * a tile the operator did not ask for.
+   */
+  const [paintMode, setPaintMode] = useState<'track' | 'annotate'>('track');
+
+  /**
+   * #71 — paint this stroke as *deliberately* not part of any block.
+   *
+   * The whole point of the classification: "I meant this" and "I have not got
+   * to this yet" used to be the same absent key, so the editor could not
+   * warn about either without warning about both.
+   */
+  const [paintDecorative, setPaintDecorative] = useState(false);
+
+  const [selectedSensorId, setSelectedSensorId] = useState<string>('');
+
+  /**
+   * #73 — which drawn leg the point's `normal` position selects.
+   *
+   * Defaults to the conventional wiring (through road is normal) and is
+   * captured *while the point is being placed*, which is the only time it is
+   * cheap. A retrofit means revisiting every point tile on the layout by hand.
+   */
+  const [divergentIsNormal, setDivergentIsNormal] = useState(false);
+
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  /** Summary of the last `Ends ⟳`, so a regeneration reports what it changed rather than happening invisibly. */
+  const [endsSummary, setEndsSummary] = useState<string | null>(null);
 
   /**
    * Label density (#68 item 4). The useful density genuinely differs between
@@ -268,6 +320,30 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     [offset, zoom],
   );
 
+  /**
+   * Every tile's metadata, parsed once per grid change rather than per tile
+   * per render — the render loop used to `JSON.parse` on every frame, and the
+   * run detection, the write path and the diagnostics overlay all want the
+   * same parse.
+   *
+   * Tolerant, like the backend's own read path: a blob that will not parse
+   * reads as `{}` so the tile still draws. Refusing to open the editor over a
+   * legacy cell would take away the only tool that can fix it. The backend
+   * reports those cells as `tile-metadata-unreadable` so they are visible
+   * rather than merely survived.
+   */
+  const parsedMeta = useMemo(() => {
+    const out = new Map<string, GridTileMetadata>();
+    for (const tile of grid.values()) {
+      try {
+        out.set(`${tile.x},${tile.y}`, JSON.parse(tile.metadata) as GridTileMetadata);
+      } catch {
+        out.set(`${tile.x},${tile.y}`, {});
+      }
+    }
+    return out;
+  }, [grid]);
+
   /** Records what was at `(x, y)` before this stroke first touched it. */
   const recordForUndo = useCallback(
     (x: number, y: number) => {
@@ -296,6 +372,80 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     [grid],
   );
 
+  /**
+   * The metadata a paint stroke writes at `(x, y)`.
+   *
+   * Annotations on the cell are **carried over deliberately**. Repainting a
+   * curve as a straight is a change to the drawing; it is not a statement that
+   * the sensor sitting there has moved, and silently dropping the annotation
+   * would lose authored placement to a cosmetic edit (#74).
+   *
+   * `blockId` and `trackRole` are mutually exclusive — the write path refuses
+   * a tile carrying both (#71), so the decorative toggle wins and the block
+   * select is disabled while it is on.
+   */
+  const metadataForPaint = useCallback(
+    (existing: GridTileMetadata): GridTileMetadata => {
+      const meta: GridTileMetadata = { rotation: selectedRotation as GridTileMetadata['rotation'] };
+
+      if (paintDecorative) meta.trackRole = 'decorative';
+      else if (selectedBlockId) meta.blockId = selectedBlockId;
+
+      if (selectedPointId) {
+        meta.pointId = selectedPointId;
+        const roads = defaultPointRoads(selectedType, selectedPointId, divergentIsNormal);
+        if (roads) meta.pointRoads = roads;
+      }
+
+      if (existing.annotations?.length) meta.annotations = existing.annotations;
+
+      return meta;
+    },
+    [selectedRotation, paintDecorative, selectedBlockId, selectedPointId, selectedType, divergentIsNormal],
+  );
+
+  /**
+   * Adds or removes the selected entity's annotation at `(x, y)`.
+   *
+   * A toggle rather than an add: clicking the same sensor on the same tile
+   * twice removes it, which is the only way to correct a misplacement without
+   * repainting the tile and losing everything else on it.
+   *
+   * Refuses on an empty cell. An annotation says "this entity sits *here*", and
+   * "here" has to be somewhere the track is drawn.
+   */
+  const toggleAnnotation = useCallback(
+    (x: number, y: number, existing: GridTileMetadata, tileType: TileType) => {
+      if (!selectedSensorId) {
+        setWriteError('Pick a sensor to place first');
+        return null;
+      }
+
+      const current = existing.annotations ?? [];
+      const without = current.filter(
+        (a) => !(a.entityType === 'sensor' && a.entityId === selectedSensorId),
+      );
+      const annotations =
+        without.length === current.length
+          ? [
+              ...current,
+              {
+                entityType: 'sensor' as const,
+                entityId: selectedSensorId,
+                orientation: selectedRotation as GridTileMetadata['rotation'],
+              },
+            ]
+          : without;
+
+      const meta: GridTileMetadata = { ...existing };
+      if (annotations.length > 0) meta.annotations = annotations;
+      else delete meta.annotations;
+
+      return placeTile(x, y, tileType, meta as Record<string, unknown>);
+    },
+    [selectedSensorId, selectedRotation, placeTile],
+  );
+
   const handleTileAction = useCallback(
     (clientX: number, clientY: number, erase: boolean) => {
       const { x, y } = svgToGrid(clientX, clientY);
@@ -304,19 +454,38 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
       // matches what the backend will accept.
       if (x < 0 || y < 0 || x > MAX_COORDINATE || y > MAX_COORDINATE) return;
 
+      const existingTile = grid.get(`${x},${y}`);
+      const existingMeta = parsedMeta.get(`${x},${y}`) ?? {};
+
+      // Annotating never creates or destroys a tile, so it neither records an
+      // undo entry for a tile that is not changing shape nor acts on an empty
+      // cell.
+      if (paintMode === 'annotate' && !erase) {
+        if (!existingTile) {
+          setWriteError('Nothing to annotate at that cell — draw the track first');
+          return;
+        }
+        const run = toggleAnnotation(x, y, existingMeta, existingTile.tileType as TileType);
+        if (run) {
+          void run.then((result) => {
+            setWriteError(result.ok ? null : (result.message ?? `HTTP ${result.status}`));
+          });
+        }
+        return;
+      }
+
       recordForUndo(x, y);
 
       // Both mutations report their own outcome. A refused write must not look
       // like it saved (#62) — the same posture every ConfigPanel tab carries.
       const run = erase
         ? eraseTile(x, y)
-        : (() => {
-            const meta: Record<string, unknown> = {};
-            meta.rotation = selectedRotation;
-            if (selectedBlockId) meta.blockId = selectedBlockId;
-            if (selectedPointId) meta.pointId = selectedPointId;
-            return placeTile(x, y, selectedType, meta);
-          })();
+        : placeTile(
+            x,
+            y,
+            selectedType,
+            metadataForPaint(existingMeta) as Record<string, unknown>,
+          );
 
       void run.then((result) => {
         setWriteError(result.ok ? null : (result.message ?? `HTTP ${result.status}`));
@@ -324,13 +493,15 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     },
     [
       svgToGrid,
+      grid,
+      parsedMeta,
+      paintMode,
+      toggleAnnotation,
       recordForUndo,
       eraseTile,
       placeTile,
       selectedType,
-      selectedRotation,
-      selectedBlockId,
-      selectedPointId,
+      metadataForPaint,
     ],
   );
 
@@ -406,6 +577,10 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
       strokeSeen.current = new Set();
       setUndoStack((s) => [...s, stroke].slice(-UNDO_LIMIT));
     }
+
+    // Recompute the diagnostics now the gesture is over, rather than once per
+    // painted cell during it.
+    setGridRevision((r) => r + 1);
   };
 
   const onWheel = (e: React.WheelEvent) => {
@@ -515,21 +690,6 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     }
   }, [layoutId, offset, zoom]);
 
-  // Parsed once per grid change rather than per tile per render: the render
-  // loop used to `JSON.parse` every tile's metadata on every frame, and the
-  // run detection below needs the same parse anyway.
-  const parsedMeta = useMemo(() => {
-    const out = new Map<string, { rotation?: number; blockId?: string; pointId?: string }>();
-    for (const tile of grid.values()) {
-      try {
-        out.set(`${tile.x},${tile.y}`, JSON.parse(tile.metadata));
-      } catch {
-        out.set(`${tile.x},${tile.y}`, {});
-      }
-    }
-    return out;
-  }, [grid]);
-
   const runs = useMemo(
     () =>
       findBlockRuns(
@@ -543,6 +703,61 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
   );
 
   const tintOf = useMemo(() => assignRunTints(runs, BLOCK_TINTS.length), [runs]);
+
+  const sensorNames = useMemo(() => new Map(sensors.map((s) => [s.id, s.name])), [sensors]);
+  const blockNames = useMemo(() => new Map(blocks.map((b) => [b.id, b.name])), [blocks]);
+  const pointNames = useMemo(() => new Map(points.map((p) => [p.id, p.name])), [points]);
+
+  const { warnings, info } = useMemo(() => partitionDiagnostics(diagnostics), [diagnostics]);
+
+  /**
+   * Block end labels keyed by the cell they sit at, so the render loop can look
+   * them up without scanning.
+   *
+   * Only ends the drawing can currently place — an end with no geometry is a
+   * mismatch the diagnostics report in words, and inventing a cell for it
+   * would put a wrong name on the diagram, which is the failure this whole
+   * feature exists to prevent.
+   */
+  const endsAtCell = useMemo(() => {
+    const out = new Map<string, { label: string; pinned: boolean; terminated: boolean }[]>();
+    for (const end of ends) {
+      if (!end.geometry) continue;
+      const k = `${end.geometry.x},${end.geometry.y}`;
+      const entry = { label: end.label, pinned: end.pinned, terminated: end.geometry.terminated };
+      const list = out.get(k);
+      if (list) list.push(entry);
+      else out.set(k, [entry]);
+    }
+    return out;
+  }, [ends]);
+
+  /**
+   * Regenerates block end labels from the drawing.
+   *
+   * Deliberately a button. Regeneration on every grid write would silently
+   * rename ends underneath the edges referencing them while you redrew a
+   * corner of the layout — and an end label is the only link between an edge
+   * and a block end, so that rename is a change to the track graph.
+   */
+  const regenerateEnds = useCallback(async () => {
+    const result = await generateEnds();
+    if (!result.ok) {
+      setWriteError(result.message ?? `HTTP ${result.status}`);
+      return;
+    }
+    const s = result.data;
+    if (!s) return;
+    const parts = [
+      `${s.adopted.length} pinned from edges`,
+      `${s.created.length} added`,
+      `${s.removed.length} removed`,
+    ];
+    if (s.collisions.length > 0) parts.push(`${s.collisions.length} could not be named`);
+    setEndsSummary(parts.join(' · '));
+    setWriteError(null);
+    setGridRevision((r) => r + 1);
+  }, [generateEnds]);
 
   /**
    * Whether a label at this tile should be drawn, per the density control.
@@ -653,32 +868,109 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
         <div style={st.toolSep} />
 
         <label style={st.toolLabel}>
-          Block
+          Mode
           <select
-            value={selectedBlockId}
-            onChange={(e) => setSelectedBlockId(e.target.value)}
+            value={paintMode}
+            onChange={(e) => setPaintMode(e.target.value as typeof paintMode)}
             style={st.toolSelect}
+            title="Track paints tiles; Annotate places an entity on a tile that is already drawn"
           >
-            <option value="">— none —</option>
-            {blocks.map((b) => (
-              <option key={b.id} value={b.id}>{b.name}</option>
-            ))}
+            <option value="track">Track</option>
+            <option value="annotate">Annotate</option>
           </select>
         </label>
 
-        <label style={st.toolLabel}>
-          Point
-          <select
-            value={selectedPointId}
-            onChange={(e) => setSelectedPointId(e.target.value)}
-            style={st.toolSelect}
-          >
-            <option value="">— none —</option>
-            {points.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-        </label>
+        {paintMode === 'annotate' ? (
+          <label style={st.toolLabel}>
+            Sensor
+            <select
+              value={selectedSensorId}
+              onChange={(e) => setSelectedSensorId(e.target.value)}
+              style={st.toolSelect}
+              title="Click a drawn tile to place this sensor; click again to remove it"
+            >
+              <option value="">— pick a sensor —</option>
+              {sensors.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                  {s.inService ? '' : ' (out of service)'}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <>
+            <label style={st.toolLabel}>
+              Block
+              <select
+                value={selectedBlockId}
+                onChange={(e) => setSelectedBlockId(e.target.value)}
+                style={st.toolSelect}
+                disabled={paintDecorative}
+                title={
+                  paintDecorative
+                    ? 'Decorative track is deliberately not part of any block'
+                    : undefined
+                }
+              >
+                <option value="">— none —</option>
+                {blocks.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </label>
+
+            {/*
+              #71. Not a cosmetic switch: it is the difference between "this
+              track is deliberately not monitored" and "I have not tagged this
+              yet", which used to be the same absent key — so the editor could
+              not warn about the second without warning about the whole entry
+              feeder as well.
+            */}
+            <label style={st.toolLabel} title="Mark this track as deliberately not part of any block">
+              <input
+                type="checkbox"
+                checked={paintDecorative}
+                onChange={(e) => setPaintDecorative(e.target.checked)}
+              />
+              Decorative
+            </label>
+
+            <label style={st.toolLabel}>
+              Point
+              <select
+                value={selectedPointId}
+                onChange={(e) => setSelectedPointId(e.target.value)}
+                style={st.toolSelect}
+              >
+                <option value="">— none —</option>
+                {points.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </label>
+
+            {/*
+              #73. Only meaningful while a point tile is selected, and shown
+              only then — the mapping is cheap to capture while the points are
+              being placed and expensive to retrofit, so it belongs next to the
+              act of placing one.
+            */}
+            {selectedPointId !== '' && isPointTile(selectedType) && (
+              <label
+                style={st.toolLabel}
+                title="Which drawn leg the point's normal position selects. Unverifiable authored data — nothing can check it for you."
+              >
+                <input
+                  type="checkbox"
+                  checked={divergentIsNormal}
+                  onChange={(e) => setDivergentIsNormal(e.target.checked)}
+                />
+                Divergent = normal
+              </label>
+            )}
+          </>
+        )}
 
         <label style={st.toolLabel}>
           Rotation
@@ -731,6 +1023,32 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
           tabIndex={-1}
           title="Fit to content"
         >⌂</button>
+
+        <div style={st.toolSep} />
+
+        {/* #72. A button, not a hook on the grid write path: regeneration
+            renames things edges depend on, and that must never happen as a
+            side effect of redrawing a corner of the layout. */}
+        <button
+          onClick={() => void regenerateEnds()}
+          style={st.iconBtn}
+          tabIndex={-1}
+          title="Regenerate block end labels from the drawing. Pinned ends are never touched."
+        >Ends ⟳</button>
+
+        <button
+          onClick={() => setShowDiagnostics((v) => !v)}
+          style={{
+            ...st.iconBtn,
+            ...(warnings.length > 0 ? { borderColor: OCCUPANCY.occupied.colour } : {}),
+          }}
+          tabIndex={-1}
+          title="Show what the drawing and the track graph disagree about"
+        >
+          {/* Counts, not a colour alone (#81): a bare red dot says something is
+              wrong without saying how much or of what kind. */}
+          ⚠ {warnings.length}/{info.length}
+        </button>
 
         <button
           onClick={() => void undo()}
@@ -805,6 +1123,8 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
               const pName = meta.pointId
                 ? (points.find((p) => p.id === meta.pointId)?.name ?? meta.pointId)
                 : null;
+              const classification = classifyTile(meta);
+              const cellEnds = endsAtCell.get(`${tile.x},${tile.y}`) ?? [];
               return (
                 <g key={tile.id || `${tile.x},${tile.y}`}
                   transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}>
@@ -819,9 +1139,119 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
                       opacity={BLOCK_TINT_OPACITY}
                     />
                   )}
-                  <g transform={`rotate(${rotation}, ${H}, ${H})`}>
+                  {/*
+                    #71, and #81's rule applied. Decorative track reads as
+                    obviously-not-monitored and unclassified track reads as
+                    unfinished, both **without relying on colour**: decorative
+                    is drawn faint, unclassified carries a corner glyph. An
+                    operator needs to know at a glance which parts of the
+                    diagram the system can actually see.
+                  */}
+                  <g
+                    transform={`rotate(${rotation}, ${H}, ${H})`}
+                    opacity={classification === 'decorative' ? 0.4 : 1}
+                    strokeDasharray={classification === 'decorative' ? '3 3' : undefined}
+                  >
                     <TilePath type={tile.tileType as TileType} />
                   </g>
+                  {classification === 'unclassified' && labelsVisible(tile.x, tile.y) && (
+                    <text
+                      x={3}
+                      y={T - 3}
+                      fontSize={8}
+                      fill={INK.secondary}
+                      fontFamily="monospace"
+                      stroke={SURFACE.tile}
+                      strokeWidth={2.5}
+                      paintOrder="stroke"
+                    >
+                      ?
+                    </text>
+                  )}
+
+                  {/*
+                    #73 — which leg each position selects, drawn as a letter at
+                    the leg's outer edge. Static: the editor draws the mapping,
+                    not a live position. Until #25 there is no confirmed
+                    position to draw at all, and a mimic that implied one would
+                    be asserting a physical fact the system does not have.
+                  */}
+                  <g transform={`rotate(${rotation}, ${H}, ${H})`}>
+                    {(meta.pointRoads ?? []).map((road, i) => {
+                      const anchor = edgeAnchor(road.legs[1], T);
+                      return (
+                        <text
+                          key={i}
+                          x={anchor.x + (anchor.x === 0 ? 5 : anchor.x === T ? -5 : 0)}
+                          y={anchor.y + (anchor.y === 0 ? 9 : anchor.y === T ? -3 : 3)}
+                          textAnchor="middle"
+                          fontSize={7}
+                          fontWeight="bold"
+                          fill={INK.primary}
+                          fontFamily="monospace"
+                          stroke={SURFACE.tile}
+                          strokeWidth={2.5}
+                          paintOrder="stroke"
+                        >
+                          {roadLabel(road)}
+                        </text>
+                      );
+                    })}
+                  </g>
+
+                  {/*
+                    #74 — placed entities. Generic by construction: the glyph
+                    is chosen from `entityType`, so signals (#79) and RFID
+                    readers (#39) each get a case rather than a new mechanism.
+                  */}
+                  {(meta.annotations ?? []).map((a, i) => (
+                    <g key={`${a.entityType}:${a.entityId}`} transform={`translate(${4 + i * 9}, 4)`}>
+                      <circle cx={3.5} cy={3.5} r={3.5} fill="none" stroke={INK.primary} strokeWidth={1.2} />
+                      <line x1={3.5} y1={0} x2={3.5} y2={7} stroke={INK.primary} strokeWidth={1} />
+                    </g>
+                  ))}
+                  {meta.annotations?.length && labelsVisible(tile.x, tile.y) ? (
+                    <text
+                      x={H}
+                      y={T - 12}
+                      textAnchor="middle"
+                      fontSize={6}
+                      fill={INK.secondary}
+                      fontFamily="monospace"
+                      stroke={SURFACE.tile}
+                      strokeWidth={2.5}
+                      paintOrder="stroke"
+                    >
+                      {meta.annotations
+                        .map((a) => sensorNames.get(a.entityId) ?? a.entityId)
+                        .join(' ')}
+                    </text>
+                  ) : null}
+
+                  {/*
+                    #72 — the end labels, at the openings the geometry found.
+                    A pinned label is drawn in brackets so you can see which
+                    names are load-bearing: a generated one will move when the
+                    drawing does, a pinned one never will, and the edges depend
+                    on the pinned ones.
+                  */}
+                  {cellEnds.map((end) => (
+                    <text
+                      key={end.label}
+                      x={H}
+                      y={H + 3}
+                      textAnchor="middle"
+                      fontSize={7}
+                      fill={INK.secondary}
+                      fontFamily="monospace"
+                      stroke={SURFACE.canvas}
+                      strokeWidth={3}
+                      paintOrder="stroke"
+                    >
+                      {end.pinned ? `[${end.label}]` : end.label}
+                      {end.terminated ? ' ⊣' : ''}
+                    </text>
+                  ))}
                   {/* Point names sit on their own tile — a point is a single
                       tile, so there is no run to collapse — and are drawn in a
                       deliberately different style from block labels: points and
@@ -918,12 +1348,50 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
         </svg>
       </div>
 
+      {/* ── Diagnostics ── */}
+      {showDiagnostics && (
+        <div style={st.diagnostics} role="region" aria-label="Grid diagnostics">
+          {diagnostics.length === 0 ? (
+            <p style={st.diagnosticEmpty}>
+              Nothing to report: the drawing and the track graph agree, and every tile is
+              classified.
+            </p>
+          ) : (
+            <ul style={st.diagnosticList}>
+              {/*
+                Warnings first, then the to-do list. The two are styled
+                differently on purpose — an unfinished layout is a normal state
+                (#72), and rendering "this end has no edge yet" as an error
+                trains the operator to ignore the ones that are.
+              */}
+              {[...warnings, ...info].map((d, i) => (
+                <li
+                  key={`${d.kind}-${i}`}
+                  style={d.severity === 'warning' ? st.diagnosticWarn : st.diagnosticInfo}
+                >
+                  <span style={st.diagnosticBadge}>
+                    {d.severity === 'warning' ? 'WARN' : 'TODO'}
+                  </span>{' '}
+                  {describeDiagnostic(d, {
+                    blocks: blockNames,
+                    points: pointNames,
+                    sensors: sensorNames,
+                  })}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {/* ── Legend ── */}
       <div style={st.legend}>
         <span style={{ color: '#6c7086', fontSize: 11 }}>
-          Left-drag: paint · Right-click: erase · Middle-drag: pan · Scroll: zoom · Rotation: 45° steps (R / Shift+R) · Tile select: 1–7
-          · Ctrl+Z: undo · Canvas: {extent.cols}×{extent.rows} (grows as you draw) ·{' '}
+          Left-drag: {paintMode === 'annotate' ? 'place/remove entity' : 'paint'} · Right-click:
+          erase · Middle-drag: pan · Scroll: zoom · Rotation: 45° steps (R / Shift+R) · Tile
+          select: 1–7 · Ctrl+Z: undo · Canvas: {extent.cols}×{extent.rows} (grows as you draw) ·{' '}
           {grid.size} tile{grid.size !== 1 ? 's' : ''}
+          {endsSummary && <> · Ends: {endsSummary}</>}
         </span>
       </div>
     </div>
@@ -948,6 +1416,12 @@ const st = {
   status:          { fontSize: 12, color: '#f9e2af', marginLeft: 8 },
   statusErr:       { fontSize: 12, color: '#f38ba8', marginLeft: 8 },
   canvasWrap:      { flex: 1, overflow: 'hidden', minHeight: 0, position: 'relative' as const },
+  diagnostics:     { maxHeight: 180, overflowY: 'auto' as const, background: '#11111b', borderTop: '1px solid #313244', padding: '6px 10px' },
+  diagnosticList:  { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column' as const, gap: 3 },
+  diagnosticEmpty: { color: '#6c7086', fontSize: 11, margin: 0 },
+  diagnosticWarn:  { color: '#f38ba8', fontSize: 11, lineHeight: 1.5 },
+  diagnosticInfo:  { color: '#9399b2', fontSize: 11, lineHeight: 1.5 },
+  diagnosticBadge: { fontFamily: 'monospace', fontSize: 9, letterSpacing: '0.5px' },
   legend:          { padding: '4px 10px', background: '#11111b', borderTop: '1px solid #313244' },
   empty:           { color: '#6c7086', fontSize: 13, padding: 16 },
 } as const;

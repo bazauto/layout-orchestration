@@ -131,6 +131,91 @@ describe('migrations', () => {
     expect(toBlockFk?.on_delete).toBe('CASCADE');
   });
 
+  // ── block_ends (#72, see docs/topology.md) ──────────────────────────────────
+
+  describe('block_ends', () => {
+    it('exists with a pinned flag defaulting to false', () => {
+      const columns = sqlite.prepare('PRAGMA table_info(block_ends)').all() as Array<{
+        name: string;
+        notnull: number;
+        dflt_value: string | null;
+      }>;
+
+      expect(columns.map((c) => c.name).sort()).toEqual([
+        'block_id',
+        'id',
+        'label',
+        'layout_id',
+        'pinned',
+      ]);
+      const pinned = columns.find((c) => c.name === 'pinned');
+      // Generated is the default; pinning is a deliberate act, either by an
+      // operator or by the adoption pass finding an edge that already
+      // references the label.
+      expect(pinned?.notnull).toBe(1);
+      expect(pinned?.dflt_value).toBe('false');
+    });
+
+    it('has NO foreign key from block_edges ends to it, deliberately', () => {
+      const fks = sqlite.prepare('PRAGMA foreign_key_list(block_edges)').all() as Array<{
+        table: string;
+      }>;
+      // #72: an FK would make the adoption pass a chicken-and-egg problem, and
+      // would change a corrupt row's failure mode from Safe-Stop to
+      // write-refused — a regression against #10.
+      expect(fks.map((f) => f.table)).not.toContain('block_ends');
+    });
+
+    it('refuses two ends of one block sharing a label', async () => {
+      const layout = await repo.createLayout({ name: 'Ends Layout', description: null });
+      const block = await repo.createBlock({ layoutId: layout.id, name: 'Yard 1' });
+
+      await repo.createBlockEnd({
+        layoutId: layout.id,
+        blockId: block.id,
+        label: 'north',
+        pinned: true,
+      });
+
+      await expect(
+        repo.createBlockEnd({
+          layoutId: layout.id,
+          blockId: block.id,
+          label: 'north',
+          pinned: false,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('replaceGeneratedBlockEnds swaps generated ends and leaves pinned ones untouched', async () => {
+      const layout = await repo.createLayout({ name: 'Regen Layout', description: null });
+      const block = await repo.createBlock({ layoutId: layout.id, name: 'Platform 2' });
+
+      await repo.createBlockEnd({
+        layoutId: layout.id,
+        blockId: block.id,
+        label: 'yard-3',
+        pinned: true,
+      });
+      await repo.createBlockEnd({
+        layoutId: layout.id,
+        blockId: block.id,
+        label: 'west',
+        pinned: false,
+      });
+
+      // 'yard-3' is also offered by the generator: skipping it rather than
+      // colliding with the unique index is the ordinary case, not an error.
+      await repo.replaceGeneratedBlockEnds(layout.id, block.id, ['north', 'yard-3']);
+
+      const ends = await repo.listBlockEnds(layout.id);
+      expect(ends.map((e) => `${e.label}:${e.pinned}`).sort()).toEqual([
+        'north:false',
+        'yard-3:true',
+      ]);
+    });
+  });
+
   // ── DB-level topology invariants (block_edges CHECK/UNIQUE constraints) ──────
   //
   // These insert directly against the raw better-sqlite3 handle so they exercise

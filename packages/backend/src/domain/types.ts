@@ -164,23 +164,192 @@ export const TILE_ROTATIONS = [0, 45, 90, 135, 180, 225, 270, 315] as const;
 export type TileRotation = (typeof TILE_ROTATIONS)[number];
 
 /**
+ * The eight edges of a tile, named by compass point in the tile's **own,
+ * unrotated** frame.
+ *
+ * Unrotated is the whole point (#73). `metadata.rotation` is applied at render
+ * time, so a leg recorded as `'n'` on a tile later rotated 90° draws to the
+ * east without the stored data changing — the mapping describes the drawn
+ * shape, and the rotation describes how that shape is placed. Recording the
+ * post-rotation edge instead would silently become wrong the moment the tile
+ * is rotated.
+ */
+export const TILE_EDGES = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'] as const;
+
+export type TileEdge = (typeof TILE_EDGES)[number];
+
+/**
+ * The 8-point compass vocabulary block-end labels are generated from (#72).
+ *
+ * Ordered clockwise from north, which is what makes indexing by bearing
+ * possible. Every member satisfies `blockEndLabelSchema`, so generating a
+ * label needs no change to the `block_edges` contract.
+ */
+export const CARDINAL_END_LABELS = [
+  'north',
+  'northeast',
+  'east',
+  'southeast',
+  'south',
+  'southwest',
+  'west',
+  'northwest',
+] as const;
+
+export type CardinalEndLabel = (typeof CARDINAL_END_LABELS)[number];
+
+/**
+ * The kinds of entity a tile annotation can place (#74).
+ *
+ * A **discriminator**, not a convenience: an id alone cannot be resolved back
+ * to a table, and the mechanism is deliberately generic — signals (#79) and
+ * RFID readers (#39) are the queued consumers. Nothing reading an annotation
+ * may assume it is a sensor.
+ */
+export const ANNOTATION_ENTITY_TYPES = ['sensor'] as const;
+
+export type AnnotationEntityType = (typeof ANNOTATION_ENTITY_TYPES)[number];
+
+/**
+ * "An entity of type T with id X sits at this tile."
+ *
+ * Placement is **presentational**. The drawing is explicitly not to scale
+ * (#71), so where a sensor appears on it is a drawing concern, not a railway
+ * fact — the railway fact is #77's `offsetMm` from a block end, a different
+ * field on a different issue with a different safety posture. A sensor drawn
+ * at the wrong cell is a bad picture; nothing routes or brakes on it.
+ *
+ * `orientation` is cosmetic only: which way a beam points on the diagram. It
+ * asserts nothing about detection direction, which the system does not model.
+ */
+export interface TileAnnotation {
+  entityType: AnnotationEntityType;
+  entityId: string;
+  orientation?: TileRotation;
+}
+
+/** Bounded so one tile cannot carry an unbounded list. Several annotations sharing a tile is expected (#74); hundreds is a script. */
+export const MAX_TILE_ANNOTATIONS = 4;
+
+/**
+ * Which drawn legs of a point tile are joined when a set of points stands in a
+ * given set of positions (#73).
+ *
+ * **Leg-list shaped, keyed by a position tuple** — deliberately, per #83. The
+ * obvious design, a `normalLeg` naming one of two legs, forecloses three-way
+ * points immediately; keying on a single point's position forecloses slips,
+ * which are one piece of track carrying two independently switched mechanisms.
+ * `when` is therefore a list, and a tile carries a list of roads.
+ *
+ * This is **unverifiable authored data**. There is no independent source of
+ * truth for which way round a physical point is wired, and it cannot be
+ * checked against `block_edges` either — `pointConditions` names a required
+ * position with no geometric meaning. The editor's job is to make it easy to
+ * see and correct, not to validate it.
+ *
+ * Nothing in `domain/` reads this. It exists so a mimic can draw the
+ * **commanded** road solid and the unset road dimmed; until #25 lands there is
+ * no confirmed position to draw at all, and the renderer must keep that
+ * distinction available rather than imply confirmation.
+ */
+export interface TilePointRoad {
+  /**
+   * Every condition must hold for this road to be the set road. Non-empty;
+   * one entry per point mechanism involved. `'unknown'` is excluded for the
+   * same reason `PointCondition.requiredPosition` excludes it — you cannot
+   * draw the road that uncertainty selects.
+   */
+  when: Array<{ pointId: PointId; position: 'normal' | 'reverse' }>;
+  /** The two tile edges this road joins, in the tile's unrotated frame. */
+  legs: [TileEdge, TileEdge];
+}
+
+/**
+ * How a tile's relationship to the block model should be read (#71).
+ *
+ * Only the *deliberate* assertion is stored. "Block track" is already carried
+ * by `blockId`, and re-stating it would create two ways to say one thing that
+ * can disagree; "unclassified" is the absence of both, which is exactly the
+ * unfinished state the editor needs to surface as a to-do.
+ *
+ * A single member today, and an enum rather than a boolean on purpose: #71's
+ * parked open question 2 (a named feeder that is not a block, closer to a
+ * block-with-no-detection than to decoration) would arrive as another member
+ * here, and a `decorative: true` boolean could not grow one.
+ */
+export const TILE_TRACK_ROLES = ['decorative'] as const;
+
+export type TileTrackRole = (typeof TILE_TRACK_ROLES)[number];
+
+/** The three-way classification `classifyTile` derives. `block` and `unclassified` are never stored. */
+export type TileClassification = 'block' | 'decorative' | 'unclassified';
+
+/**
  * The **closed** shape of a tile's `metadata` JSON blob.
  *
  * Closed rather than a passthrough record because every later addition to the
- * drawing — the decorative/unassigned classification (#71), tile annotations
- * (#74) — lands here, and a schema that silently accepts unknown keys cannot
+ * drawing lands here, and a schema that silently accepts unknown keys cannot
  * tell an unfinished feature from a typo. New keys are added to this type and
  * its Zod schema together.
  *
  * `blockId` and `pointId` are *drawing* assertions: which block's tint this
  * tile draws in, which point this tile depicts. They are checked to exist in
  * the same layout (#70) but carry no railway authority — an edge's
- * `pointConditions`, not a tile, is what routes are planned against.
+ * `pointConditions`, not a tile, is what routes are planned against. The same
+ * holds for everything added in wave 2: a tile still decides nothing.
  */
 export interface GridTileMetadata {
   rotation?: TileRotation;
   blockId?: BlockId;
   pointId?: PointId;
+  /** Present only to assert "deliberately not part of any block" (#71). Mutually exclusive with `blockId`. */
+  trackRole?: TileTrackRole;
+  /** Entities placed at this tile (#74). Order is authoring order and carries no meaning. */
+  annotations?: TileAnnotation[];
+  /** Which legs each point position joins (#73). Only meaningful on a tile depicting a point. */
+  pointRoads?: TilePointRoad[];
+}
+
+/**
+ * Derives the three-way classification of a tile from its metadata (#71).
+ *
+ * "Untagged tile" is deliberately **not** an error, and this is the function
+ * that makes that statement precise. On Westgate Hollow the entry feeder is
+ * plain track the system neither detects nor reserves, and warning on every
+ * such cell would light up the whole run — useless. But the opposite failure
+ * is real: a tile that should have been tagged and was not is silently
+ * invisible to live state. Both cases used to be the same absent key.
+ */
+export function classifyTile(metadata: GridTileMetadata): TileClassification {
+  if (metadata.blockId !== undefined) return 'block';
+  if (metadata.trackRole === 'decorative') return 'decorative';
+  return 'unclassified';
+}
+
+// ─── Block Ends (see docs/topology.md) ────────────────────────────────────────
+
+/**
+ * A named opening of a block — the thing `block_edges.fromEnd`/`toEnd`
+ * reference, `#79`'s signals attach to, and `#84`'s buffers terminate.
+ *
+ * Stored in its own table rather than in tile metadata, deliberately the
+ * **opposite** call to `trackRole` and `annotations` above (#72). Those are
+ * properties of the drawing. An end is a property of the *block*: it survives
+ * the diagram being re-laid, and it is the one thing every edge depends on.
+ * Burying it in a tile blob would make that dependency the least durable
+ * record in the system.
+ *
+ * `pinned` means "authored, outranks geometry permanently". A generated label
+ * is a function of the drawing and is replaced whenever the drawing changes; a
+ * pinned one is never regenerated over, never renamed by the generator, and is
+ * what an already-authored edge is protected by.
+ */
+export interface BlockEnd {
+  id: string;
+  layoutId: LayoutId;
+  blockId: BlockId;
+  label: string;
+  pinned: boolean;
 }
 
 // ─── Sensors (see docs/sensor-fault-recovery.md) ──────────────────────────────

@@ -6,12 +6,18 @@
 
 import { z } from 'zod';
 import {
+  ANNOTATION_ENTITY_TYPES,
   BlockEdge,
+  BlockEnd,
+  GridTileMetadata,
+  MAX_TILE_ANNOTATIONS,
   PointCondition,
   RouteHold,
   RoutePathStep,
   RouteReservation,
+  TILE_EDGES,
   TILE_ROTATIONS,
+  TILE_TRACK_ROLES,
   TILE_TYPES,
   TileRotation,
 } from '../domain/types';
@@ -370,12 +376,83 @@ export const MAX_TILE_COORDINATE = 999;
 
 const tileCoordinateSchema = z.number().int().min(0).max(MAX_TILE_COORDINATE);
 
+const tileRotationSchema = z
+  .number()
+  .int()
+  .refine((r): r is TileRotation => (TILE_ROTATIONS as readonly number[]).includes(r), {
+    message: `Rotation must be one of ${TILE_ROTATIONS.join(', ')}`,
+  });
+
+/**
+ * One placed entity (#74). `.strict()` like everything else on this path, and
+ * `entityType` is a closed enum so an annotation always resolves to a table —
+ * an id alone cannot.
+ */
+export const tileAnnotationSchema = z
+  .object({
+    entityType: z.enum(ANNOTATION_ENTITY_TYPES),
+    entityId: z.string().min(1),
+    orientation: tileRotationSchema.optional(),
+  })
+  .strict();
+
+/**
+ * One road through a point tile (#73).
+ *
+ * `when` is a **list** and `legs` is a pair of distinct tile edges. Both
+ * shapes come straight from #83: a `normalLeg` naming one of two legs
+ * forecloses three-way points, and keying on a single point's position
+ * forecloses slips. Costing nothing extra now is the entire argument — the
+ * retrofit is a migration plus revisiting every point tile by hand.
+ *
+ * No two conditions in one `when` may name the same point: "normal AND
+ * reverse" is unsatisfiable and "normal AND normal" is a duplicate.
+ */
+export const tilePointRoadSchema = z
+  .object({
+    when: z
+      .array(
+        z
+          .object({
+            pointId: z.string().min(1),
+            position: z.enum(['normal', 'reverse']),
+          })
+          .strict(),
+      )
+      .min(1, 'A road needs at least one point condition')
+      .max(4)
+      .superRefine((when, ctx) => {
+        const seen = new Set<string>();
+        for (const c of when) {
+          if (seen.has(c.pointId)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `Point ${c.pointId} appears twice in one road condition`,
+            });
+          }
+          seen.add(c.pointId);
+        }
+      }),
+    legs: z
+      .tuple([z.enum(TILE_EDGES), z.enum(TILE_EDGES)])
+      .refine(([a, b]) => a !== b, { message: 'A road must join two different tile edges' }),
+  })
+  .strict();
+
+/** Canonical, order-independent key for a road's `when` tuple — two roads selected by the same conditions are ambiguous. */
+function roadConditionKey(when: readonly { pointId: string; position: string }[]): string {
+  return [...when]
+    .map((c) => `${c.pointId}:${c.position}`)
+    .sort()
+    .join('|');
+}
+
 /**
  * Closed schema for a tile's `metadata` blob — `.strict()`, not passthrough.
  *
  * The blob was a free-form JSON string stringified verbatim from the request
- * body. Closing it now is the point of #70: #71's decorative/unassigned
- * classification and #74's annotations both land in this object, and a
+ * body. Closing it in #70 is what made wave 2 cheap: #71's classification,
+ * #74's annotations and #73's point roads all land in this object, and a
  * passthrough schema cannot distinguish a key a future feature will add from
  * a key a client misspelled today. Every new field is added here and to
  * `GridTileMetadata` together.
@@ -383,20 +460,64 @@ const tileCoordinateSchema = z.number().int().min(0).max(MAX_TILE_COORDINATE);
  * `rotation` is an enum of the eight 45° steps rather than `number % 45`,
  * because that is exactly what the editor can author and a closed set gives a
  * better rejection message than a modulo refinement.
+ *
+ * The cross-field checks below are the ones a per-field schema cannot express.
+ * Note what is *not* here: whether `blockId`, `pointId` or an annotation's
+ * `entityId` resolve to records **in this layout** is a referential question,
+ * and `GridService` owns it (D6).
  */
 export const gridTileMetadataSchema = z
   .object({
-    rotation: z
-      .number()
-      .int()
-      .refine((r): r is TileRotation => (TILE_ROTATIONS as readonly number[]).includes(r), {
-        message: `Rotation must be one of ${TILE_ROTATIONS.join(', ')}`,
-      })
-      .optional(),
+    rotation: tileRotationSchema.optional(),
     blockId: z.string().min(1).optional(),
     pointId: z.string().min(1).optional(),
+    trackRole: z.enum(TILE_TRACK_ROLES).optional(),
+    annotations: z.array(tileAnnotationSchema).max(MAX_TILE_ANNOTATIONS).optional(),
+    pointRoads: z.array(tilePointRoadSchema).max(8).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((meta, ctx) => {
+    // #71: "deliberately not part of any block" and "part of this block" are
+    // contradictory assertions, and a tile carrying both would classify
+    // differently depending on which check ran first. Refuse rather than pick.
+    if (meta.trackRole === 'decorative' && meta.blockId !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['trackRole'],
+        message: 'A decorative tile cannot also carry a blockId',
+      });
+    }
+
+    if (meta.annotations) {
+      const seen = new Set<string>();
+      for (const a of meta.annotations) {
+        const k = `${a.entityType}:${a.entityId}`;
+        if (seen.has(k)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['annotations'],
+            message: `${a.entityType} ${a.entityId} is annotated twice on the same tile`,
+          });
+        }
+        seen.add(k);
+      }
+    }
+
+    if (meta.pointRoads) {
+      const seen = new Set<string>();
+      for (const road of meta.pointRoads) {
+        const k = roadConditionKey(road.when);
+        if (seen.has(k)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['pointRoads'],
+            message: 'Two roads are selected by the same point positions',
+          });
+        }
+        seen.add(k);
+      }
+    }
+  });
 
 /**
  * Write schema for `PUT .../grid` (upsert one tile).
@@ -421,6 +542,35 @@ export const gridTileWriteSchema = z
   .strict();
 
 export type GridTileWriteInput = z.infer<typeof gridTileWriteSchema>;
+
+/**
+ * Reads a persisted tile's `metadata` column — and **degrades instead of
+ * throwing**, which is the opposite of every other row parser in this file.
+ *
+ * That is deliberate, and the reason is the boundary the grid sits on. A bad
+ * `block_edges` row throws because the pathfinder plans on it: a route granted
+ * over a misread edge moves a train onto track that is not there, so the load
+ * path turns it into a Safe-Stop. A tile decides nothing. Its worst outcome is
+ * a picture that does not match the railway (`docs/track-grid.md`), and
+ * refusing to open the Track Editor because one legacy cell carries a key the
+ * schema no longer accepts would take away the only tool that can fix it.
+ *
+ * So an unreadable blob reads as `{}` — the tile still draws, still occupies
+ * its cell, and is reported as `tile-metadata-unreadable` by the diagnostics
+ * rather than silently swallowed. Rows written since #70 cannot reach this
+ * path; rows authored before it can.
+ */
+export function parseTileMetadata(json: string): { metadata: GridTileMetadata; ok: boolean } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    return { metadata: {}, ok: false };
+  }
+
+  const parsed = gridTileMetadataSchema.safeParse(raw);
+  return parsed.success ? { metadata: parsed.data, ok: true } : { metadata: {}, ok: false };
+}
 
 /**
  * A single coordinate as it arrives in a querystring: matched as digits
@@ -449,6 +599,84 @@ export const gridTileCoordinateQuerySchema = z
     y: tileCoordinateQueryValueSchema,
   })
   .strict();
+
+// ─── Block Ends (#72, see docs/topology.md) ────────────────────────────────
+
+/**
+ * Full-row schema for a `block_ends` DB row. Same posture as
+ * `blockEdgeRowSchema`: no coercion, no defaults, no `.catch()`.
+ *
+ * `label` is checked against `blockEndLabelSchema` — the same pattern
+ * `block_edges.from_end` is held to — because the whole value of this table is
+ * that the two vocabularies are the same one. A row failing it did not come
+ * through the API.
+ */
+export const blockEndRowSchema = z.object({
+  id: z.string().min(1),
+  layoutId: z.string().min(1),
+  blockId: z.string().min(1),
+  label: blockEndLabelSchema,
+  pinned: z.boolean(),
+});
+
+/** Thrown by `parseBlockEndRow` when a `block_ends` row fails validation. */
+export class BlockEndRowInvalidError extends Error {
+  readonly rowId: string;
+  readonly issues: z.ZodIssue[];
+
+  constructor(rowId: string, issues: z.ZodIssue[]) {
+    super(`block_ends row ${rowId} failed validation: ${issues.map((i) => i.message).join('; ')}`);
+    this.name = 'BlockEndRowInvalidError';
+    this.rowId = rowId;
+    this.issues = issues;
+  }
+}
+
+/**
+ * Parses a raw `block_ends` DB row into a domain `BlockEnd`.
+ *
+ * Note what this being corruption does **not** mean here. A bad `block_edges`
+ * row Safe-Stops the layout, because the pathfinder plans on it. A bad
+ * `block_ends` row surfaces on an admin config screen, because nothing routes
+ * on a name — the error propagates to the route handler as a 500 and the
+ * layout keeps running. Same parsing posture, deliberately different blast
+ * radius.
+ */
+export function parseBlockEndRow(row: unknown): BlockEnd {
+  const parsed = blockEndRowSchema.safeParse(row);
+  if (!parsed.success) {
+    throw new BlockEndRowInvalidError(extractRowId(row), parsed.error.issues);
+  }
+  return parsed.data;
+}
+
+/**
+ * Write schema for creating a block end by hand (`POST .../block-ends`).
+ *
+ * A hand-created end is pinned by definition — you only reach this route to
+ * name something the generator got wrong or cannot see — so there is no
+ * `pinned` field to set. Same normalisation as `edgeCreateSchema`: trimmed and
+ * lower-cased before the slug check, so `' North '` becomes `'north'` rather
+ * than being rejected, and a block never ends up with `'north'` and `'North'`
+ * as two distinct ends.
+ */
+export const blockEndCreateSchema = z
+  .object({
+    blockId: z.string().min(1),
+    label: z.string().trim().toLowerCase().pipe(blockEndLabelSchema),
+  })
+  .strict();
+
+export type BlockEndCreateInput = z.infer<typeof blockEndCreateSchema>;
+
+/** Write schema for renaming a block end (`PUT .../block-ends/:endId`). Renaming pins it — see `BlockEndService`. */
+export const blockEndUpdateSchema = z
+  .object({
+    label: z.string().trim().toLowerCase().pipe(blockEndLabelSchema),
+  })
+  .strict();
+
+export type BlockEndUpdateInput = z.infer<typeof blockEndUpdateSchema>;
 
 // ─── Route Reservations ────────────────────────────────────────────────────
 //
