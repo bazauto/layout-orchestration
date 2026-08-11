@@ -120,7 +120,20 @@ function TilePath({ type }: { type: TileType }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function GridEditor({ layoutId, blocks, points }: Props) {
-  const { grid, loading, error, placeTile, eraseTile } = useGridEditor(layoutId);
+  const { grid, loading, loadError, placeTile, eraseTile } = useGridEditor(layoutId);
+
+  /**
+   * The last refused write, held here rather than in the hook (#62).
+   *
+   * A mutation's failure must outlive the `refresh()` that reverts it, and
+   * `refresh()` clears the hook's own `loadError`. Keeping the two apart is
+   * what stops a revert from erasing the only explanation the operator gets —
+   * the tile used to flicker on and vanish with no message at all.
+   *
+   * Cleared on the next write that succeeds, not on a timer: a stale error is
+   * less misleading than no error, which is the whole complaint in #62.
+   */
+  const [writeError, setWriteError] = useState<string | null>(null);
 
   const [selectedType, setSelectedType] = useState<TileType>('straight-h');
   const [selectedRotation, setSelectedRotation] = useState(0);
@@ -149,15 +162,23 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     (clientX: number, clientY: number, erase: boolean) => {
       const { x, y } = svgToGrid(clientX, clientY);
       if (x < 0 || y < 0 || x >= GRID_COLS || y >= GRID_ROWS) return;
-      if (erase) {
-        void eraseTile(x, y);
-      } else {
-        const meta: Record<string, unknown> = {};
-        meta.rotation = selectedRotation;
-        if (selectedBlockId) meta.blockId = selectedBlockId;
-        if (selectedPointId) meta.pointId = selectedPointId;
-        void placeTile(x, y, selectedType, meta);
-      }
+
+      // Both mutations now report their own outcome. A refused write must not
+      // look like it saved (#62) — the same posture every ConfigPanel tab
+      // already carries.
+      const run = erase
+        ? eraseTile(x, y)
+        : (() => {
+            const meta: Record<string, unknown> = {};
+            meta.rotation = selectedRotation;
+            if (selectedBlockId) meta.blockId = selectedBlockId;
+            if (selectedPointId) meta.pointId = selectedPointId;
+            return placeTile(x, y, selectedType, meta);
+          })();
+
+      void run.then((result) => {
+        setWriteError(result.ok ? null : (result.message ?? `HTTP ${result.status}`));
+      });
     },
     [
       svgToGrid,
@@ -351,7 +372,17 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
         >⌂</button>
 
         {loading && <span style={st.status}>Saving…</span>}
-        {error && <span style={st.statusErr}>{error}</span>}
+        {/*
+          Two independent slots, because they mean different things: the grid
+          could not be read at all, versus this particular edit was refused.
+          Collapsing them into one string is how #62 happened.
+        */}
+        {loadError && <span style={st.statusErr}>Could not load grid: {loadError}</span>}
+        {writeError && (
+          <span style={st.statusErr} role="alert">
+            Edit not saved: {writeError}
+          </span>
+        )}
       </div>
 
       {/* ── Canvas ── */}
