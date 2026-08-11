@@ -80,6 +80,13 @@ npm run db:seed --workspace=packages/backend
 npm run bootstrap-admin --workspace=packages/backend -- <username> <password>  # create/reset an admin account
 ```
 
+**Run these from the repo root.** `lint`, `test` and `test:e2e` are defined only in the
+root `package.json`, and the two failure modes are asymmetric: `npm run lint` from inside
+`packages/backend` fails loudly with `Missing script: "lint"`, but `npm test` there
+succeeds while running **only that workspace** — so a green backend run reads as a full
+pass while the frontend suite never executed. The `--workspace=` commands above are the
+exception and are already written to be run from the root too.
+
 Repo housekeeping: `bash .claude/scripts/git-cleanup.sh` previews, and `--yes` applies,
 the removal of merged branches, the stale `.claude/worktrees/` agent worktrees holding
 them, and empty leftover directories git no longer tracks. Everything it keeps it names,
