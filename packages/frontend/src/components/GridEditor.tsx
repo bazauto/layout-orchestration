@@ -24,8 +24,33 @@ interface Props {
 }
 
 const TILE_SIZE = 40;
-const GRID_COLS = 30;
-const GRID_ROWS = 20;
+
+/**
+ * The canvas the editor draws when the grid is empty. **Not a limit** — the
+ * drawn extent grows with the content (`useGridExtent`), which is what #69
+ * asked for in preference to a bigger constant. Westgate Hollow already
+ * reached column 29 of the old fixed 30, and raising the number would only
+ * have moved the wall.
+ */
+const MIN_COLS = 30;
+const MIN_ROWS = 20;
+
+/** Blank columns/rows kept beyond the furthest tile, so there is always room to draw on. */
+const GROWTH_MARGIN = 6;
+
+/**
+ * Hard upper bound on a coordinate.
+ *
+ * Admission control against a fat finger or a stray script creating a tile
+ * nothing can ever scroll to — not a canvas size. It deliberately matches the
+ * bound the backend validates against (`MAX_TILE_COORDINATE`, #70); if that
+ * one changes, change this with it. A layout ~1000 tiles across is already far
+ * beyond anything a physical railway needs.
+ */
+const MAX_COORDINATE = 999;
+
+/** How many strokes of undo to keep. A stroke, not a tile — see `pushUndo`. */
+const UNDO_LIMIT = 50;
 
 // ─── Tile palette ─────────────────────────────────────────────────────────────
 
@@ -119,6 +144,55 @@ function TilePath({ type }: { type: TileType }) {
   }
 }
 
+// ─── Undo ─────────────────────────────────────────────────────────────────────
+
+/**
+ * What was at a coordinate before a stroke touched it. `null` means the cell
+ * was empty, so the inverse of whatever happened there is an erase.
+ */
+interface UndoEntry {
+  x: number;
+  y: number;
+  before: { tileType: TileType; metadata: Record<string, unknown> } | null;
+}
+
+// ─── Viewport persistence ─────────────────────────────────────────────────────
+
+interface SavedView {
+  offset: { x: number; y: number };
+  zoom: number;
+}
+
+const DEFAULT_VIEW: SavedView = { offset: { x: 0, y: 0 }, zoom: 1 };
+
+const viewKey = (layoutId: string) => `layout-orchestrator:gridView:${layoutId}`;
+
+/**
+ * Per-layout, and tolerant of anything it finds: this is a convenience, and a
+ * corrupt or hand-edited entry must never stop the editor opening.
+ */
+function loadView(layoutId: string | null): SavedView | null {
+  if (!layoutId) return null;
+  try {
+    const raw = window.localStorage.getItem(viewKey(layoutId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SavedView>;
+    if (
+      typeof parsed?.zoom !== 'number' ||
+      !Number.isFinite(parsed.zoom) ||
+      typeof parsed.offset?.x !== 'number' ||
+      typeof parsed.offset?.y !== 'number' ||
+      !Number.isFinite(parsed.offset.x) ||
+      !Number.isFinite(parsed.offset.y)
+    ) {
+      return null;
+    }
+    return { offset: { x: parsed.offset.x, y: parsed.offset.y }, zoom: parsed.zoom };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function GridEditor({ layoutId, blocks, points }: Props) {
@@ -150,13 +224,39 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
    */
   const [labelDensity, setLabelDensity] = useState<'always' | 'hover' | 'off'>('always');
 
-  // Viewport pan/zoom
+  // Viewport pan/zoom. Restored from the last visit to this layout (#69) —
+  // reopening the tab should put you back where you were, not at the origin
+  // of a layout that may be drawn nowhere near it.
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [isPainting, setIsPainting] = useState(false);
   const [hoverCell, setHoverCell] = useState<{ x: number; y: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const panStart = useRef<{ mx: number; my: number; ox: number; oy: number } | null>(null);
+
+  /**
+   * Undo stack, one entry per **stroke** rather than per tile.
+   *
+   * A drag paints or erases a run of tiles as one gesture, and undoing it one
+   * tile at a time would be useless for the case that motivated this: a stray
+   * right-drag across the diagram deletes a run, one DELETE per tile, on a
+   * config surface representing an afternoon of authoring.
+   *
+   * Each entry records what was at a coordinate *before* the stroke touched
+   * it, so undo is a replay of inverses — safe precisely because each tile is
+   * an independent upsert/delete. It is client-side and deliberately not
+   * persisted: it describes this session's edits, and an undo stack that
+   * outlived a reload would be offering to revert changes made from another
+   * browser.
+   */
+  const [undoStack, setUndoStack] = useState<UndoEntry[][]>([]);
+  const strokeRef = useRef<UndoEntry[]>([]);
+  /** Coordinates already recorded in the current stroke — only the first state matters. */
+  const strokeSeen = useRef<Set<string>>(new Set());
+  /** Which layout's saved view has been restored, so persistence can't race it. */
+  const hydratedFor = useRef<string | null>(null);
+  /** The view just restored, held until it has rendered — see the persist effect. */
+  const pendingRestore = useRef<SavedView | null>(null);
 
   const svgToGrid = useCallback(
     (clientX: number, clientY: number) => {
@@ -168,14 +268,46 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     [offset, zoom],
   );
 
+  /** Records what was at `(x, y)` before this stroke first touched it. */
+  const recordForUndo = useCallback(
+    (x: number, y: number) => {
+      const k = `${x},${y}`;
+      if (strokeSeen.current.has(k)) return; // only the pre-stroke state matters
+      strokeSeen.current.add(k);
+
+      const existing = grid.get(k);
+      strokeRef.current.push({
+        x,
+        y,
+        before: existing
+          ? {
+              tileType: existing.tileType as TileType,
+              metadata: (() => {
+                try {
+                  return JSON.parse(existing.metadata) as Record<string, unknown>;
+                } catch {
+                  return {};
+                }
+              })(),
+            }
+          : null,
+      });
+    },
+    [grid],
+  );
+
   const handleTileAction = useCallback(
     (clientX: number, clientY: number, erase: boolean) => {
       const { x, y } = svgToGrid(clientX, clientY);
-      if (x < 0 || y < 0 || x >= GRID_COLS || y >= GRID_ROWS) return;
+      // No upper bound from a fixed canvas any more — the canvas grows with
+      // the content. `MAX_COORDINATE` is admission control, not an edge, and
+      // matches what the backend will accept.
+      if (x < 0 || y < 0 || x > MAX_COORDINATE || y > MAX_COORDINATE) return;
 
-      // Both mutations now report their own outcome. A refused write must not
-      // look like it saved (#62) — the same posture every ConfigPanel tab
-      // already carries.
+      recordForUndo(x, y);
+
+      // Both mutations report their own outcome. A refused write must not look
+      // like it saved (#62) — the same posture every ConfigPanel tab carries.
       const run = erase
         ? eraseTile(x, y)
         : (() => {
@@ -192,6 +324,7 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     },
     [
       svgToGrid,
+      recordForUndo,
       eraseTile,
       placeTile,
       selectedType,
@@ -200,6 +333,32 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
       selectedPointId,
     ],
   );
+
+  /**
+   * Replays the inverse of the last stroke.
+   *
+   * Sequential rather than parallel, so a partial failure leaves a coherent
+   * result rather than a race, and so the first refusal is the one reported.
+   * Safe to build on the write path only because #62 made it report honestly:
+   * an undo stack over a path that lies about failure drifts out of sync with
+   * the server, which is exactly why #69 asked for #62 to land first.
+   */
+  const undo = useCallback(async () => {
+    const stroke = undoStack[undoStack.length - 1];
+    if (!stroke) return;
+    setUndoStack((s) => s.slice(0, -1));
+
+    for (const entry of stroke) {
+      const result = entry.before
+        ? await placeTile(entry.x, entry.y, entry.before.tileType, entry.before.metadata)
+        : await eraseTile(entry.x, entry.y);
+      if (!result.ok) {
+        setWriteError(`Undo failed: ${result.message ?? `HTTP ${result.status}`}`);
+        return;
+      }
+    }
+    setWriteError(null);
+  }, [undoStack, placeTile, eraseTile]);
 
   const onMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
@@ -222,7 +381,7 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     }
 
     const { x, y } = svgToGrid(e.clientX, e.clientY);
-    if (x >= 0 && y >= 0 && x < GRID_COLS && y < GRID_ROWS) {
+    if (x >= 0 && y >= 0 && x < extent.cols && y < extent.rows) {
       setHoverCell({ x, y });
     } else {
       setHoverCell(null);
@@ -232,9 +391,21 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     handleTileAction(e.clientX, e.clientY, e.buttons === 2);
   };
 
+  /**
+   * Ends the gesture and commits it as one undo step. A drag is one stroke,
+   * so undoing a stray right-drag restores the whole run it deleted rather
+   * than one tile per press.
+   */
   const onMouseUp = () => {
     setIsPainting(false);
     panStart.current = null;
+
+    if (strokeRef.current.length > 0) {
+      const stroke = strokeRef.current;
+      strokeRef.current = [];
+      strokeSeen.current = new Set();
+      setUndoStack((s) => [...s, stroke].slice(-UNDO_LIMIT));
+    }
   };
 
   const onWheel = (e: React.WheelEvent) => {
@@ -271,6 +442,13 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
         }
       }
 
+      // Ctrl/Cmd+Z => undo the last stroke.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        void undo();
+        e.preventDefault();
+        return;
+      }
+
       // R => rotate +45, Shift+R => rotate -45
       if (e.key.toLowerCase() === 'r') {
         if (e.shiftKey) {
@@ -284,7 +462,58 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [rotateBackward, rotateForward]);
+  }, [rotateBackward, rotateForward, undo]);
+
+  // Restore this layout's last view, and forget any undo history belonging to
+  // the layout we just left — those coordinates mean something else here.
+  useEffect(() => {
+    strokeRef.current = [];
+    strokeSeen.current = new Set();
+    setUndoStack([]);
+
+    const saved = loadView(layoutId) ?? DEFAULT_VIEW;
+    setZoom(saved.zoom);
+    setOffset(saved.offset);
+    pendingRestore.current = saved;
+    hydratedFor.current = layoutId;
+  }, [layoutId]);
+
+  /**
+   * Persist the view — but only once the restored one has actually rendered.
+   *
+   * This effect fires in the same commit as the restore above, when
+   * `offset`/`zoom` still hold their pre-restore values. Writing them there
+   * clobbers the entry the restore just read. It is not merely a transient
+   * wrong value either: under StrictMode's deliberate double-invocation the
+   * restore then runs a second time and reads back the value this effect just
+   * stamped over it, so the saved view is lost outright — which is exactly how
+   * the e2e spec caught it.
+   *
+   * So `pendingRestore` holds what was restored, and nothing is written until
+   * the state matches it. `hydratedFor` alone is not enough: the restore sets
+   * it before this effect runs in the same commit.
+   *
+   * Failures are swallowed: a full or disabled localStorage must not break the
+   * editor over a convenience.
+   */
+  useEffect(() => {
+    if (!layoutId || hydratedFor.current !== layoutId) return;
+
+    const pending = pendingRestore.current;
+    if (pending) {
+      const settled =
+        pending.zoom === zoom && pending.offset.x === offset.x && pending.offset.y === offset.y;
+      if (!settled) return; // the restore has not rendered yet
+      pendingRestore.current = null;
+      return; // nothing has changed since, so there is nothing new to write
+    }
+
+    try {
+      window.localStorage.setItem(viewKey(layoutId), JSON.stringify({ offset, zoom }));
+    } catch {
+      /* not worth surfacing */
+    }
+  }, [layoutId, offset, zoom]);
 
   // Parsed once per grid change rather than per tile per render: the render
   // loop used to `JSON.parse` every tile's metadata on every frame, and the
@@ -332,8 +561,70 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
     [labelDensity, hoverCell],
   );
 
-  const gridW = GRID_COLS * TILE_SIZE;
-  const gridH = GRID_ROWS * TILE_SIZE;
+  /**
+   * The drawn canvas: big enough for the content plus room to keep drawing.
+   *
+   * Derived rather than fixed (#69). The old constants silently dropped any
+   * paint beyond column 30 / row 20, with no indication that painting further
+   * right simply did nothing — and Westgate Hollow was already at column 29.
+   * Growing with the content removes the ceiling rather than moving it.
+   */
+  const extent = useMemo(() => {
+    let cols = MIN_COLS;
+    let rows = MIN_ROWS;
+    for (const t of grid.values()) {
+      cols = Math.max(cols, t.x + 1 + GROWTH_MARGIN);
+      rows = Math.max(rows, t.y + 1 + GROWTH_MARGIN);
+    }
+    return {
+      cols: Math.min(cols, MAX_COORDINATE + 1),
+      rows: Math.min(rows, MAX_COORDINATE + 1),
+    };
+  }, [grid]);
+
+  const gridW = extent.cols * TILE_SIZE;
+  const gridH = extent.rows * TILE_SIZE;
+
+  /**
+   * Frames the drawn tiles in the viewport.
+   *
+   * `⌂` used to reset to zoom 1 at the origin, which on a layout drawn away
+   * from the origin leaves the canvas apparently blank — the control that is
+   * supposed to rescue you from being lost was itself a way to get lost.
+   */
+  const fitToContent = useCallback(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const tiles = [...grid.values()];
+    const view = svg.getBoundingClientRect();
+    if (view.width === 0 || view.height === 0) return;
+
+    if (tiles.length === 0) {
+      setZoom(1);
+      setOffset({ x: 0, y: 0 });
+      return;
+    }
+
+    const minX = Math.min(...tiles.map((t) => t.x));
+    const minY = Math.min(...tiles.map((t) => t.y));
+    const maxX = Math.max(...tiles.map((t) => t.x));
+    const maxY = Math.max(...tiles.map((t) => t.y));
+
+    const contentW = (maxX - minX + 1) * TILE_SIZE;
+    const contentH = (maxY - minY + 1) * TILE_SIZE;
+    const pad = TILE_SIZE;
+
+    const nextZoom = Math.max(
+      0.3,
+      Math.min(3, Math.min((view.width - pad * 2) / contentW, (view.height - pad * 2) / contentH)),
+    );
+
+    setZoom(nextZoom);
+    setOffset({
+      x: (view.width - contentW * nextZoom) / 2 - minX * TILE_SIZE * nextZoom,
+      y: (view.height - contentH * nextZoom) / 2 - minY * TILE_SIZE * nextZoom,
+    });
+  }, [grid]);
 
   if (!layoutId) return <p style={st.empty}>No layout selected.</p>;
 
@@ -435,11 +726,23 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
           title="Zoom out"
         >－</button>
         <button
-          onClick={() => { setZoom(1); setOffset({ x: 0, y: 0 }); }}
+          onClick={fitToContent}
           style={st.iconBtn}
           tabIndex={-1}
-          title="Reset view"
+          title="Fit to content"
         >⌂</button>
+
+        <button
+          onClick={() => void undo()}
+          style={{ ...st.iconBtn, opacity: undoStack.length === 0 ? 0.4 : 1 }}
+          tabIndex={-1}
+          disabled={undoStack.length === 0}
+          title={
+            undoStack.length === 0
+              ? 'Nothing to undo'
+              : `Undo last change (Ctrl+Z) — ${undoStack.length} step${undoStack.length === 1 ? '' : 's'}`
+          }
+        >↶</button>
 
         {loading && <span style={st.status}>Saving…</span>}
         {/*
@@ -473,7 +776,7 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
           <g transform={`translate(${offset.x},${offset.y}) scale(${zoom})`}>
             {/* Grid lines */}
             <rect width={gridW} height={gridH} fill="#11111b" rx={2} />
-            {Array.from({ length: GRID_COLS + 1 }, (_, i) => (
+            {Array.from({ length: extent.cols + 1 }, (_, i) => (
               <line
                 key={`v${i}`}
                 x1={i * TILE_SIZE} y1={0}
@@ -481,7 +784,7 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
                 stroke="#313244" strokeWidth={0.5}
               />
             ))}
-            {Array.from({ length: GRID_ROWS + 1 }, (_, i) => (
+            {Array.from({ length: extent.rows + 1 }, (_, i) => (
               <line
                 key={`h${i}`}
                 x1={0} y1={i * TILE_SIZE}
@@ -619,7 +922,8 @@ export function GridEditor({ layoutId, blocks, points }: Props) {
       <div style={st.legend}>
         <span style={{ color: '#6c7086', fontSize: 11 }}>
           Left-drag: paint · Right-click: erase · Middle-drag: pan · Scroll: zoom · Rotation: 45° steps (R / Shift+R) · Tile select: 1–7
-          · Grid: {GRID_COLS}×{GRID_ROWS} · {grid.size} tile{grid.size !== 1 ? 's' : ''}
+          · Ctrl+Z: undo · Canvas: {extent.cols}×{extent.rows} (grows as you draw) ·{' '}
+          {grid.size} tile{grid.size !== 1 ? 's' : ''}
         </span>
       </div>
     </div>
