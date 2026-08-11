@@ -106,7 +106,7 @@ describe('useGridEditor', () => {
     });
     fetchMock.mockReturnValueOnce(pending);
 
-    let placeDone: Promise<void> = Promise.resolve();
+    let placeDone: Promise<unknown> = Promise.resolve();
     act(() => {
       placeDone = result.current.placeTile(9, 9, 'buffer');
     });
@@ -142,24 +142,23 @@ describe('useGridEditor', () => {
     expect(result.current.grid.get('4,4')?.tileType).toBe('crossing');
   });
 
-  it('a failed placeTile reverts the optimistic tile via refresh, rather than leaving stale data in place', async () => {
+  it('a failed placeTile reverts the optimistic tile via refresh, and returns the failure to its caller', async () => {
     const { result } = await mountWithEmptyGrid();
 
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'nope' }, 500));
-    // placeTile's catch block calls refresh() to revert — it re-fetches the
-    // authoritative (still empty) grid. Note refresh() itself does
-    // `setError(null)` before that re-fetch, so the failed-mutation error is
-    // transient here rather than persisted — unlike useLayoutConfig's
-    // `mutate()` path, which does NOT auto-refresh on failure and so keeps
-    // the error visible to the operator.
+    // The revert re-fetches the authoritative (still empty) grid. Since #62
+    // the failure is carried by the returned `MutationResult`, not by a
+    // shared error string the revert would immediately clear.
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
 
+    let outcome: Awaited<ReturnType<typeof result.current.placeTile>> | undefined;
     await act(async () => {
-      await result.current.placeTile(7, 7, 'straight-h');
+      outcome = await result.current.placeTile(7, 7, 'straight-h');
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(result.current.error).toBeNull();
+    expect(outcome).toMatchObject({ ok: false, status: 500, message: 'nope' });
+    expect(result.current.loadError).toBeNull();
     expect(result.current.grid.has('7,7')).toBe(false);
   });
 
@@ -176,6 +175,20 @@ describe('useGridEditor', () => {
 
     expect(result.current.grid.has('2,2')).toBe(false);
     expect([...result.current.grid.keys()]).not.toContain('2,2');
+  });
+
+  it('a successful eraseTile reports success to its caller', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([tile({ id: 't1', x: 2, y: 2 })]));
+    const { result } = renderHook(() => useGridEditor('layout-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(undefined, 204));
+    let outcome: Awaited<ReturnType<typeof result.current.eraseTile>> | undefined;
+    await act(async () => {
+      outcome = await result.current.eraseTile(2, 2);
+    });
+
+    expect(outcome).toMatchObject({ ok: true, status: 204 });
   });
 
   it('clearAll empties the grid map and issues a DELETE for the whole grid', async () => {
@@ -197,5 +210,142 @@ describe('useGridEditor', () => {
       'http://localhost:3000/api/layouts/layout-1/grid',
       expect.objectContaining({ method: 'DELETE' }),
     );
+  });
+});
+
+/**
+ * Regression coverage for #62 — a refused grid write reported as a success.
+ *
+ * 403 is used to trigger it because that is what an operator session gets on
+ * every `/grid` write, but the mechanism has nothing to do with roles: the
+ * same swallow applied to a 404 on a stale `layoutId`, or a 500, or anything
+ * else the backend can answer with. A 500 case is included to pin that.
+ *
+ * These assert on the value observed across EVERY render, not only the
+ * terminal one. That distinction is the point: `placeTile` used to set an
+ * error and then call `refresh()`, which opens with `setError(null)`, so a
+ * terminal-value assertion would pass for the wrong reason — the message was
+ * never committed to any render at all.
+ */
+describe('a refused write is reported, not swallowed (#62)', () => {
+  const REFUSAL = { error: 'Admin role required' };
+
+  it('painting a tile: the failure reaches the caller and the tile reverts', async () => {
+    const observed: (string | null)[] = [];
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    const { result } = renderHook(() => {
+      const hook = useGridEditor('layout-1');
+      observed.push(hook.loadError);
+      return hook;
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(REFUSAL, 403)) // the PUT
+      .mockResolvedValueOnce(jsonResponse([])); // the revert refresh
+    observed.length = 0;
+
+    let outcome: Awaited<ReturnType<typeof result.current.placeTile>> | undefined;
+    await act(async () => {
+      outcome = await result.current.placeTile(1, 1, 'straight-h');
+    });
+
+    expect(outcome).toMatchObject({ ok: false, status: 403 });
+    expect(result.current.grid.has('1,1')).toBe(false);
+    // The mutation failure must not be routed through the state `refresh()`
+    // clears — that is the mechanism that erased it.
+    expect(observed.every((e) => e === null)).toBe(true);
+  });
+
+  it('erasing a tile: the refusal reverts the tile back onto the screen', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([tile({ id: 't1', x: 3, y: 4 })]));
+    const { result } = renderHook(() => useGridEditor('layout-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.grid.has('3,4')).toBe(true);
+
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(REFUSAL, 403)) // the DELETE
+      .mockResolvedValueOnce(jsonResponse([tile({ id: 't1', x: 3, y: 4 })])); // revert
+
+    let outcome: Awaited<ReturnType<typeof result.current.eraseTile>> | undefined;
+    await act(async () => {
+      outcome = await result.current.eraseTile(3, 4);
+    });
+
+    expect(outcome).toMatchObject({ ok: false, status: 403 });
+    // Previously: no `res.ok` check at all, so the tile stayed gone on screen
+    // while the backend still had it, and only a page reload revealed it.
+    expect(result.current.grid.has('3,4')).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Acceptance criterion 3: the operator sees the backend's own message, not
+  // a bare `HTTP 403`. `readErrorBody` in useLayoutConfig already extracts it.
+  it.each([
+    ['placeTile', (h: ReturnType<typeof useGridEditor>) => h.placeTile(0, 0, 'straight-h')],
+    ['eraseTile', (h: ReturnType<typeof useGridEditor>) => h.eraseTile(0, 0)],
+    ['clearAll', (h: ReturnType<typeof useGridEditor>) => h.clearAll()],
+  ])("%s surfaces the backend's message rather than a bare status code", async (_name, call) => {
+    const { result } = await mountWithEmptyGrid();
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(REFUSAL, 403))
+      .mockResolvedValueOnce(jsonResponse([]));
+
+    let outcome: { ok: boolean; message?: string } | undefined;
+    await act(async () => {
+      outcome = await call(result.current);
+    });
+
+    expect(outcome).toMatchObject({ ok: false, message: 'Admin role required' });
+  });
+
+  // The defect was never about roles — it was about not looking at the
+  // response at all.
+  it('a 500 on erase is surfaced and reverted just like a 403', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([tile({ id: 't1', x: 5, y: 5 })]));
+    const { result } = renderHook(() => useGridEditor('layout-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'database is locked' }, 500))
+      .mockResolvedValueOnce(jsonResponse([tile({ id: 't1', x: 5, y: 5 })]));
+
+    let outcome: Awaited<ReturnType<typeof result.current.eraseTile>> | undefined;
+    await act(async () => {
+      outcome = await result.current.eraseTile(5, 5);
+    });
+
+    expect(outcome).toMatchObject({ ok: false, status: 500, message: 'database is locked' });
+    expect(result.current.grid.has('5,5')).toBe(true);
+  });
+
+  // `clearAll` has no caller in GridEditor today, so this is the only thing
+  // standing between a future "Clear grid" button and a control that silently
+  // reports success on a refused wipe of the whole drawing.
+  it('clearAll restores the grid when the wipe is refused', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([tile({ id: 't1', x: 1, y: 1 }), tile({ id: 't2', x: 2, y: 2 })]),
+    );
+    const { result } = renderHook(() => useGridEditor('layout-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(REFUSAL, 403))
+      .mockResolvedValueOnce(
+        jsonResponse([tile({ id: 't1', x: 1, y: 1 }), tile({ id: 't2', x: 2, y: 2 })]),
+      );
+
+    let outcome: Awaited<ReturnType<typeof result.current.clearAll>> | undefined;
+    await act(async () => {
+      outcome = await result.current.clearAll();
+    });
+
+    expect(outcome).toMatchObject({ ok: false, status: 403 });
+    expect(result.current.grid.size).toBe(2);
   });
 });
