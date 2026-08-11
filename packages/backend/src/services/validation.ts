@@ -5,7 +5,16 @@
  */
 
 import { z } from 'zod';
-import { BlockEdge, PointCondition, RouteHold, RoutePathStep, RouteReservation } from '../domain/types';
+import {
+  BlockEdge,
+  PointCondition,
+  RouteHold,
+  RoutePathStep,
+  RouteReservation,
+  TILE_ROTATIONS,
+  TILE_TYPES,
+  TileRotation,
+} from '../domain/types';
 import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from '../domain/auth';
 import { SessionRecord, UserRecord } from '../ports/IAuthRepository';
 import { SensorRecord } from '../ports/ILayoutRepository';
@@ -339,6 +348,107 @@ export const simulateReadingSchema = z.discriminatedUnion('action', [
 ]);
 
 export type SimulateReadingInput = z.infer<typeof simulateReadingSchema>;
+
+// ─── Grid Tiles (#70, see docs/track-grid.md) ──────────────────────────────
+//
+// Posture: a malformed grid write is an ordinary **400**. This is an admin
+// config surface, not a sensor or control topic — CLAUDE.md's Traps section
+// already records that turning a bad UI request into a layout halt would
+// itself be a bug. Nothing here routes through `SystemHealth`.
+
+export const tileTypeSchema = z.enum(TILE_TYPES);
+
+/**
+ * Upper bound on a tile coordinate. Not a canvas size — #69 makes the drawn
+ * extent derive from content, so the editor has no fixed edge to validate
+ * against. This is admission control against an absurd coordinate (a fat
+ * finger, or `1e9` from a script) creating a row nothing can ever scroll to,
+ * in the same spirit as `MAX_EDGES_PER_LAYOUT`. A layout ~1000 tiles across
+ * is already far beyond anything a physical railway needs.
+ */
+export const MAX_TILE_COORDINATE = 999;
+
+const tileCoordinateSchema = z.number().int().min(0).max(MAX_TILE_COORDINATE);
+
+/**
+ * Closed schema for a tile's `metadata` blob — `.strict()`, not passthrough.
+ *
+ * The blob was a free-form JSON string stringified verbatim from the request
+ * body. Closing it now is the point of #70: #71's decorative/unassigned
+ * classification and #74's annotations both land in this object, and a
+ * passthrough schema cannot distinguish a key a future feature will add from
+ * a key a client misspelled today. Every new field is added here and to
+ * `GridTileMetadata` together.
+ *
+ * `rotation` is an enum of the eight 45° steps rather than `number % 45`,
+ * because that is exactly what the editor can author and a closed set gives a
+ * better rejection message than a modulo refinement.
+ */
+export const gridTileMetadataSchema = z
+  .object({
+    rotation: z
+      .number()
+      .int()
+      .refine((r): r is TileRotation => (TILE_ROTATIONS as readonly number[]).includes(r), {
+        message: `Rotation must be one of ${TILE_ROTATIONS.join(', ')}`,
+      })
+      .optional(),
+    blockId: z.string().min(1).optional(),
+    pointId: z.string().min(1).optional(),
+  })
+  .strict();
+
+/**
+ * Write schema for `PUT .../grid` (upsert one tile).
+ *
+ * `.strict()` for the same reason as every sibling: `id` and `layoutId` are
+ * path/server-owned, and a body carrying either is a 400 rather than a
+ * silently ignored field. `metadata` defaults to `{}` — the editor omits it
+ * for an untagged tile, and that is legitimate (#68: an untagged tile is not
+ * a warning).
+ *
+ * Shape only. Whether `blockId`/`pointId` resolve to records **in this
+ * layout** is a referential question this schema cannot answer; `GridService`
+ * owns that.
+ */
+export const gridTileWriteSchema = z
+  .object({
+    x: tileCoordinateSchema,
+    y: tileCoordinateSchema,
+    tileType: tileTypeSchema,
+    metadata: gridTileMetadataSchema.default({}),
+  })
+  .strict();
+
+export type GridTileWriteInput = z.infer<typeof gridTileWriteSchema>;
+
+/**
+ * A single coordinate as it arrives in a querystring: matched as digits
+ * first, converted second.
+ *
+ * Deliberately **not** `z.coerce.number()`, and deliberately not `parseInt`.
+ * A querystring value is always a string, and every numeric conversion in
+ * JavaScript is lenient in a different direction: `parseInt('3abc')` is `3`,
+ * `parseInt('')` is `NaN`, and `Number('')` is `0` — a valid coordinate
+ * conjured out of an absent one. The route previously used `parseInt` and
+ * compared the result against every tile, so all three silently matched
+ * nothing and answered 204: a delete that reported success and deleted
+ * nothing. Matching `/^\d+$/` before converting is the only form with no such
+ * corner.
+ */
+const tileCoordinateQueryValueSchema = z
+  .string()
+  .regex(/^\d+$/, 'Coordinate must be a non-negative integer')
+  .transform(Number)
+  .pipe(z.number().int().min(0).max(MAX_TILE_COORDINATE));
+
+/** Query schema for `DELETE .../grid/tile?x=&y=`. */
+export const gridTileCoordinateQuerySchema = z
+  .object({
+    x: tileCoordinateQueryValueSchema,
+    y: tileCoordinateQueryValueSchema,
+  })
+  .strict();
 
 // ─── Route Reservations ────────────────────────────────────────────────────
 //

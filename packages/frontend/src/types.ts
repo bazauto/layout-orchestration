@@ -206,6 +206,17 @@ export interface TopologyStatus {
 
 // ─── Grid ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Mirrors `TILE_TYPES` in the backend's `domain/types.ts`, which is
+ * authoritative and, since #70, the closed set the write path validates
+ * against. A value absent here is a 400, not a tile.
+ *
+ * `'empty'` was removed in #70: the absence of a tile is expressed by DELETE,
+ * not by a persisted row claiming to be nothing — such a row rendered as
+ * nothing (`TilePath`'s `default`) while still occupying its cell and still
+ * blocking placement. The legacy `straight-v` and named `curve-*` entries stay
+ * because they are in already-authored grids and must keep round-tripping.
+ */
 export type TileType =
   | 'straight-h'    // ─ (also covers legacy straight-v via rotation)
   | 'straight-v'    // │ (legacy – still renderable)
@@ -220,8 +231,21 @@ export type TileType =
   | 'point-right'   // ╣
   | 'buffer'        // ■
   | 'platform'      // ▬
-  | 'crossing'      // ╋
-  | 'empty';
+  | 'crossing';     // ╋
+
+/** Mirrors `TILE_ROTATIONS` — the eight 45° steps the editor authors. */
+export type TileRotation = 0 | 45 | 90 | 135 | 180 | 225 | 270 | 315;
+
+/**
+ * Mirrors the backend's `GridTileMetadata`. Closed: the write path rejects an
+ * unknown key, so a field added here without its backend counterpart is a 400
+ * at runtime rather than a silently dropped write.
+ */
+export interface GridTileMetadata {
+  rotation?: TileRotation;
+  blockId?: string;
+  pointId?: string;
+}
 
 export interface GridTileRecord {
   id: string;

@@ -21,6 +21,7 @@ import { pointRoutes } from './routes/points';
 import { blockRoutes } from './routes/blocks';
 import { sensorRoutes } from './routes/sensors';
 import { gridRoutes } from './routes/grid';
+import { GridService } from '../../services/GridService';
 import { edgeRoutes } from './routes/edges';
 import { topologyRoutes } from './routes/topology';
 import { routeRoutes } from './routes/routes';
@@ -91,7 +92,12 @@ export async function buildServer(
   await blockRoutes(fastify, repo, topologyService, nameBook);
   await pointRoutes(fastify, repo, topologyService, nameBook);
   await sensorRoutes(fastify, repo, layoutService);
-  await gridRoutes(fastify, repo);
+  // #70: constructed here rather than plumbed in from `index.ts` because it
+  // holds no state and depends on nothing but the repository — the same
+  // reason `layoutRoutes` still takes `repo` directly. It exists so the
+  // referential checks a Zod schema cannot express live in a service rather
+  // than in the route callback.
+  await gridRoutes(fastify, new GridService(repo));
   await edgeRoutes(fastify, topologyService);
   await topologyRoutes(fastify, layoutService, topologyService);
   await routeRoutes(fastify, layoutService);
