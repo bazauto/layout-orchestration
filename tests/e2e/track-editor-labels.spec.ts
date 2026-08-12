@@ -27,6 +27,10 @@ for (let x = 2; x <= 11; x++) TILES.push({ x, y: 3, tileType: 'straight-h', bloc
 for (let x = 12; x <= 20; x++) TILES.push({ x, y: 3, tileType: 'straight-h', blockId: 'b2' });
 for (let x = 2; x <= 10; x++) TILES.push({ x, y: 5, tileType: 'straight-h', blockId: 'b3' });
 TILES.push({ x: 11, y: 4, tileType: 'point-left', blockId: 'b1', pointId: 'p1' });
+// #93 — the companion tile. A point is drawn as two cells, the point tile plus
+// the diagonal carrying its divergent road to the next row, and both are tagged
+// with the same point. That is what used to render the name twice.
+TILES.push({ x: 11, y: 5, tileType: 'straight-45', blockId: 'b3', pointId: 'p1' });
 
 async function stubApis(page: Page) {
   await page.route('**://localhost:3000/api/layouts', (r) =>
@@ -80,7 +84,7 @@ async function openEditor(page: Page) {
   await stubApis(page);
   await page.goto('/');
   await page.getByRole('button', { name: 'Track Editor' }).click();
-  await expect(page.getByText(/29 tiles/)).toBeVisible();
+  await expect(page.getByText(/30 tiles/)).toBeVisible();
 }
 
 /** Every `<text>` the canvas draws, which is what the operator actually reads. */
@@ -98,12 +102,34 @@ test('a ten-tile block draws its name once, not once per tile', async ({ page })
   expect(texts.filter((t) => t === 'Fiddle Yard 2')).toHaveLength(1);
 });
 
-test('a point tile carries its point name', async ({ page }) => {
+test('a point carries its name once, abbreviated to fit its tile', async ({ page }) => {
   await openEditor(page);
 
-  // Rendered with a leading marker so points and blocks do not look alike —
-  // they are different namespaces.
-  expect((await svgTexts(page)).some((t) => t.includes('Yard Throat'))).toBe(true);
+  const texts = await svgTexts(page);
+
+  // #93. `Yard Throat` does not follow the layout's `P1 - …` convention, so it
+  // truncates rather than being assumed to have an identifier. What matters is
+  // that it fits its cell: the full name at this font size is most of two tiles
+  // wide, which is how two adjacent points ran together into one unreadable
+  // string on the real layout.
+  expect(texts).toContain('Yard Th…');
+
+  // Once, not once per tagged tile — p1 is drawn on both (11,4) and (11,5).
+  expect(texts.filter((t) => t === 'Yard Th…')).toHaveLength(1);
+});
+
+test('the full point name stays reachable as a title', async ({ page }) => {
+  await openEditor(page);
+
+  // Abbreviating must not lose the name: `<title>` is both the hover tooltip
+  // and what assistive technology reads, so it is one mechanism for both. It
+  // sits on the wrapping `<g>`, not inside the `<text>` — as a child of `<text>`
+  // it would join that element's `textContent` and un-abbreviate the label.
+  const titles = await page
+    .locator('svg g > title')
+    .evaluateAll((nodes) => nodes.map((n) => n.textContent));
+
+  expect(titles).toContain('Yard Throat');
 });
 
 test('adjacent blocks never share a tint, so the boundary is visible', async ({ page }) => {
@@ -128,5 +154,5 @@ test('label density off hides the labels but keeps the drawing', async ({ page }
 
   expect(await svgTexts(page)).toHaveLength(0);
   // The track itself is untouched — this hides text, not tiles.
-  await expect(page.getByText(/29 tiles/)).toBeVisible();
+  await expect(page.getByText(/30 tiles/)).toBeVisible();
 });
