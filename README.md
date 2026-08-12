@@ -193,8 +193,10 @@ Current automated coverage includes:
   destination, a conflicting request, a DCC-rejected point command, a reserved block going
   unknown mid-route, and the regression guard that a route Safe-Stop is latched and does
   not clear on an unrelated health evaluation (#4)
-- Playwright tests for editor happy path, erase flow, keyboard shortcuts,
-  no-scrollbar viewport regression, edge authoring, and the login screen
+- Playwright tests for editor happy path, erase flow, keyboard shortcuts, keyboard-only
+  grid navigation (canvas focus, cursor movement, paint/erase at the cursor, and jumping to
+  a diagnostic's cell — #94), no-scrollbar viewport regression, edge authoring, and the
+  login screen
 
 ## Frontend Features
 
@@ -229,10 +231,19 @@ Current automated coverage includes:
 - Tile-based sparse grid persisted to backend
 - Straight, corner, point, crossing, buffer, and platform tiles
 - Rotation in 45° steps
-- Keyboard shortcuts:
-  - `1-7` select tile type
-  - `R` rotate +45°
-  - `Shift+R` rotate -45°
+- Keyboard-navigable canvas (`docs/track-editor.md` D11): the grid itself takes focus
+  (`role="application"`) and is fully usable without a mouse
+  - Arrow keys move a `cursor` cell (clamped to the drawn extent)
+  - `Enter`/`Space` paints the selected tile at the cursor; `Delete`/`Backspace` erases it
+  - `Escape` returns focus to the toolbar
+  - `1-7` select tile type, `R`/`Shift+R` rotate ±45°, `Ctrl+Z` undoes — all scoped to the
+    canvas, not the whole page
+  - A single `aria-live` readout under the canvas ("Column 11, row 3. Point tile, …") is
+    both the visible cursor position and the screen-reader announcement
+  - Ruler gutters (column/row numbers) and a faint crosshair give a persistent spatial
+    reference independent of the cursor readout; every 5th gridline is emphasised
+  - Diagnostics-panel lines that carry a coordinate are click-to-jump buttons that move the
+    cursor, centre the view, and pulse the cell
 - Mouse controls:
   - left drag to paint
   - right click to erase

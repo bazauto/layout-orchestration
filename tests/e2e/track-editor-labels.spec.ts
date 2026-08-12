@@ -87,9 +87,21 @@ async function openEditor(page: Page) {
   await expect(page.getByText(/30 tiles/)).toBeVisible();
 }
 
-/** Every `<text>` the canvas draws, which is what the operator actually reads. */
+/**
+ * Every `<text>` the *drawing* carries — block/point/end labels — which is
+ * what the label-density control (#68 item 4) governs.
+ *
+ * Excludes the ruler gutters' column/row numbers (#94): those are a
+ * persistent spatial reference outside the pan/zoom `<g>`, always drawn
+ * regardless of `labelDensity`, and marked `aria-hidden="true"` as the
+ * decorative chrome they are — not part of what "Labels: off" hides.
+ */
 async function svgTexts(page: Page): Promise<string[]> {
-  return page.locator('svg text').allTextContents();
+  return page.locator('svg text').evaluateAll((nodes) =>
+    nodes
+      .filter((n) => !n.closest('[aria-hidden="true"]'))
+      .map((n) => n.textContent ?? ''),
+  );
 }
 
 test('a ten-tile block draws its name once, not once per tile', async ({ page }) => {
