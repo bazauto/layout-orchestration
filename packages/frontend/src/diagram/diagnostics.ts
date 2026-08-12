@@ -87,6 +87,43 @@ export function describeDiagnostic(d: GridDiagnostic, names: DiagnosticNames): s
   }
 }
 
+/**
+ * The coordinate a diagnostic points at, if it has one — a pure sibling to
+ * `describeDiagnostic` (#94) so the diagnostics panel can turn a finding into
+ * a "jump to this cell" button by reading the coordinate structurally,
+ * rather than parsing it back out of the prose `describeDiagnostic` builds.
+ *
+ * `at` is sometimes a single coordinate, sometimes a list — one entry per
+ * duplicate placement — and sometimes absent entirely. `buffer-contradicted-
+ * by-edge`, `end-not-on-diagram` and `block-without-detection` each name a
+ * block end or a block, not a cell: there is nowhere on the drawing to jump
+ * to, and those three return `null` rather than a made-up coordinate. A
+ * `null` here is what stops the panel from rendering a diagnostic line as a
+ * button that would go nowhere.
+ */
+export function diagnosticCoordinate(d: GridDiagnostic): { x: number; y: number } | null {
+  switch (d.kind) {
+    case 'unclassified-tile':
+    case 'tile-metadata-unreadable':
+    case 'dangling-tile-reference':
+    case 'point-tile-unmapped':
+    case 'diamond-blind-spot':
+    case 'end-unfinished':
+      return d.at;
+
+    // A list of coordinates — the first is as good a place to jump to as any
+    // of the others, since they are all the same duplicated placement.
+    case 'duplicate-annotation':
+    case 'end-label-collision':
+      return d.at[0] ?? null;
+
+    case 'buffer-contradicted-by-edge':
+    case 'end-not-on-diagram':
+    case 'block-without-detection':
+      return null;
+  }
+}
+
 /** Groups by severity for display; `warning` first, because `info` is mostly a to-do list. */
 export function partitionDiagnostics(diagnostics: readonly GridDiagnostic[]): {
   warnings: GridDiagnostic[];

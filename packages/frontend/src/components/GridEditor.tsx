@@ -4,10 +4,17 @@
  * SVG tile-based track layout editor.
  *
  * Controls:
- *   Left-click / drag  — paint selected tile type
- *   Right-click        — erase tile
- *   Middle-drag        — pan
- *   Scroll wheel       — zoom
+ *   Left-click / drag        — paint selected tile type
+ *   Right-click              — erase tile
+ *   Middle-drag               — pan
+ *   Scroll wheel              — zoom
+ *   Arrow keys                — move the cursor (#94)
+ *   Enter / Space              — paint at the cursor
+ *   Delete / Backspace         — erase at the cursor
+ *   Escape                     — leave the grid, back to the toolbar
+ *
+ * The canvas takes keyboard focus (`tabIndex`, `role="application"`) so all
+ * of the above works without a mouse — see `docs/track-editor.md` D11.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -16,10 +23,12 @@ import { useBlockEnds } from '../hooks/useBlockEnds';
 import { useGridDiagnostics } from '../hooks/useGridDiagnostics';
 import { assignRunTints, findBlockRuns } from '../diagram/blockRuns';
 import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, OCCUPANCY, SURFACE } from '../diagram/encoding';
-import { describeDiagnostic, partitionDiagnostics } from '../diagram/diagnostics';
+import { describeDiagnostic, diagnosticCoordinate, partitionDiagnostics } from '../diagram/diagnostics';
 import { defaultPointRoads, edgeAnchor, isPointTile, roadLabel } from '../diagram/pointRoads';
 import { pointLabelAnchors, shortPointLabel } from '../diagram/pointLabels';
-import { GridTileMetadata, TileType, classifyTile } from '../types';
+import { describeCursor } from '../diagram/cursorAnnouncement';
+import { rulerTicks } from '../diagram/ruler';
+import { GridDiagnostic, GridTileMetadata, TileType, classifyTile } from '../types';
 import { BlockRecord, PointRecord, SensorRecord } from '../types';
 
 interface Props {
@@ -57,6 +66,22 @@ const MAX_COORDINATE = 999;
 
 /** How many strokes of undo to keep. A stroke, not a tile — see `pushUndo`. */
 const UNDO_LIMIT = 50;
+
+/**
+ * Width/height of the ruler gutters (#94), in screen pixels — fixed
+ * regardless of zoom, since it is UI chrome rather than part of the
+ * drawing. The pan/zoom `<g>` is translated by this much so the gutters get
+ * a reserved strip rather than overlapping the top-left of the content.
+ */
+const RULER_SIZE = 20;
+
+/** Grid-cell deltas for the four arrow keys — the keyboard cursor movement `onCanvasKeyDown` reads (#94). */
+const ARROW_DELTAS: Record<string, { dx: number; dy: number }> = {
+  ArrowUp: { dx: 0, dy: -1 },
+  ArrowDown: { dx: 0, dy: 1 },
+  ArrowLeft: { dx: -1, dy: 0 },
+  ArrowRight: { dx: 1, dy: 0 },
+};
 
 // ─── Tile palette ─────────────────────────────────────────────────────────────
 
@@ -284,7 +309,41 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
   const [zoom, setZoom] = useState(1);
   const [isPainting, setIsPainting] = useState(false);
   const [hoverCell, setHoverCell] = useState<{ x: number; y: number } | null>(null);
+
+  /**
+   * The keyboard cursor (#94) — distinct from `hoverCell` above, which the
+   * mouse clears the moment it leaves the canvas. `cursor` is where a
+   * keyboard user (or a screen reader announcement) currently *is*, and that
+   * has to survive the mouse never having touched the canvas at all, which
+   * is why it starts at the origin rather than `null`.
+   *
+   * Mouse hover also updates it (see `onMouseMove`), so the two input paths
+   * converge on this one piece of state rather than the readout having to
+   * pick between two possibly-disagreeing cells.
+   */
+  const [cursor, setCursor] = useState({ x: 0, y: 0 });
+
+  /**
+   * The cell a diagnostics-panel "jump to" click most recently landed on
+   * (#94), briefly drawn with a fading ring so the jump is visible as well
+   * as just moving the cursor. `id` forces React to remount the `<g>` on a
+   * repeat click at the same cell, which is what makes the SVG `<animate>`
+   * replay rather than sitting at its already-finished end state.
+   */
+  const [pulseCell, setPulseCell] = useState<{ x: number; y: number; id: number } | null>(null);
+  const pulseTimer = useRef<number | null>(null);
+  const pulseId = useRef(0);
+
   const svgRef = useRef<SVGSVGElement>(null);
+  /**
+   * Focused on Escape (#94). `role="application"` hands the canvas the
+   * arrow keys and takes them away from the screen reader's own navigation,
+   * so there has to be an obvious, keyboard-only way back out. `tabIndex={-1}`
+   * keeps the toolbar itself out of the normal tab order — it was never a
+   * stop before, and Escape reaching it is a targeted exit, not a new place
+   * Tab lands on.
+   */
+  const toolbarRef = useRef<HTMLDivElement>(null);
   const panStart = useRef<{ mx: number; my: number; ox: number; oy: number } | null>(null);
 
   /**
@@ -314,8 +373,11 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
   const svgToGrid = useCallback(
     (clientX: number, clientY: number) => {
       const rect = svgRef.current!.getBoundingClientRect();
-      const sx = (clientX - rect.left - offset.x) / zoom;
-      const sy = (clientY - rect.top - offset.y) / zoom;
+      // The pan/zoom `<g>` is translated by `RULER_SIZE` on top of `offset`
+      // so the ruler gutters get a reserved strip (#94) — subtract it here
+      // to undo that shift, the same way `offset` itself is undone.
+      const sx = (clientX - rect.left - offset.x - RULER_SIZE) / zoom;
+      const sy = (clientY - rect.top - offset.y - RULER_SIZE) / zoom;
       return { x: Math.floor(sx / TILE_SIZE), y: Math.floor(sy / TILE_SIZE) };
     },
     [offset, zoom],
@@ -447,9 +509,15 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
     [selectedSensorId, selectedRotation, placeTile],
   );
 
-  const handleTileAction = useCallback(
-    (clientX: number, clientY: number, erase: boolean) => {
-      const { x, y } = svgToGrid(clientX, clientY);
+  /**
+   * Paints or erases at a grid coordinate. Split out from `handleTileAction`
+   * (#94) so the mouse path (which has to turn a client point into a grid
+   * cell first) and the keyboard path (which already has one — the cursor)
+   * converge on the same logic below `svgToGrid` rather than the keyboard
+   * needing a second copy of it.
+   */
+  const paintAt = useCallback(
+    (x: number, y: number, erase: boolean) => {
       // No upper bound from a fixed canvas any more — the canvas grows with
       // the content. `MAX_COORDINATE` is admission control, not an edge, and
       // matches what the backend will accept.
@@ -493,7 +561,6 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
       });
     },
     [
-      svgToGrid,
       grid,
       parsedMeta,
       paintMode,
@@ -504,6 +571,14 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
       selectedType,
       metadataForPaint,
     ],
+  );
+
+  const handleTileAction = useCallback(
+    (clientX: number, clientY: number, erase: boolean) => {
+      const { x, y } = svgToGrid(clientX, clientY);
+      paintAt(x, y, erase);
+    },
+    [svgToGrid, paintAt],
   );
 
   /**
@@ -555,6 +630,10 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
     const { x, y } = svgToGrid(e.clientX, e.clientY);
     if (x >= 0 && y >= 0 && x < extent.cols && y < extent.rows) {
       setHoverCell({ x, y });
+      // The mouse path and the keyboard path converge on one cursor (#94)
+      // rather than the readout having to choose between two states that
+      // could disagree.
+      setCursor({ x, y });
     } else {
       setHoverCell(null);
     }
@@ -567,11 +646,14 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
    * Ends the gesture and commits it as one undo step. A drag is one stroke,
    * so undoing a stray right-drag restores the whole run it deleted rather
    * than one tile per press.
+   *
+   * Also the keyboard path's commit point (#94): `paintAt` records the
+   * pre-stroke state synchronously (`recordForUndo`) before its write ever
+   * resolves, so calling this right after a single keyboard paint/erase
+   * closes that one keypress as its own one-entry stroke, exactly as a
+   * click-and-immediately-release already does on the mouse path.
    */
-  const onMouseUp = () => {
-    setIsPainting(false);
-    panStart.current = null;
-
+  const commitStroke = useCallback(() => {
     if (strokeRef.current.length > 0) {
       const stroke = strokeRef.current;
       strokeRef.current = [];
@@ -582,6 +664,12 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
     // Recompute the diagnostics now the gesture is over, rather than once per
     // painted cell during it.
     setGridRevision((r) => r + 1);
+  }, []);
+
+  const onMouseUp = () => {
+    setIsPainting(false);
+    panStart.current = null;
+    commitStroke();
   };
 
   const onWheel = (e: React.WheelEvent) => {
@@ -601,44 +689,139 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
     setSelectedRotation((r) => (r - 45 + 360) % 360);
   }, []);
 
+  /**
+   * The canvas's own keyboard handler (#94) — previously a `window` listener
+   * guarded only against a form field having focus, which meant arrow keys
+   * moved the cursor (once one existed) while focus was anywhere else on the
+   * page, including the diagnostics list. Moving it here, an `onKeyDown` on
+   * the `<svg>` itself, means every one of these bindings only fires while
+   * the canvas actually has focus — no guard needed, because an `<input>` or
+   * the diagnostics panel is a different part of the DOM tree and this event
+   * never reaches it.
+   *
+   * A plain function rather than `useCallback`, matching `onMouseMove` and
+   * `onMouseUp` above: it closes over state declared later in this component
+   * (`cursor`, `extent`), which is safe for a closure invoked from an event
+   * — by the time a keypress actually happens, the render that declared them
+   * has long since completed — but would be a stale-or-TDZ risk if this were
+   * memoised with a dependency array evaluated at its own declaration point.
+   */
+  const onCanvasKeyDown = (e: React.KeyboardEvent<SVGSVGElement>) => {
+    // Escape hands focus back to the toolbar — the obvious way out that
+    // `role="application"` requires, since it otherwise takes the arrow keys
+    // away from the screen reader's own navigation entirely.
+    if (e.key === 'Escape') {
+      toolbarRef.current?.focus();
+      e.preventDefault();
+      return;
+    }
+
+    const arrow = ARROW_DELTAS[e.key];
+    if (arrow) {
+      setCursor((c) => ({
+        x: Math.max(0, Math.min(extent.cols - 1, c.x + arrow.dx)),
+        y: Math.max(0, Math.min(extent.rows - 1, c.y + arrow.dy)),
+      }));
+      e.preventDefault();
+      return;
+    }
+
+    // Enter/Space paints at the cursor — the keyboard equivalent of a
+    // left-click — and Delete/Backspace erases it, of a right-click. Each is
+    // its own one-keypress stroke (`commitStroke`), same as a mouse click.
+    if (e.key === 'Enter' || e.key === ' ') {
+      paintAt(cursor.x, cursor.y, false);
+      commitStroke();
+      e.preventDefault();
+      return;
+    }
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      paintAt(cursor.x, cursor.y, true);
+      commitStroke();
+      e.preventDefault();
+      return;
+    }
+
+    // 1..9 => palette selection by index
+    if (/^[1-9]$/.test(e.key)) {
+      const idx = parseInt(e.key, 10) - 1;
+      if (idx >= 0 && idx < PALETTE.length) {
+        setSelectedType(PALETTE[idx].type);
+        e.preventDefault();
+        return;
+      }
+    }
+
+    // Ctrl/Cmd+Z => undo the last stroke.
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      void undo();
+      e.preventDefault();
+      return;
+    }
+
+    // R => rotate +45, Shift+R => rotate -45
+    if (e.key.toLowerCase() === 'r') {
+      if (e.shiftKey) {
+        rotateBackward();
+      } else {
+        rotateForward();
+      }
+      e.preventDefault();
+    }
+  };
+
+  /**
+   * Pans, without changing zoom, so `cell` sits at the centre of the
+   * viewport. Used by the diagnostics panel's "jump to" buttons (#94).
+   *
+   * This only ever calls `setOffset` — exactly what dragging the canvas by
+   * hand already does — so it cannot conflict with the saved-view restore
+   * (D5): the persist effect saves whatever `offset` settles on without
+   * caring whether a drag or a diagnostic click put it there.
+   */
+  const centerOn = useCallback(
+    (cell: { x: number; y: number }) => {
+      const svg = svgRef.current;
+      if (!svg) return;
+      const view = svg.getBoundingClientRect();
+      if (view.width === 0 || view.height === 0) return;
+      const cx = (cell.x + 0.5) * TILE_SIZE;
+      const cy = (cell.y + 0.5) * TILE_SIZE;
+      setOffset({
+        x: view.width / 2 - RULER_SIZE - cx * zoom,
+        y: view.height / 2 - RULER_SIZE - cy * zoom,
+      });
+    },
+    [zoom],
+  );
+
+  /**
+   * A diagnostics-panel line's "jump to" action (#94): move the cursor,
+   * centre the view, and briefly pulse the cell so the jump is visible as
+   * more than just the readout changing underneath you.
+   */
+  const jumpToDiagnostic = useCallback(
+    (d: GridDiagnostic) => {
+      const coord = diagnosticCoordinate(d);
+      if (!coord) return;
+
+      setCursor(coord);
+      centerOn(coord);
+
+      pulseId.current += 1;
+      setPulseCell({ x: coord.x, y: coord.y, id: pulseId.current });
+      if (pulseTimer.current !== null) window.clearTimeout(pulseTimer.current);
+      pulseTimer.current = window.setTimeout(() => setPulseCell(null), 900);
+    },
+    [centerOn],
+  );
+
+  // The pulse timer must not outlive the component.
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) {
-        return;
-      }
-
-      // 1..9 => palette selection by index
-      if (/^[1-9]$/.test(e.key)) {
-        const idx = parseInt(e.key, 10) - 1;
-        if (idx >= 0 && idx < PALETTE.length) {
-          setSelectedType(PALETTE[idx].type);
-          e.preventDefault();
-          return;
-        }
-      }
-
-      // Ctrl/Cmd+Z => undo the last stroke.
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-        void undo();
-        e.preventDefault();
-        return;
-      }
-
-      // R => rotate +45, Shift+R => rotate -45
-      if (e.key.toLowerCase() === 'r') {
-        if (e.shiftKey) {
-          rotateBackward();
-        } else {
-          rotateForward();
-        }
-        e.preventDefault();
-      }
+    return () => {
+      if (pulseTimer.current !== null) window.clearTimeout(pulseTimer.current);
     };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [rotateBackward, rotateForward, undo]);
+  }, []);
 
   // Restore this layout's last view, and forget any undo history belonging to
   // the layout we just left — those coordinates mean something else here.
@@ -753,6 +936,34 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
     return out;
   }, [ends]);
 
+  /** What's at the cursor's cell, resolved the same way the render loop resolves any other tile. */
+  const cursorTile = useMemo(() => {
+    const k = `${cursor.x},${cursor.y}`;
+    const tile = grid.get(k);
+    if (!tile) return null;
+    return {
+      tileType: tile.tileType as TileType,
+      metadata: parsedMeta.get(k) ?? {},
+      ends: endsAtCell.get(k) ?? [],
+    };
+  }, [cursor, grid, parsedMeta, endsAtCell]);
+
+  /**
+   * The cursor readout (#94): one string, built by `describeCursor`, that is
+   * both the visible line under the canvas for sighted users and the
+   * `aria-live` announcement a screen reader gets — see that module for why
+   * it has to be one implementation rather than two.
+   */
+  const cursorAnnouncement = useMemo(
+    () =>
+      describeCursor(cursor, cursorTile, {
+        blocks: blockNames,
+        points: pointNames,
+        sensors: sensorNames,
+      }),
+    [cursor, cursorTile, blockNames, pointNames, sensorNames],
+  );
+
   /**
    * Regenerates block end labels from the drawing.
    *
@@ -841,6 +1052,13 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
       return;
     }
 
+    // The ruler gutters (#94) reserve `RULER_SIZE` off the top and left, so
+    // content is centred in what is left of the viewport rather than the
+    // whole of it — otherwise "fit to content" would frame a rectangle that
+    // includes the strip the gutters cover.
+    const availW = view.width - RULER_SIZE;
+    const availH = view.height - RULER_SIZE;
+
     const minX = Math.min(...tiles.map((t) => t.x));
     const minY = Math.min(...tiles.map((t) => t.y));
     const maxX = Math.max(...tiles.map((t) => t.x));
@@ -852,13 +1070,13 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
 
     const nextZoom = Math.max(
       0.3,
-      Math.min(3, Math.min((view.width - pad * 2) / contentW, (view.height - pad * 2) / contentH)),
+      Math.min(3, Math.min((availW - pad * 2) / contentW, (availH - pad * 2) / contentH)),
     );
 
     setZoom(nextZoom);
     setOffset({
-      x: (view.width - contentW * nextZoom) / 2 - minX * TILE_SIZE * nextZoom,
-      y: (view.height - contentH * nextZoom) / 2 - minY * TILE_SIZE * nextZoom,
+      x: (availW - contentW * nextZoom) / 2 - minX * TILE_SIZE * nextZoom,
+      y: (availH - contentH * nextZoom) / 2 - minY * TILE_SIZE * nextZoom,
     });
   }, [grid]);
 
@@ -867,7 +1085,13 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
   return (
     <div style={st.wrapper}>
       {/* ── Toolbar ── */}
-      <div style={st.toolbar}>
+      {/*
+        `tabIndex={-1}` keeps this out of the normal Tab order — it was never
+        a stop before #94 — while still letting Escape focus it
+        programmatically as the canvas's declared way out of
+        `role="application"`.
+      */}
+      <div style={st.toolbar} ref={toolbarRef} tabIndex={-1}>
         <div style={st.paletteGroup}>
           {PALETTE.map((p) => (
             <button
@@ -1102,6 +1326,18 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
         <svg
           ref={svgRef}
           style={{ cursor: 'crosshair', display: 'block', width: '100%', height: '100%' }}
+          // #94: the canvas takes keyboard focus and hands the arrow keys to
+          // itself rather than the screen reader's own navigation —
+          // `docs/track-editor.md` D11 covers why `application` over `grid`.
+          // `aria-label` is the accessible name read once on focus; the
+          // `<title>` below is a native hover tooltip for a sighted mouse
+          // user who never tabs in at all; the `aria-live` region further
+          // down is what actually fires on every cursor move — three
+          // different audiences, not one mechanism duplicated three times.
+          tabIndex={0}
+          role="application"
+          aria-label="Track diagram editor grid. Arrow keys move the cursor, Enter or Space paints the selected tile, Delete erases, Escape returns to the toolbar."
+          onKeyDown={onCanvasKeyDown}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
@@ -1112,25 +1348,45 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
           onWheel={onWheel}
           onContextMenu={onContextMenu}
         >
-          <g transform={`translate(${offset.x},${offset.y}) scale(${zoom})`}>
-            {/* Grid lines */}
+          <title>
+            Track diagram editor grid — arrow keys move the cursor, Enter/Space paints, Delete
+            erases, Escape leaves the grid.
+          </title>
+          <g transform={`translate(${offset.x + RULER_SIZE},${offset.y + RULER_SIZE}) scale(${zoom})`}>
+            {/* Grid lines. Every 5th is emphasised (#94), for counting cells
+                at a zoom too low for the ruler numbers to fit — the same
+                `rulerTicks` maths the gutters below use, so the two can never
+                disagree about which lines count as major. */}
             <rect width={gridW} height={gridH} fill="#11111b" rx={2} />
-            {Array.from({ length: extent.cols + 1 }, (_, i) => (
+            {rulerTicks(extent.cols + 1, TILE_SIZE * zoom).map((tick) => (
               <line
-                key={`v${i}`}
-                x1={i * TILE_SIZE} y1={0}
-                x2={i * TILE_SIZE} y2={gridH}
-                stroke="#313244" strokeWidth={0.5}
+                key={`v${tick.index}`}
+                x1={tick.index * TILE_SIZE} y1={0}
+                x2={tick.index * TILE_SIZE} y2={gridH}
+                stroke={tick.major ? '#45475a' : SURFACE.gridLine}
+                strokeWidth={tick.major ? 1 : 0.5}
               />
             ))}
-            {Array.from({ length: extent.rows + 1 }, (_, i) => (
+            {rulerTicks(extent.rows + 1, TILE_SIZE * zoom).map((tick) => (
               <line
-                key={`h${i}`}
-                x1={0} y1={i * TILE_SIZE}
-                x2={gridW} y2={i * TILE_SIZE}
-                stroke="#313244" strokeWidth={0.5}
+                key={`h${tick.index}`}
+                x1={0} y1={tick.index * TILE_SIZE}
+                x2={gridW} y2={tick.index * TILE_SIZE}
+                stroke={tick.major ? '#45475a' : SURFACE.gridLine}
+                strokeWidth={tick.major ? 1 : 0.5}
               />
             ))}
+
+            {/*
+              The cursor's crosshair band (#94) — a faint wash across its
+              full row and full column, so "where am I" survives without the
+              ruler or the readout being read at all. A *position*, not a
+              colour: #81 forbids colour as the sole carrier of a
+              distinction, and this carries none — it marks a place, the
+              same way the crosshair on any drawing tool does.
+            */}
+            <rect x={0} y={cursor.y * TILE_SIZE} width={gridW} height={TILE_SIZE} fill={INK.primary} opacity={0.05} />
+            <rect x={cursor.x * TILE_SIZE} y={0} width={TILE_SIZE} height={gridH} fill={INK.primary} opacity={0.05} />
 
             {/* Placed tiles. The block name is NOT drawn here — one label per
                 contiguous run is drawn below instead (#68). */}
@@ -1385,8 +1641,90 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
                 </g>
               );
             })()}
+
+            {/*
+              A diagnostic's "jump to" pulse (#94) — a fading ring, not a
+              colour by itself: it marks the same cell the cursor and the
+              crosshair just moved to, so the click's effect is visible as
+              more than the readout text changing underneath you. `key`
+              forces a remount on a repeat click at the same cell so the
+              `<animate>` replays instead of sitting at its finished state.
+            */}
+            {pulseCell && (
+              <g
+                key={pulseCell.id}
+                transform={`translate(${pulseCell.x * TILE_SIZE},${pulseCell.y * TILE_SIZE})`}
+              >
+                <rect width={T} height={T} fill="none" stroke={INK.primary} strokeWidth={3}>
+                  <animate attributeName="opacity" values="1;0.15;1;0.15;1;0" dur="0.9s" fill="freeze" />
+                </rect>
+              </g>
+            )}
+          </g>
+
+          {/*
+            Ruler gutters (#94) — deliberately drawn in this sibling `<g>`,
+            outside the pan/zoom group above, and positioned by hand from
+            `offset`/`zoom` rather than inheriting the `scale()` transform.
+            Text inside a scaled group shrinks with it; at zoom 0.3 a
+            scaled "11" is no longer legible, which is the exact failure a
+            ruler exists to prevent. `rulerTicks` decides which columns/rows
+            get a printed number at the current zoom, thinning them out
+            rather than shrinking them further.
+          */}
+          <g aria-hidden="true">
+            <rect x={0} y={0} width="100%" height={RULER_SIZE} fill={SURFACE.canvas} />
+            <rect x={0} y={0} width={RULER_SIZE} height="100%" fill={SURFACE.canvas} />
+            {rulerTicks(extent.cols, TILE_SIZE * zoom).map((tick) => {
+              const x = offset.x + RULER_SIZE + (tick.index + 0.5) * TILE_SIZE * zoom;
+              return (
+                <g key={`rc${tick.index}`}>
+                  <line
+                    x1={x} y1={RULER_SIZE - (tick.major ? 8 : 4)}
+                    x2={x} y2={RULER_SIZE}
+                    stroke={INK.muted} strokeWidth={1}
+                  />
+                  {tick.label && (
+                    <text x={x} y={RULER_SIZE - 10} textAnchor="middle" fontSize={9}
+                      fontFamily="monospace" fill={INK.secondary}>
+                      {tick.index}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+            {rulerTicks(extent.rows, TILE_SIZE * zoom).map((tick) => {
+              const y = offset.y + RULER_SIZE + (tick.index + 0.5) * TILE_SIZE * zoom;
+              return (
+                <g key={`rr${tick.index}`}>
+                  <line
+                    x1={RULER_SIZE - (tick.major ? 8 : 4)} y1={y}
+                    x2={RULER_SIZE} y2={y}
+                    stroke={INK.muted} strokeWidth={1}
+                  />
+                  {tick.label && (
+                    <text x={4} y={y + 3} fontSize={9} fontFamily="monospace" fill={INK.secondary}>
+                      {tick.index}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+            {/* The corner where both gutters meet, so no gridline peeks through underneath it. */}
+            <rect x={0} y={0} width={RULER_SIZE} height={RULER_SIZE} fill={SURFACE.canvas} />
           </g>
         </svg>
+      </div>
+
+      {/*
+        The cursor readout (#94) — the same string as the `aria-live`
+        announcement below, and deliberately visible rather than
+        screen-reader-only: it is what lets a sighted keyboard user confirm
+        the announcement is telling the truth, and it is the only "where am
+        I" a mouse-only user had before this issue at all.
+      */}
+      <div style={st.cursorReadout} aria-live="polite">
+        {cursorAnnouncement}
       </div>
 
       {/* ── Diagnostics ── */}
@@ -1405,21 +1743,42 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
                 (#72), and rendering "this end has no edge yet" as an error
                 trains the operator to ignore the ones that are.
               */}
-              {[...warnings, ...info].map((d, i) => (
-                <li
-                  key={`${d.kind}-${i}`}
-                  style={d.severity === 'warning' ? st.diagnosticWarn : st.diagnosticInfo}
-                >
-                  <span style={st.diagnosticBadge}>
-                    {d.severity === 'warning' ? 'WARN' : 'TODO'}
-                  </span>{' '}
-                  {describeDiagnostic(d, {
-                    blocks: blockNames,
-                    points: pointNames,
-                    sensors: sensorNames,
-                  })}
-                </li>
-              ))}
+              {[...warnings, ...info].map((d, i) => {
+                const text = describeDiagnostic(d, {
+                  blocks: blockNames,
+                  points: pointNames,
+                  sensors: sensorNames,
+                });
+                // #94: a finding only becomes a button when it structurally
+                // carries a coordinate — `diagnosticCoordinate` is the pure
+                // sibling to `describeDiagnostic` that says so without
+                // parsing the prose above back apart. The three kinds that
+                // name a block end or a block rather than a cell stay plain
+                // text; there is nowhere on the drawing to jump to.
+                const coord = diagnosticCoordinate(d);
+                return (
+                  <li
+                    key={`${d.kind}-${i}`}
+                    style={d.severity === 'warning' ? st.diagnosticWarn : st.diagnosticInfo}
+                  >
+                    <span style={st.diagnosticBadge}>
+                      {d.severity === 'warning' ? 'WARN' : 'TODO'}
+                    </span>{' '}
+                    {coord ? (
+                      <button
+                        type="button"
+                        onClick={() => jumpToDiagnostic(d)}
+                        style={st.diagnosticJump}
+                        title={`Move the cursor to (${coord.x}, ${coord.y}) and centre the view there`}
+                      >
+                        {text}
+                      </button>
+                    ) : (
+                      text
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -1430,8 +1789,9 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
         <span style={{ color: '#6c7086', fontSize: 11 }}>
           Left-drag: {paintMode === 'annotate' ? 'place/remove entity' : 'paint'} · Right-click:
           erase · Middle-drag: pan · Scroll: zoom · Rotation: 45° steps (R / Shift+R) · Tile
-          select: 1–7 · Ctrl+Z: undo · Canvas: {extent.cols}×{extent.rows} (grows as you draw) ·{' '}
-          {grid.size} tile{grid.size !== 1 ? 's' : ''}
+          select: 1–7 · Ctrl+Z: undo · Arrows: move cursor · Enter/Space: paint at cursor ·
+          Delete: erase at cursor · Esc: leave grid for toolbar · Canvas: {extent.cols}×
+          {extent.rows} (grows as you draw) · {grid.size} tile{grid.size !== 1 ? 's' : ''}
           {endsSummary && <> · Ends: {endsSummary}</>}
         </span>
       </div>
@@ -1457,12 +1817,20 @@ const st = {
   status:          { fontSize: 12, color: '#f9e2af', marginLeft: 8 },
   statusErr:       { fontSize: 12, color: '#f38ba8', marginLeft: 8 },
   canvasWrap:      { flex: 1, overflow: 'hidden', minHeight: 0, position: 'relative' as const },
+  // The cursor readout (#94) — visible text, not sr-only, since it is the
+  // same string the aria-live region announces and a sighted keyboard user
+  // is the one who can confirm it is telling the truth.
+  cursorReadout:   { padding: '4px 10px', background: '#11111b', borderTop: '1px solid #313244', color: '#a6adc8', fontSize: 11, fontFamily: 'monospace' },
   diagnostics:     { maxHeight: 180, overflowY: 'auto' as const, background: '#11111b', borderTop: '1px solid #313244', padding: '6px 10px' },
   diagnosticList:  { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column' as const, gap: 3 },
   diagnosticEmpty: { color: '#6c7086', fontSize: 11, margin: 0 },
   diagnosticWarn:  { color: '#f38ba8', fontSize: 11, lineHeight: 1.5 },
   diagnosticInfo:  { color: '#9399b2', fontSize: 11, lineHeight: 1.5 },
   diagnosticBadge: { fontFamily: 'monospace', fontSize: 9, letterSpacing: '0.5px' },
+  // A diagnostic line with a coordinate renders as this rather than plain
+  // text (#94) — styled to read as inline prose, not as a standalone button,
+  // since it sits mid-sentence next to the WARN/TODO badge.
+  diagnosticJump:  { background: 'none', border: 'none', padding: 0, margin: 0, color: 'inherit', font: 'inherit', textAlign: 'left' as const, cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' as const },
   legend:          { padding: '4px 10px', background: '#11111b', borderTop: '1px solid #313244' },
   empty:           { color: '#6c7086', fontSize: 13, padding: 16 },
 } as const;

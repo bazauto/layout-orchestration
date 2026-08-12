@@ -234,3 +234,76 @@ different namespaces" distinction from #68, and it is U+2325 — the Mac option
 key — which resolves to a replacement box in the monospace fallback. The
 distinction is carried by position and slant instead: a point label is italic at
 the top of its cell, a block label upright at the bottom.
+
+---
+
+## D11 — The grid is navigable without a mouse, and says where you are
+
+**Decision (#94).** The `<svg>` takes keyboard focus (`tabIndex={0}`,
+`role="application"`). A `cursor: {x, y}` state, distinct from the pre-existing
+`hoverCell`, moves on arrow keys, paints on Enter/Space, and erases on
+Delete/Backspace; mouse hover sets the same state, so the two input paths
+converge on one piece of truth rather than the readout having to pick between
+two that could disagree. Escape returns focus to the toolbar. Ruler gutters
+(column numbers along the top, row numbers down the left) and a faint
+crosshair band across the cursor's row and column give a persistent spatial
+reference independent of the cursor readout. Every 5th gridline is
+emphasised. Each diagnostics-panel line that structurally carries a
+coordinate is a button that moves the cursor there, centres the view, and
+briefly pulses the cell.
+
+**Why a hover readout alone was rejected.** It was the obvious ten-line fix —
+`hoverCell` already existed — and it would have made the editor *more*
+mouse-dependent, not less: the `<svg>` had no `tabIndex`, no `role`, and the
+keyboard handler that existed (palette selection, rotation, undo) was a
+`window` listener gated only by "is a form field focused", not a real
+keyboard path onto the grid at all. Shipping a readout that only the mouse
+could drive, on a control surface with zero keyboard affordance, would have
+been a WCAG 2.1.1 (keyboard) failure with a status line bolted on top of it.
+Ruler gutters alone have the same defect from the other direction: legible at
+a glance, but visual-only and no better for someone who cannot use a pointing
+device.
+
+**Why `role="application"` over `role="grid"`.** `role="grid"` with real
+`gridcell` semantics is the more standard accessible pattern for a
+spreadsheet-shaped structure, but this grid is sparse (a `Map`, not a 2-D
+array) and its "cells" are absolutely-positioned SVG shapes, not DOM table
+cells a screen reader can enumerate the way it enumerates `<td>`s — modelling
+that faithfully is a significantly larger change than #94 scoped.
+`application` hands the arrow keys to the component entirely, which is
+exactly what the existing 1–9/R/Ctrl+Z shortcuts already assumed; the cost is
+that it also takes the screen reader's own navigation away, which is why
+Escape-to-toolbar is not optional polish but the thing that makes
+`application` an acceptable choice at all.
+
+**The `<title>`/`aria-label`/`aria-live` split.** Three different audiences,
+not one mechanism triplicated. `aria-label` is the accessible name a screen
+reader reads once, on focus — it does not change per keystroke, and firing it
+on every arrow press would violate `aria-live`'s own convention of announcing
+*changes*, not restating a static name. The SVG `<title>` is a native browser
+tooltip for a sighted mouse user hovering the canvas who may never tab into
+it at all, and who therefore never hears `aria-label` or the live region
+either. The `aria-live="polite"` region is what actually fires on every
+cursor move, built from the same `describeCursor` string the visible readout
+below the canvas renders — deliberately **one** pure function, not a visible
+copy and a screen-reader copy that can say different things the moment either
+one is edited without the other.
+
+**Why the window keydown listener had to move, not just gain a cursor.** It
+intercepted `1`–`9`, `r`, and `Ctrl+Z` globally, guarded only against a form
+field having focus. The moment the canvas became focusable, leaving that
+listener on `window` would have meant arrow keys moved the cursor while focus
+was anywhere else on the page — including inside the diagnostics list, which
+is exactly the two-input-paths-disagreeing failure this feature exists to
+prevent elsewhere. It is now the canvas's own `onKeyDown`, and needs no guard
+at all: an `<input>` living elsewhere in the DOM tree simply never receives
+an event whose listener is attached to the `<svg>`.
+
+**Ruler gutters render outside the pan/zoom `<g>`, positioned by hand.** Text
+inside a `scale()`-transformed group shrinks with it; at zoom 0.3 a scaled
+"11" is illegible exactly when the ruler is doing the most work. The gutters
+are a sibling group computed from `offset`/`zoom` directly, and labels thin
+out via `rulerTicks` (`diagram/ruler.ts`) rather than shrinking further —
+skipping a label at low zoom keeps every one that *is* printed full size. The
+same tick maths marks every 5th gridline as major, so the two consumers of
+"which line is a 5" can never drift out of step with each other.
