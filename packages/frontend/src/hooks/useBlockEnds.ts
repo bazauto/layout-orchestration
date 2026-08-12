@@ -62,6 +62,29 @@ export function useBlockEnds(layoutId: string | null) {
     return result;
   }, [layoutId, refresh]);
 
+  /**
+   * Creates an end by hand. Pinned by definition — you only do this to name
+   * something the generator got wrong or cannot see.
+   *
+   * The case it exists for is `end-label-collision`: two openings of one block
+   * facing the same way, which the generator refuses to name rather than
+   * suffixing (#72). A silently suffixed label is exactly the kind that gets
+   * typed wrong later in an edge.
+   */
+  const create = useCallback(
+    async (blockId: string, label: string): Promise<MutationResult<BlockEndView>> => {
+      if (!layoutId) return noLayout<BlockEndView>();
+      const result = await mutate<BlockEndView>(`/api/layouts/${layoutId}/block-ends`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ blockId, label }),
+      });
+      if (result.ok) await refresh();
+      return result;
+    },
+    [layoutId, refresh],
+  );
+
   /** Renames an end and pins it. Renaming to its current label is how you pin a generated name you agree with. */
   const rename = useCallback(
     async (endId: string, label: string): Promise<MutationResult<BlockEndView>> => {
@@ -77,5 +100,27 @@ export function useBlockEnds(layoutId: string | null) {
     [layoutId, refresh],
   );
 
-  return { ends, loadError, refresh, generate, rename };
+  /**
+   * Deletes an end.
+   *
+   * Refused with a 409 while any edge references it, for the same reason a
+   * rename is: an end label is the only link between an edge and a block end,
+   * so removing one silently orphans every edge using it. The backend's
+   * message names the edges, and `mutate` carries it through — which is the
+   * whole reason these return a `MutationResult` rather than writing a shared
+   * error string (#62).
+   */
+  const remove = useCallback(
+    async (endId: string): Promise<MutationResult<void>> => {
+      if (!layoutId) return noLayout<void>();
+      const result = await mutate<void>(`/api/layouts/${layoutId}/block-ends/${endId}`, {
+        method: 'DELETE',
+      });
+      if (result.ok) await refresh();
+      return result;
+    },
+    [layoutId, refresh],
+  );
+
+  return { ends, loadError, refresh, generate, create, rename, remove };
 }

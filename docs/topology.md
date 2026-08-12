@@ -113,6 +113,40 @@ one silently re-points every edge referencing it. `BlockEndService` therefore
 answers **409** to a rename or delete of a label any edge uses, rather than
 cascading. The operator edits the edges, or keeps the name.
 
+The **Track Editor** is where all of this is reached: `Ends ✎` opens a list of
+every stored end with its block, its label, whether it is pinned or generated,
+and the cell the drawing currently places it at (a jump-to button, the same one
+a diagnostic uses). Create, rename and delete are there, and the 409's message —
+which names the offending edges — is rendered verbatim, because "HTTP 409"
+leaves the operator with nothing to act on.
+
+It is a list of ordinary controls rather than a click on the end label drawn on
+the canvas. The canvas is `role="application"` and a click there paints; making
+a label clickable would mean a mis-click silently draws a tile. A list is also
+the only version reachable from the keyboard.
+
+### Known limit: an end the generator refused to name cannot be placed
+
+Two openings of one block facing the same bearing are an `end-label-collision`:
+the generator names neither, because a silently suffixed `east_2` is exactly the
+kind of label that gets typed wrong later in an edge (#72). The stated
+resolution is that the author names it by hand — and that half works.
+
+A hand-created end **authors edges perfectly well**; `block_edges` needs a label
+and nothing else. What it does not get is *geometry*. `generateBlockEnds` drops
+both colliding clusters from `openings`, so nothing ever matches the new row
+back to a cell: it lists as "not placed", reports as `pinned-end-not-on-diagram`,
+and becomes the warning `end-not-on-diagram` as soon as an edge references it.
+`proposeEdges` also starts no walk from either opening and arrives at them with
+`toEnd: null`, so that block gets no proposals through those ends.
+
+Closing it needs an end to be able to name a **specific opening** rather than a
+bearing — an anchor coordinate on `block_ends`, matched against the colliding
+cluster containing it. That is a schema change against a live database and is
+not attempted here. Westgate Hollow has exactly one today
+(`Engine / Goods Transfer`, two openings both bearing south-east from the run
+centroid), and the two edges through them are hand-authored.
+
 ### Known property: a cardinal label describes the diagram, not the railway
 
 The drawing is explicitly not to scale and its orientation is a drawing
@@ -211,6 +245,46 @@ a to-do list and a mystery.
 (`docs/track-grid.md` D9), and a proposal inherits that uncertainty exactly. This
 does not make point wiring checkable; it makes the drawing and the graph state
 the same thing instead of two different things.
+
+**Refusing to render is a 409, not a 500.** `MAX_EDGE_PROPOSALS` (200) is
+admission control in the spirit of `MAX_EDGES_PER_LAYOUT`: a drawing producing
+more candidates than that is not one an operator can review, so the honest
+answer is to refuse. The refusal mirrors `EdgeLimitExceededError` on
+`POST .../edges` — 409 carrying `limit` and `found` — because the request was
+well-formed and it is the state of the drawing that conflicts. It reached
+Fastify's default handler as a bare 500 until the review surface was built,
+which is the one outcome the rest of this section argues against.
+
+#### Reviewing and accepting proposals (Configure → Edges)
+
+The review panel sits at the top of the Edges tab, collapsed, and **does not
+walk the drawing until it is opened** — the walk is over the whole grid from
+every opening, and it is only wanted while somebody is authoring.
+
+Accepting is `ops.createEdge`, the identical call the manual form beneath it
+makes. The client keeps the server's structural guarantee by having no write of
+its own: there is nothing else for an accepted proposal to travel through.
+
+Four things the panel does deliberately:
+
+- **Both directions are separate rows.** A connection is bidirectional track and
+  `block_edges` is directional, so each pairing is offered twice and either may
+  be declined. Collapsing them would make "accept one way only" unsayable.
+- **`existing` is shown, not filtered out.** On a part-authored layout, "the
+  graph already agrees with the drawing" is the most valuable thing this surface
+  can say, and silence is indistinguishable from "not found".
+- **A proposal with an unnamed end has no Accept button.** `fromEnd`/`toEnd` are
+  `string | null`, and posting a `null` is a 400 the operator cannot act on. The
+  check is a *type guard* narrowing both fields, so the call does not compile
+  rather than failing at runtime.
+- **Accept-all does not stop at the first refusal.** Each edge is validated
+  independently; stopping would leave a partly applied batch with no indication
+  of which rows were even attempted. Every row gets its own outcome and the
+  summary counts both sides.
+
+`lengthMm` is **omitted** from every posted body rather than sent as `null`. The
+two mean the same thing to the schema, and omitting it is the honest statement:
+geometry never supplied one.
 
 ### Geometry can propose connectivity; it can never supply length
 

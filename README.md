@@ -225,7 +225,14 @@ Current automated coverage includes:
   its latched fault and stops the system trusting it)
 - Edge authoring: from/to block and end labels, optional point conditions, length, and an
   "also create reverse edge" shortcut; a violation banner surfaces invalid topology and
-  rejected writes without discarding the operator's input
+  rejected writes without discarding the operator's input. End-label suggestions come from
+  the block ends the drawing generated, so the name you type is one that exists
+- Edge proposals (`docs/topology.md`): a collapsed panel above the form lists the
+  connections the drawing implies, with their point conditions, and accepts them one at a
+  time or all at once. Accepting is the same `POST .../edges` the form makes — there is no
+  second write path. Rows that cannot be posted (an opening with no block end, a
+  connection the graph already carries) say why instead of offering a button, and notes
+  name the cell where the walk stopped
 
 ### Track Editor
 - Tile-based sparse grid persisted to backend
@@ -244,6 +251,11 @@ Current automated coverage includes:
     reference independent of the cursor readout; every 5th gridline is emphasised
   - Diagnostics-panel lines that carry a coordinate are click-to-jump buttons that move the
     cursor, centre the view, and pulse the cell
+- Block ends (`docs/track-editor.md` D12): `Ends ⟳` regenerates the labels from the
+  drawing; `Ends ✎` opens a list of every end — block, label, whether it is pinned or
+  generated, and the cell the drawing places it at — where you can add, rename (which also
+  pins) and delete one. A rename or delete of a label an edge references is refused, and
+  the refusal names the edges
 - Mouse controls:
   - left drag to paint
   - right click to erase
@@ -318,11 +330,16 @@ feedback channel from the DCC controller (#25) — and the model does not catch 
 fouling at a plain (non-switched) diamond crossing, since neither shares a block or a
 point (#26; Westgate Hollow has none today — and the Track Editor now says so when one is
 drawn, which is a warning rather than a fix). Edges are still authored explicitly through
-the Edges tab rather than derived from grid tiles (#78), but the two representations are
+the Edges tab rather than derived from grid tiles, but the two representations are
 no longer entirely unchecked against each other: block ends are generated from the drawing
 as 8-point cardinal labels with a sticky manual override (#72), buffer stops assert that an
 end has no onward connection, and `GET .../grid/diagnostics` reports where the drawing and
-the graph disagree (#84). A block's openings come from where its **drawn track leaves the
+the graph disagree (#84). The Edges tab will also *propose* the edges the drawing implies
+and accept them through the ordinary write path (#78) — proposing is not deriving, and
+`lengthMm` is never among what it proposes. One case the manual override still cannot
+fully resolve: where the generator refused to name two openings facing the same bearing
+(`end-label-collision`), a hand-created end authors edges but never attaches to a cell on
+the drawing — see `docs/topology.md`. A block's openings come from where its **drawn track leaves the
 run** — tile type and rotation — not from which cells sit next to each other, so two yard
 roads drawn side by side no longer read as opening into one another (#91). All of it is
 advisory — nothing in `domain/` reads a tile, and no diagnostic can refuse a write or halt

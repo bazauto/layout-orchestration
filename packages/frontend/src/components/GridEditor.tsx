@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGridEditor } from '../hooks/useGridEditor';
 import { useBlockEnds } from '../hooks/useBlockEnds';
 import { useGridDiagnostics } from '../hooks/useGridDiagnostics';
+import { BlockEndsPanel } from './BlockEndsPanel';
 import { assignRunTints, findBlockRuns } from '../diagram/blockRuns';
 import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, OCCUPANCY, SURFACE } from '../diagram/encoding';
 import { describeDiagnostic, diagnosticCoordinate, partitionDiagnostics } from '../diagram/diagnostics';
@@ -238,7 +239,13 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
    */
   const [gridRevision, setGridRevision] = useState(0);
 
-  const { ends, generate: generateEnds } = useBlockEnds(layoutId);
+  const {
+    ends,
+    generate: generateEnds,
+    create: createEnd,
+    rename: renameEnd,
+    remove: removeEnd,
+  } = useBlockEnds(layoutId);
   const { diagnostics } = useGridDiagnostics(layoutId, gridRevision);
 
   /**
@@ -291,6 +298,15 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
   const [divergentIsNormal, setDivergentIsNormal] = useState(false);
 
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  /**
+   * The block-ends list (#72's manual override, finally reachable).
+   *
+   * Its own toggle rather than a section of the diagnostics panel: the
+   * diagnostics are a read of what is wrong, and this is a write surface. They
+   * are also both tall, and stacking them under a canvas is how the canvas
+   * stops being visible.
+   */
+  const [showEnds, setShowEnds] = useState(false);
   /** Summary of the last `Ends ⟳`, so a regeneration reports what it changed rather than happening invisibly. */
   const [endsSummary, setEndsSummary] = useState<string | null>(null);
 
@@ -796,15 +812,17 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
   );
 
   /**
-   * A diagnostics-panel line's "jump to" action (#94): move the cursor,
-   * centre the view, and briefly pulse the cell so the jump is visible as
-   * more than just the readout changing underneath you.
+   * "Take me to this cell" (#94): move the cursor, centre the view, and
+   * briefly pulse the cell so the jump is visible as more than just the
+   * readout changing underneath you.
+   *
+   * Extracted from `jumpToDiagnostic` so the block-ends panel can reuse it
+   * verbatim. Both surfaces name a cell and both must land the operator in
+   * the same place in the same way — two implementations of "jump" that
+   * drifted apart would be a genuinely confusing bug.
    */
-  const jumpToDiagnostic = useCallback(
-    (d: GridDiagnostic) => {
-      const coord = diagnosticCoordinate(d);
-      if (!coord) return;
-
+  const jumpToCell = useCallback(
+    (coord: { x: number; y: number }) => {
       setCursor(coord);
       centerOn(coord);
 
@@ -814,6 +832,15 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
       pulseTimer.current = window.setTimeout(() => setPulseCell(null), 900);
     },
     [centerOn],
+  );
+
+  const jumpToDiagnostic = useCallback(
+    (d: GridDiagnostic) => {
+      const coord = diagnosticCoordinate(d);
+      if (!coord) return;
+      jumpToCell(coord);
+    },
+    [jumpToCell],
   );
 
   // The pulse timer must not outlive the component.
@@ -1281,6 +1308,17 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
           title="Regenerate block end labels from the drawing. Pinned ends are never touched."
         >Ends ⟳</button>
 
+        {/* #72's manual override. Regeneration cannot name an opening the
+            generator refused, and cannot un-name one it got wrong — both need
+            a hand, and until now there was nowhere to put it. */}
+        <button
+          onClick={() => setShowEnds((v) => !v)}
+          style={{ ...st.iconBtn, ...(showEnds ? st.iconBtnActive : {}) }}
+          tabIndex={-1}
+          aria-expanded={showEnds}
+          title="Name, rename and remove block ends by hand"
+        >Ends ✎ {ends.length}</button>
+
         <button
           onClick={() => setShowDiagnostics((v) => !v)}
           style={{
@@ -1727,6 +1765,21 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
         {cursorAnnouncement}
       </div>
 
+      {/* ── Block ends (#72's manual override) ── */}
+      {showEnds && (
+        <BlockEndsPanel
+          ends={ends}
+          blocks={blocks}
+          ops={{ create: createEnd, rename: renameEnd, remove: removeEnd }}
+          onJumpTo={jumpToCell}
+          // An end is not a tile, but the diagnostics read both — an added end
+          // can clear an `end-label-collision` note or raise a
+          // `pinned-end-not-on-diagram` one, and neither shows up until the
+          // findings are recomputed.
+          onChanged={() => setGridRevision((r) => r + 1)}
+        />
+      )}
+
       {/* ── Diagnostics ── */}
       {showDiagnostics && (
         <div style={st.diagnostics} role="region" aria-label="Grid diagnostics">
@@ -1814,6 +1867,10 @@ const st = {
   toolSelect:      { background: '#313244', color: '#cdd6f4', border: '1px solid #45475a', borderRadius: 4, padding: '3px 6px', fontSize: 12 },
   rotationBadge:   { background: '#313244', color: '#cdd6f4', border: '1px solid #45475a', borderRadius: 4, padding: '3px 7px', fontSize: 11, minWidth: 48, textAlign: 'center' as const },
   iconBtn:         { background: '#313244', border: '1px solid #45475a', borderRadius: 4, color: '#cdd6f4', cursor: 'pointer', padding: '0 9px', fontSize: 14, minWidth: 34, height: 28, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' } as React.CSSProperties,
+  // A toggle that is currently *on*. Border and background together, not
+  // colour alone — the same rule the diagram encoding follows (#81), and the
+  // `aria-expanded` on the button carries it for anything not looking.
+  iconBtnActive:   { background: '#2a2a3d', border: '1px solid #89b4fa' } as React.CSSProperties,
   status:          { fontSize: 12, color: '#f9e2af', marginLeft: 8 },
   statusErr:       { fontSize: 12, color: '#f38ba8', marginLeft: 8 },
   canvasWrap:      { flex: 1, overflow: 'hidden', minHeight: 0, position: 'relative' as const },

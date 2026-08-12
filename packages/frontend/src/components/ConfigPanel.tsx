@@ -69,7 +69,7 @@ export function ConfigPanel({ layoutId, role, currentUsername }: Props) {
       {tab === 'sensors' && <SensorsTab sensors={config.sensors} blocks={config.blocks} ops={ops} layoutId={layoutId} />}
       {tab === 'points'  && <PointsTab  points={config.points} blocks={config.blocks} ops={ops} />}
       {tab === 'locos'   && <LocosTab   locos={config.locos} ops={ops} />}
-      {tab === 'edges'   && <EdgesTab   edges={config.edges} topology={config.topology} blocks={config.blocks} points={config.points} ops={ops} />}
+      {tab === 'edges'   && <EdgesTab   layoutId={layoutId} edges={config.edges} topology={config.topology} blocks={config.blocks} points={config.points} ops={ops} />}
       {tab === 'users' && role === 'admin' && <UsersTab ops={usersOps} currentUsername={currentUsername} />}
     </section>
   );

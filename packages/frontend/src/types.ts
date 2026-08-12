@@ -328,6 +328,62 @@ export interface GenerateEndsSummary {
   collisions: Array<{ blockId: string; label: string; at: Array<{ x: number; y: number }> }>;
 }
 
+// ─── Edge proposals (#78) ─────────────────────────────────────────────────────
+
+/**
+ * Mirrors `EdgeProposalStatus`. Only `new` is acceptable; the other three each
+ * mean something different about *why* not, and the panel says which.
+ */
+export type EdgeProposalStatus = 'new' | 'needs-end-label' | 'existing' | 'conflicting';
+
+/**
+ * Mirrors the backend's `EdgeProposal` — a candidate `block_edges` row the
+ * drawing implies, never a written one.
+ *
+ * `lengthMm` is the literal `null` here as it is there: geometry can never
+ * supply distance (`docs/braking.md` B4), and typing it as `number | null`
+ * would invite a later change to compute one from tile count.
+ */
+export interface EdgeProposal {
+  /** Stable within one response; pairs the two directions of one physical connection. */
+  pairId: string;
+  fromBlockId: string;
+  /** `null` when no `block_ends` row names this opening. Never a guessed label. */
+  fromEnd: string | null;
+  toBlockId: string;
+  toEnd: string | null;
+  pointConditions: PointCondition[];
+  lengthMm: null;
+  /** Cells crossed between the two blocks, in walk order. */
+  via: Array<{ x: number; y: number }>;
+  /** The path crosses a plain diamond, whose route conflicts are not detected (#26). */
+  crossesDiamond: boolean;
+  status: EdgeProposalStatus;
+  existingEdgeId?: string;
+}
+
+/**
+ * Mirrors `ProposalNote`. Why a connection that looks drawn produced no
+ * proposal — each names a cell to go and look at, which is the whole
+ * difference between a to-do and a mystery.
+ */
+export type ProposalNote =
+  | { kind: 'blocked-by-unclassified'; at: { x: number; y: number } }
+  | { kind: 'blocked-by-unmapped-point'; at: { x: number; y: number }; pointId: string }
+  | { kind: 'stopped-in-own-block'; blockId: string; at: { x: number; y: number } }
+  | {
+      kind: 'no-road-into-block';
+      at: { x: number; y: number };
+      blockId: string;
+      edge: TileEdge;
+    }
+  | { kind: 'search-truncated'; blockId: string; at: { x: number; y: number } };
+
+export interface EdgeProposalReport {
+  proposals: EdgeProposal[];
+  notes: ProposalNote[];
+}
+
 // ─── Grid diagnostics ─────────────────────────────────────────────────────────
 
 /**

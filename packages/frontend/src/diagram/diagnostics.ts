@@ -95,11 +95,19 @@ export function describeDiagnostic(d: GridDiagnostic, names: DiagnosticNames): s
  *
  * `at` is sometimes a single coordinate, sometimes a list — one entry per
  * duplicate placement — and sometimes absent entirely. `buffer-contradicted-
- * by-edge`, `end-not-on-diagram` and `block-without-detection` each name a
- * block end or a block, not a cell: there is nowhere on the drawing to jump
- * to, and those three return `null` rather than a made-up coordinate. A
- * `null` here is what stops the panel from rendering a diagnostic line as a
- * button that would go nowhere.
+ * by-edge`, `end-not-on-diagram`, `pinned-end-not-on-diagram` and
+ * `block-without-detection` each name a block end or a block, not a cell:
+ * there is nowhere on the drawing to jump to, and those four return `null`
+ * rather than a made-up coordinate. A `null` here is what stops the panel from
+ * rendering a diagnostic line as a button that would go nowhere.
+ *
+ * The switch is exhaustive over `GridDiagnostic['kind']` with no `default`,
+ * which is deliberate: the return type excludes `undefined`, so a kind added
+ * to the union and forgotten here fails to compile. `track-not-joined` (#91)
+ * and `pinned-end-not-on-diagram` (#92) were both added to the union without
+ * a case, and both silently returned `undefined` — rendering as plain text the
+ * cell they name. The compiler was saying so; nothing in CI was listening,
+ * because `packages/frontend`'s `tsc` never ran there. It does now.
  */
 export function diagnosticCoordinate(d: GridDiagnostic): { x: number; y: number } | null {
   switch (d.kind) {
@@ -111,6 +119,12 @@ export function diagnosticCoordinate(d: GridDiagnostic): { x: number; y: number 
     case 'end-unfinished':
       return d.at;
 
+    // Two cells, and the jump goes to `at` rather than `against`: `at` is the
+    // tile whose track is drawn leaving, which is the one the prose leads with
+    // and usually the one to redraw.
+    case 'track-not-joined':
+      return d.at;
+
     // A list of coordinates — the first is as good a place to jump to as any
     // of the others, since they are all the same duplicated placement.
     case 'duplicate-annotation':
@@ -119,6 +133,7 @@ export function diagnosticCoordinate(d: GridDiagnostic): { x: number; y: number 
 
     case 'buffer-contradicted-by-edge':
     case 'end-not-on-diagram':
+    case 'pinned-end-not-on-diagram':
     case 'block-without-detection':
       return null;
   }
