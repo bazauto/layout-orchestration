@@ -59,7 +59,7 @@ import {
   TileType,
   classifyTile,
 } from '../domain/types';
-import { EDGE_OFFSET, drawnEdges, oppositeEdge, terminatesTrack } from './tileGeometry';
+import { EDGE_OFFSET, Port, drawnEdges, oppositeEdge, terminatesTrack } from './tileGeometry';
 
 /** The minimum a tile must expose for any of this. Parsed metadata, not the raw JSON column. */
 export interface GeometryTile {
@@ -89,6 +89,17 @@ export interface BlockOpening {
   /** A tile **of the block**, where the editor draws the label. Never a computed mean, which for an L-shaped run falls in the hole. */
   at: Coordinate;
   terminated: boolean;
+  /**
+   * The tile boundaries this opening actually covers (#78).
+   *
+   * An end is frequently several cells wide — a three-cell handover face is one
+   * opening — so "which end did I arrive at?" cannot be answered by comparing
+   * against `at`, which is only the cell the *label* is drawn on. The ports are
+   * the exact set, so the lookup is an equality test rather than a proximity
+   * guess. Empty for the synthetic terminus a buffer contributes on its closed
+   * side: there is no boundary there, which is the point of it.
+   */
+  ports: Port[];
 }
 
 /**
@@ -200,6 +211,7 @@ interface RawOpening {
   at: Coordinate;
   label: CardinalEndLabel;
   terminated: boolean;
+  ports: Port[];
 }
 
 /**
@@ -218,6 +230,8 @@ interface RunOpening {
   outward: Coordinate;
   /** Only a terminating tile sets this (see the buffer rule in `runOpenings`). */
   terminated: boolean;
+  /** The boundary this opening is at. `null` for a buffer's closed side, which has no boundary (#78). */
+  port: Port | null;
 }
 
 /**
@@ -272,6 +286,7 @@ export function generateBlockEnds(tiles: readonly GeometryTile[]): GeneratedEnds
         at: representative(cluster.map((o) => o.at)),
         label,
         terminated: allTerminated(cluster),
+        ports: cluster.map((o) => o.port).filter((p): p is Port => p !== null),
       });
     }
   }
@@ -335,6 +350,7 @@ function runOpenings(
         // handover, which points outward whichever side the neighbour is on.
         outward: { x: offset.dx / 2, y: offset.dy / 2 },
         terminated: false,
+        port: { x: m.x, y: m.y, edge },
       });
     }
 
@@ -353,6 +369,9 @@ function runOpenings(
             { x: m.x - centroid.x, y: m.y - centroid.y }
           : { x: -closed.x / 2, y: -closed.y / 2 },
       terminated: true,
+      // The closed side of a buffer is not a boundary anything can cross, so it
+      // has no port. A walk can never arrive here, which is the intent.
+      port: null,
     });
   }
 
@@ -476,6 +495,7 @@ function groupOpenings(raw: readonly RawOpening[]): GeneratedEnds {
       label: cluster[0].label,
       at: representative(cluster.map((o) => o.at)),
       terminated: allTerminated(cluster),
+      ports: cluster.flatMap((o) => o.ports),
     });
   }
 

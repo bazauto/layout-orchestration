@@ -54,6 +54,24 @@ export async function gridRoutes(
     },
   );
 
+  // Candidate `block_edges` the drawing implies (#78). A **GET**, and that is
+  // the structural guarantee: there is no accept endpoint, so accepting a
+  // proposal can only be an ordinary `POST .../edges` through the same
+  // validation a hand-authored edge gets. No bypass can exist here.
+  //
+  // Not admin-gated, for the same reason the diagnostics read is not — the
+  // write is what is gated.
+  fastify.get<{ Params: { layoutId: string } }>(
+    '/api/layouts/:layoutId/grid/edge-proposals',
+    async (req, reply) => {
+      try {
+        return await gridService.proposeEdges(req.params.layoutId);
+      } catch (err) {
+        return mapGridError(err, reply);
+      }
+    },
+  );
+
   // PUT (upsert) a single tile — track editing is config, admin-only.
   fastify.put<{ Params: { layoutId: string }; Body: unknown }>(
     '/api/layouts/:layoutId/grid',
