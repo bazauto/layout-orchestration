@@ -383,6 +383,7 @@ export type GridDiagnostic =
       at: { x: number; y: number };
     }
   | { kind: 'end-not-on-diagram'; severity: 'warning'; blockId: string; label: string }
+  | { kind: 'pinned-end-not-on-diagram'; severity: 'info'; blockId: string; label: string }
   | {
       kind: 'end-label-collision';
       severity: 'warning';

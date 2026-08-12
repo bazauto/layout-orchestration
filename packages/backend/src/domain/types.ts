@@ -158,6 +158,23 @@ export const TILE_TYPES = [
 
 export type TileType = (typeof TILE_TYPES)[number];
 
+/**
+ * The tile types that actually depict a point — the ones drawn with a through
+ * road and a divergent one, and so the only ones a leg mapping (#73) means
+ * anything on.
+ *
+ * A point on the diagram is usually **two** tiles: the point tile itself, and a
+ * `straight-45` companion carrying the divergent road across to the adjacent
+ * row. Both are tagged with the same `pointId`, because both depict part of that
+ * point — but only the first has legs to map. Anything asking "does this tile
+ * need `pointRoads`?" must ask this, not `metadata.pointId !== undefined`.
+ */
+export const POINT_TILE_TYPES = ['point-left', 'point-right'] as const satisfies readonly TileType[];
+
+export function depictsPoint(tileType: TileType): boolean {
+  return (POINT_TILE_TYPES as readonly TileType[]).includes(tileType);
+}
+
 /** Rotation is authored in 45° steps (`GridEditor`'s R / Shift+R), so the set is closed. */
 export const TILE_ROTATIONS = [0, 45, 90, 135, 180, 225, 270, 315] as const;
 

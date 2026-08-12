@@ -14,7 +14,7 @@ style preferences.
 | `docs/project-plan.md` | Phase roadmap (0–3) |
 | `docs/mqtt-contract.md` | **Binding** MQTT topics, payloads, QoS, retention |
 | `docs/topology.md` | Track graph (`block_edges`): validation, deferred items |
-| `docs/track-grid.md` | `grid_tiles` — the Track Editor's **drawing**, its validated write path, and why a tile carries no authority (D1–D11) |
+| `docs/track-grid.md` | `grid_tiles` — the Track Editor's **drawing**, its validated write path, why a tile carries no authority, and what makes two tiles connected (D1–D12) |
 | `docs/route-locking.md` | Route reservation and locking (D1–D14) decision record |
 | `docs/pathfinding.md` | Pathfinding, setting the road, and route faults (P1–P8) |
 | `docs/auth.md` | Local authentication scheme and the pre-TLS threat model |
@@ -186,7 +186,7 @@ row rather than appending the new story beneath the old one.**
 | **Diagram encoding** (#81, #68, #93) | `diagram/encoding.ts` is the single source of track-diagram colour; every state ships a pattern/glyph/label so colour is never the sole carrier. Block tints are **four** validator-checked colours assigned by graph colouring over adjacency (`diagram/blockRuns.ts`), marking block *boundaries* — a tint never identifies a block, the label does. Don't add a fifth tint: it fails CVD checks. A point is labelled **once per point** by its identifier (`diagram/pointLabels.ts`), because a point is drawn as two tiles sharing one `pointId`. | `docs/diagram-encoding.md`, `docs/track-editor.md` D10 |
 | **Track grid** (#70, #71, #73, #74) | `grid_tiles` is the Track Editor's *drawing*, not the track model — no domain decision reads a tile. Writes go through `GridService` (layout existence; `blockId`/`pointId`/annotation ids resolve **in this layout**) behind `gridTileWriteSchema`: closed `tileType` enum, bounded coordinates, and a **closed** `metadata` schema every later field must be added to. `metadata` now also carries `trackRole` (#71 — only ever asserts *decorative*; `classifyTile` derives the three-way state), `annotations` (#74 — generic `{entityType, entityId}` list, never assume "sensor") and `pointRoads` (#73 — leg-list shaped, keyed by a position *tuple*, so slips and three-ways stay open). Rejections are 400/404 — never Safe-Stop. | `docs/track-grid.md` |
 | **Block ends** (#72, #91) | `block_ends` (`(blockId, label)` unique) names a block's openings — the referent of `block_edges.fromEnd`/`toEnd`. An opening is where the block's **drawn track leaves the run**, from tile type + rotation (`services/tileGeometry.ts`), never from cell adjacency — two yard roads drawn side by side touch everywhere and connect nowhere. Connectivity is mutual; track butted against a tile that draws nothing back is an end, reported as `track-not-joined`. An end is a dead end only if **every** opening in it is terminated. Labels are still 8-point cardinals bearing from the run centroid, **pinned** when authored or edge-referenced, regenerated on demand only, and a rename or delete of an edge-referenced label is a **409, never a cascade**. Deliberately **no FK** from `block_edges`. | `docs/topology.md`, `docs/track-grid.md` D12 |
-| **Grid diagnostics** (#84, #83, #71) | `GET .../grid/diagnostics` — read-only, advisory, never a gate. `warning` = two representations disagree or a hazard is drawn (buffer contradicted by an edge, dangling reference, duplicate annotation, drawn plain diamond per #26); `info` = authoring unfinished (unclassified tile, end with no edges and no buffer, unmapped point tile). Nothing in `domain/` reads a tile, and `TopologyService` never refuses an edge write because of one. | `docs/track-grid.md` D11 |
+| **Grid diagnostics** (#84, #83, #71, #91, #92) | `GET .../grid/diagnostics` — read-only, advisory, never a gate. `warning` = two representations disagree or a hazard is drawn (buffer contradicted by an edge, dangling reference, duplicate annotation, drawn plain diamond per #26, track drawn into a tile that draws nothing back per #91); `info` = authoring unfinished (unclassified tile, end with no edges and no buffer, unmapped point tile, pinned end with no opening). A finding must be one the operator can act on: `point-tile-unmapped` gates on `depictsPoint(tileType)`, because a point is drawn as two tiles and only one of them has legs to map. Nothing in `domain/` reads a tile, and `TopologyService` never refuses an edge write because of one. | `docs/track-grid.md` D11 |
 | **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) bench tool: `SensorSimulationService` publishes a fabricated reading to the sensor's own `mqttTopic` and the broker echoes it back through the ordinary ingestion path — byte-identical to hardware, no marker field. `GET /api/capabilities` gates the Operate-pane panel and fails closed. | `docs/sensor-simulation.md` |
 
 ### Traps
@@ -235,9 +235,11 @@ Recorded rather than closed — do not treat any of these as bugs to fix in pass
 - **A point tile's leg mapping is unverifiable authored data.** Nothing can check which
   way round a physical point is wired, and `pointConditions` carries no geometry to check
   it against (`docs/track-grid.md` D9).
-- **The classification pass over the existing Westgate Hollow grid is manual** and not yet
-  done — every untagged tile reports as `unclassified` until it is. That is the intended
-  state, not a bug: a defaulting rule would have to guess which track is monitored.
+- **Westgate Hollow's classification pass is done** (90 tiles: 79 block, 11 decorative, 0
+  unclassified) and every block has in-service sensors, so `unclassified-tile` and
+  `block-without-detection` are both silent on the live layout — that is a finished
+  authoring pass, not a broken check. `block_edges`, by contrast, is still **empty**:
+  nothing is connected to anything yet.
 - **Two hand-maintained duplicates across the wire**, both for #75 to unify: `findBlockRuns`
   in `services/gridGeometry.ts` (backend, end generation) and `diagram/blockRuns.ts`
   (frontend, tints and labels); and `TILE_LEGS` in `services/tileGeometry.ts`, of which

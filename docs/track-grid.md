@@ -359,6 +359,36 @@ fouling at one are not detected, because neither shares a block nor a point. The
 editor will happily let you draw trackwork the safety model cannot see, so the
 editor is where it is said: a drawn `crossing` emits `diamond-blind-spot`.
 
+### A finding must be one the operator can act on (#92)
+
+Two rules learned by checking the reported list against the live layout, both
+worth stating because both failures look correct in isolation.
+
+**Never ask for what the editor will not let you author.** `point-tile-unmapped`
+fired on `metadata.pointId !== undefined` alone. But a point is drawn as *two*
+tiles — the `point-left`/`point-right` tile, and a `straight-45` companion
+carrying the divergent road across to the adjacent row — and both are tagged
+with the same `pointId`, because both depict part of that point. Only the first
+has legs to map: `defaultPointRoads` returns nothing for any other type, and the
+editor hides the mapping control unless `isPointTile(selectedType)`. So the
+diagnostic demanded something no operator could supply, on two of Westgate
+Hollow's six points. It now gates on `depictsPoint(tileType)`, and that
+predicate lives in `domain/types.ts` beside `TILE_TYPES` so the two cannot drift.
+
+**A pinned end is an assertion, and its absence from the drawing is news.**
+`end-not-on-diagram` only fires once an edge references the end. That guard is
+right for a *generated* end, which has an opening by construction, and for a
+hand-authored end naming track not yet drawn — a legitimate work order. It is
+wrong for a **pinned** end with nothing referencing it yet: pinning means "this
+outranks geometry permanently" (#72), and a layout with no edges authored is
+exactly when you would want to hear that the name has nowhere to sit — *before*
+an edge is authored against it. That case is now `pinned-end-not-on-diagram`,
+`info`, on the same rule as everything else here: unfinished is normal.
+
+The same two-tiles-one-point fact is why a point is labelled once per *point*
+rather than once per tile (`docs/track-editor.md` D10). One property of the
+drawing, two findings — worth knowing as one thing rather than two coincidences.
+
 ---
 
 ## D12 — A tile's drawn edges are what connect, and touching is not connecting
@@ -384,11 +414,14 @@ roads, for the same reason: rotation is a single keypress in the editor, and a
 stored post-rotation edge is wrong the moment the tile turns.
 
 **Why `services/` and not `domain/`.** `domain/types.ts` keeps the *vocabulary*
-— `TILE_TYPES`, `TILE_EDGES`, `TileRotation`. What must not go there is the
-mapping from a tile to the track it depicts, because that is the first step of
-reading a tile, and the standing rule is that nothing in `domain/` reads one.
-Putting the table beside `TILE_TYPES` would invite precisely the import the rule
-exists to prevent: a routing decision reaching for drawn geometry.
+— `TILE_TYPES`, `TILE_EDGES`, `TileRotation`, and predicates over it such as
+`depictsPoint` above. What must not go there is the mapping from a tile to the
+track it depicts, because that is the first step of reading a tile, and the
+standing rule is that nothing in `domain/` reads one. The line is between "which
+tile types are points" — a fact about the vocabulary — and "which edges this
+tile's track touches", which is geometry. Putting the table beside `TILE_TYPES`
+would invite precisely the import the rule exists to prevent: a routing decision
+reaching for drawn geometry.
 
 **The table tracks `TilePath`.** It is a hand-maintained description of what the
 editor draws, and nothing can check that automatically — so every row is
