@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyReply } from 'fastify';
+import { ProposalLimitExceededError } from '../../../services/edgeProposals';
 import {
   GridService,
   LayoutNotFoundError,
@@ -146,6 +147,14 @@ export async function gridRoutes(
  * codebase means the topology graph refused a proposal
  * (`TopologyRejectedError`, carrying `violations` the operator can act on). A
  * tile naming a block that is not there is just a bad field in a config write.
+ *
+ * A `ProposalLimitExceededError` is a **409**, mirroring `EdgeLimitExceeded-
+ * Error` on `POST .../edges` byte-for-byte in shape: the request was
+ * well-formed, and it is the state of the drawing that conflicts with what
+ * this surface will render. It was previously unmapped and reached Fastify's
+ * default handler as a bare 500 — which is the one outcome #78's design
+ * argues against everywhere else, since "no connection found" and "I gave up"
+ * must never look the same from outside.
  */
 function mapGridError(err: unknown, reply: FastifyReply): FastifyReply {
   if (err instanceof LayoutNotFoundError) {
@@ -153,6 +162,9 @@ function mapGridError(err: unknown, reply: FastifyReply): FastifyReply {
   }
   if (err instanceof TileReferenceError) {
     return reply.status(400).send({ error: err.message });
+  }
+  if (err instanceof ProposalLimitExceededError) {
+    return reply.status(409).send({ error: err.message, limit: err.limit, found: err.found });
   }
   throw err;
 }

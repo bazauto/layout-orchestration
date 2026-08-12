@@ -63,6 +63,15 @@ async function stubApis(
     }),
   );
 
+  // The Edges tab reads `block_ends` to fill the end-label datalist — the set
+  // of names the drawing generated is the set that will match, and deriving it
+  // from existing edges alone left it empty on a layout with none. Stubbed
+  // empty here: these specs are about the form, and an unstubbed route would
+  // just be an unexplained failed request in the trace.
+  await page.route('**://localhost:3000/api/layouts/layout-1/block-ends', (r) =>
+    r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
+  );
+
   await page.route('**://localhost:3000/api/layouts/layout-1/edges', async (route) => {
     const req = route.request();
     if (req.method() === 'GET') {

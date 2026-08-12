@@ -1,11 +1,21 @@
 import { useMemo, useState } from 'react';
+import { useBlockEnds } from '../hooks/useBlockEnds';
 import { useLayoutConfig } from '../hooks/useLayoutConfig';
 import { blockLabel, buildEdgeLabel, edgeLabel, NameBook, pointLabel } from '../naming';
-import { BlockEdgeRecord, BlockRecord, PointRecord, TopologyStatus, TopologyViolation } from '../types';
+import { EdgeProposalsPanel } from './EdgeProposalsPanel';
+import {
+  BlockEdgeRecord,
+  BlockEndView,
+  BlockRecord,
+  PointRecord,
+  TopologyStatus,
+  TopologyViolation,
+} from '../types';
 
 type Ops = ReturnType<typeof useLayoutConfig>;
 
 interface Props {
+  layoutId: string;
   edges: BlockEdgeRecord[];
   topology: TopologyStatus;
   blocks: BlockRecord[];
@@ -80,10 +90,31 @@ function reverseOf(draft: EdgeDraft): EdgeDraft {
   };
 }
 
-/** Ends already used at `blockId`, derived from existing edges — offered via <datalist>, not enforced. */
-function endsForBlock(blockId: string, edges: BlockEdgeRecord[]): string[] {
+/**
+ * End labels to offer at `blockId` — every `block_ends` row for the block,
+ * plus anything existing edges already reference.
+ *
+ * The `block_ends` half is the important one and was missing: this list was
+ * derived from `edges` alone, so on a layout with no edges yet the datalist
+ * was empty and the operator typed the label of the opening they meant from
+ * memory. `block_ends` is precisely the set of names the drawing generated
+ * (#72), so it is the set that will match.
+ *
+ * Still a `<datalist>` and still not enforced. An end label is free text on
+ * purpose: authoring an edge against a name before the track that carries it
+ * is drawn is a legitimate work order, and the diagnostics report the mismatch
+ * (`end-not-on-diagram`) rather than the write path refusing it.
+ */
+function endsForBlock(
+  blockId: string,
+  edges: BlockEdgeRecord[],
+  blockEnds: BlockEndView[],
+): string[] {
   if (!blockId) return [];
   const ends = new Set<string>();
+  for (const end of blockEnds) {
+    if (end.blockId === blockId) ends.add(end.label);
+  }
   for (const e of edges) {
     if (e.fromBlockId === blockId) ends.add(e.fromEnd);
     if (e.toBlockId === blockId) ends.add(e.toEnd);
@@ -127,14 +158,24 @@ function violatedEdgeIds(violations: readonly TopologyViolation[]): Set<string> 
 
 // ─── Component ─────────────────────────────────────────────────────────────────
 
-export function EdgesTab({ edges, topology, blocks, points, ops }: Props) {
+export function EdgesTab({ layoutId, edges, topology, blocks, points, ops }: Props) {
   const [form, setForm] = useState<EdgeFormState>(EMPTY_FORM);
   const [alsoReverse, setAlsoReverse] = useState(false);
   const [submitError, setSubmitError] = useState<{ message?: string; violations?: TopologyViolation[] } | null>(null);
 
+  // Read-only here: this tab never writes an end. Ends are authored in the
+  // Track Editor, where the drawing that generates them is.
+  const { ends: blockEnds } = useBlockEnds(layoutId);
+
   const flagged = useMemo(() => violatedEdgeIds(topology.violations), [topology.violations]);
-  const fromEndOptions = useMemo(() => endsForBlock(form.fromBlockId, edges), [form.fromBlockId, edges]);
-  const toEndOptions = useMemo(() => endsForBlock(form.toBlockId, edges), [form.toBlockId, edges]);
+  const fromEndOptions = useMemo(
+    () => endsForBlock(form.fromBlockId, edges, blockEnds),
+    [form.fromBlockId, edges, blockEnds],
+  );
+  const toEndOptions = useMemo(
+    () => endsForBlock(form.toBlockId, edges, blockEnds),
+    [form.toBlockId, edges, blockEnds],
+  );
 
   // #54: the props this component already receives (blocks, points, edges)
   // are enough to build a NameBook locally — the same book that used to be
@@ -200,6 +241,14 @@ export function EdgesTab({ edges, topology, blocks, points, ops }: Props) {
 
   return (
     <div style={s.tabBody}>
+      {/*
+        #78's review surface, above the manual form rather than beside it: on a
+        drawn layout it is the primary way edges get authored, and the form
+        below is what you fall back to for a connection the drawing cannot
+        imply (or to add the `lengthMm` geometry can never supply).
+      */}
+      <EdgeProposalsPanel layoutId={layoutId} blocks={blocks} points={points} ops={ops} />
+
       {!topology.valid && (
         <div style={s.violationBanner}>
           {topology.violations.map((v, i) => (

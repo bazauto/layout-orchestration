@@ -202,11 +202,14 @@ async function buildTestServer() {
 
 let app: Awaited<ReturnType<typeof buildTestServer>>['app'];
 let service: LayoutService;
+/** Held so a test can widen `listBlocks` past the two this file otherwise uses. */
+let repo: ILayoutRepository;
 
 beforeEach(async () => {
   const built = await buildTestServer();
   app = built.app;
   service = built.service;
+  repo = built.repo;
   await authenticateAsAdmin(app);
 });
 
@@ -877,6 +880,38 @@ describe('GET .../grid/edge-proposals', () => {
     // `SystemHealth`, the same posture the diagnostics take.
     await putTile({ x: 0, y: 0, tileType: 'crossing' });
     await fetchProposals();
+    expect(service.getSystemStatus().status).toBe('online');
+  });
+
+  it('refuses with a 409 naming the count when the drawing produces more than it will render', async () => {
+    // `ProposalLimitExceededError` was thrown and never mapped, so it reached
+    // Fastify's default handler as a bare 500 — the one outcome #78 argues
+    // against everywhere else, since "no connection found" and "I gave up"
+    // must never look the same from outside. Mirrors `EdgeLimitExceededError`
+    // on `POST .../edges`: 409, with `limit` and the count that broke it.
+    const CHAIN = 102; // 101 connections × both directions = 202 > MAX_EDGE_PROPOSALS
+    const chainBlocks = Array.from({ length: CHAIN }, (_, i) => ({
+      id: `chain-${i}`,
+      layoutId: LAYOUT_ID,
+      name: `Chain ${i}`,
+    }));
+    (repo.listBlocks as ReturnType<typeof vi.fn>).mockImplementation(async (layoutId: string) =>
+      layoutId === LAYOUT_ID ? chainBlocks : [],
+    );
+
+    for (const [i, block] of chainBlocks.entries()) {
+      await putTile({ x: i, y: 0, tileType: 'straight-h', metadata: { blockId: block.id } });
+    }
+
+    const res = await app.inject({ method: 'GET', url: PROPOSALS_URL });
+    expect(res.statusCode).toBe(409);
+
+    const body = JSON.parse(res.body);
+    expect(body.limit).toBe(200);
+    expect(body.found).toBeGreaterThan(200);
+    expect(body.error).toContain('candidate edges');
+
+    // Still advisory: refusing to render a wall of candidates is not a fault.
     expect(service.getSystemStatus().status).toBe('online');
   });
 });

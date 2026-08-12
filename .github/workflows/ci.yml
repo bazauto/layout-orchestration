@@ -47,6 +47,15 @@ jobs:
       - name: Build backend
         run: npm run build --workspace=packages/backend
 
+      # Both workspaces, because `npm run lint` does not typecheck: ESLint
+      # here is not type-aware, so an exhaustiveness hole in a `switch` over a
+      # discriminated union is invisible to it. The frontend build was missing
+      # from this job entirely, and `diagnosticCoordinate` sat on main
+      # returning `undefined` for two diagnostic kinds — a `tsc` error nothing
+      # in CI ever ran. `vite build` runs `tsc` first; that is the gate.
+      - name: Build frontend
+        run: npm run build --workspace=packages/frontend
+
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 

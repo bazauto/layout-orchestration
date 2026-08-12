@@ -1,7 +1,9 @@
 # Track Editor authoring ergonomics
 
-Decision record for #69 — the canvas extent, undo, and view persistence — and
-for the wave-2 authoring affordances (#71, #72, #73, #74, #84).
+Decision record for #69 — the canvas extent, undo, and view persistence — for
+the wave-2 authoring affordances (#71, #72, #73, #74, #84), for keyboard
+navigation (#94), and for the surfaces that finally reach #72's manual override
+and #78's proposals from the browser (D12, D13).
 
 Scope note: this document is about **authoring the drawing**. What a tile *is*
 and how its writes are validated is `docs/track-grid.md` (#70, plus D7–D11 for
@@ -307,3 +309,67 @@ out via `rulerTicks` (`diagram/ruler.ts`) rather than shrinking further —
 skipping a label at low zoom keeps every one that *is* printed full size. The
 same tick maths marks every 5th gridline as major, so the two consumers of
 "which line is a 5" can never drift out of step with each other.
+
+---
+
+## D12 — Naming an end by hand is a list, not a click on the label
+
+**Decision.** `Ends ✎` toggles a panel listing every stored block end — block,
+label, pinned/generated, and the cell the drawing places it at — with create,
+rename and delete. It sits beside `Ends ⟳` (D8), which regenerates.
+
+`BlockEndService` has had all three writes since #72; nothing in the browser
+could reach any of them, so the editor's only end control was regeneration. That
+left the case the generator explicitly refuses — `end-label-collision`, two
+openings of a block facing the same bearing — with **no resolution at all**,
+since a collision emits no end row to rename.
+
+**Why not a click on the drawn end label.** The canvas is `role="application"`
+(D11) and a click paints. Making a label clickable means a mis-click silently
+draws a tile, which is the failure per-stroke undo (D2) exists to soften and
+this would reintroduce somewhere with no gesture to undo. A list of ordinary
+controls is also the only version reachable from the keyboard, which the canvas
+deliberately is not.
+
+**Why its own toggle rather than a section of the diagnostics panel.** The
+diagnostics are a read of what is wrong; this is a write surface. Both are tall,
+and stacking them under the canvas is how the canvas stops being visible.
+
+**"Rename" with the label unchanged is how you pin.** A no-op rename still pins,
+which is an operator saying *this generated name is the right one, stop
+regenerating it*. The button is therefore offered on every row, not only the
+ones whose name looks wrong.
+
+**A refusal is rendered verbatim.** Renaming or deleting an end an edge
+references is a 409 whose body names the edges. That message is the entire value
+of the refusal — an end label is the only link between an edge and a block end,
+so the operator has to know which edges to fix. It is held until the next
+successful write rather than cleared by the reload that follows (the #62
+posture), because a stale error is less misleading than none.
+
+**Jumping to an end's cell is the diagnostics panel's jump, not a second one.**
+`jumpToCell` was extracted out of `jumpToDiagnostic` for this. Two surfaces that
+both say "go and look here" landing the operator in different places, or moving
+the cursor without centring the view, is a genuinely confusing bug and an easy
+one to introduce twice.
+
+**What it still cannot do.** A hand-named collided end gets no geometry: it
+lists as "not placed" and stays there. The limitation, and what closing it would
+cost, is recorded in `docs/topology.md` — it is a `block_ends` schema question,
+not an editor one.
+
+---
+
+## D13 — The Edges tab offers the drawing's own end names
+
+**Decision.** The end-label `<datalist>` on Configure → Edges is the union of
+every `block_ends` row for the selected block and every label existing edges
+already use. It was derived from `edges` alone, so on a layout with no edges yet
+it was empty and the operator typed the opening's name from memory — into a
+field where a typo produces a valid-looking edge naming an end that does not
+exist, which the pathfinder will plan on happily.
+
+Still a datalist, still not enforced. Authoring an edge against a name before
+the track carrying it is drawn is a legitimate work order; the diagnostics
+report the mismatch (`end-not-on-diagram`) rather than the write path refusing
+it.

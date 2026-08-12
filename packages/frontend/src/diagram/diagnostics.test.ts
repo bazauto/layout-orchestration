@@ -66,4 +66,30 @@ describe('diagnosticCoordinate', () => {
     expect(diagnosticCoordinate(endNotOnDiagram)).toBeNull();
     expect(diagnosticCoordinate(blockWithoutDetection)).toBeNull();
   });
+
+  // Both kinds below were added to the `GridDiagnostic` union without a case
+  // here, so the function fell off its own end and returned `undefined` —
+  // which reads as falsy at the call site and renders the line as plain text.
+  // `track-not-joined` is the worst one to lose: it is a warning whose entire
+  // content is "go and look at this cell".
+  it('jumps to the drawn tile of track-not-joined, not the tile it butts against', () => {
+    const d: GridDiagnostic = {
+      kind: 'track-not-joined',
+      severity: 'warning',
+      at: { x: 12, y: 5 },
+      edge: 'e',
+      against: { x: 13, y: 5 },
+    };
+    expect(diagnosticCoordinate(d)).toEqual({ x: 12, y: 5 });
+  });
+
+  it('returns null for pinned-end-not-on-diagram, which names an end with no opening by definition', () => {
+    const d: GridDiagnostic = {
+      kind: 'pinned-end-not-on-diagram',
+      severity: 'info',
+      blockId: 'b1',
+      label: 'yard-3',
+    };
+    expect(diagnosticCoordinate(d)).toBeNull();
+  });
 });
