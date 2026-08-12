@@ -314,6 +314,14 @@ same tick maths marks every 5th gridline as major, so the two consumers of
 
 ## D12 — Naming an end by hand is a list, not a click on the label
 
+> **Superseded in design (#103), still shipped.** `docs/track-graph-compilation.md`
+> deletes `block_ends`, so both this decision and D13 below go with it: an end
+> label becomes disposable compiler output that nothing references and nobody
+> edits, and there is nothing left to name by hand. The *interaction* reasoning
+> here — why a list of controls rather than a click on a `role="application"`
+> canvas, and why `jumpToCell` is one implementation — survives and applies to
+> whatever the compile-diff surface becomes.
+
 **Decision.** `Ends ✎` toggles a panel listing every stored block end — block,
 label, pinned/generated, and the cell the drawing places it at — with create,
 rename and delete. It sits beside `Ends ⟳` (D8), which regenerates.

@@ -117,6 +117,22 @@ the same thing run to run.
 
 ## B4 — Worst-case distance; unmeasured track refuses outright
 
+> **This decision is wrong and is being replaced — see #105.** "Edges carry all
+> distance" does not decompose. A train going from block *c* to block *t* covers
+> `J(c,c+1) + L(c+1) + J(c+1,c+2) + … + L(t-1) + J(t-1,t)`: `t-c` joints but only
+> `t-c-1` block lengths, summed over `t-c` edges. For that to close, every edge
+> would have to be *joint + destination block* **except the last**, which must be
+> joint only, because the target below is the *entry boundary* of step `t`. An
+> edge cannot know whether it is the last one, and under the natural reading the
+> sum overshoots by the destination block's own length — the direction that
+> causes an overrun.
+>
+> `lengthMm` moves to `blocks`, where it describes a fixed physical object
+> instead of a relationship, and joints are treated as zero (safe: it
+> underestimates available distance). See `docs/track-graph-compilation.md` D4.
+> The rest of B4 — worst-case measurement, and NULL refusing outright — is
+> unaffected and stands.
+
 Occupancy is block-level, not sub-block: a train confirmed in block *c* may be
 anywhere within it. So available distance is measured conservatively, from
 the **exit end of the confirmed block** — the sum of `lengthMm` over the
