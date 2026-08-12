@@ -358,3 +358,52 @@ along, so a plain diamond can be drawn today — while #26 records that two rout
 fouling at one are not detected, because neither shares a block nor a point. The
 editor will happily let you draw trackwork the safety model cannot see, so the
 editor is where it is said: a drawn `crossing` emits `diamond-blind-spot`.
+
+---
+
+## D12 — A tile's drawn edges are what connect, and touching is not connecting
+
+**Decision (#91).** `services/tileGeometry.ts` holds, for every `TileType`, the
+**legs** its drawing joins — pairs of tile edges — in the tile's unrotated
+frame. Two cells are connected when the track each draws meets at their shared
+boundary: the neighbour's own rotated edge set must contain the opposite edge.
+Mere adjacency asserts nothing.
+
+**Why legs and not an edge set**, when block-end generation only needs the set:
+a set cannot express a `crossing`. Its two roads deliberately do not
+interconnect, and four edges in a bag reads as a four-way junction where any
+road reaches any other — a worse version of the blind spot #26 already records.
+A point is the same shape of problem in miniature. So `TILE_LEGS` is authored
+and `TILE_DRAWN_EDGES` is derived from it, and the two cannot drift.
+
+A `buffer` is the exception that proves the rule: it has **no leg**, because
+nothing passes through it. It has one drawn edge, a stub, and it terminates.
+
+**Rotation is applied at derivation, never stored.** Same rule as D9's point
+roads, for the same reason: rotation is a single keypress in the editor, and a
+stored post-rotation edge is wrong the moment the tile turns.
+
+**Why `services/` and not `domain/`.** `domain/types.ts` keeps the *vocabulary*
+— `TILE_TYPES`, `TILE_EDGES`, `TileRotation`. What must not go there is the
+mapping from a tile to the track it depicts, because that is the first step of
+reading a tile, and the standing rule is that nothing in `domain/` reads one.
+Putting the table beside `TILE_TYPES` would invite precisely the import the rule
+exists to prevent: a routing decision reaching for drawn geometry.
+
+**The table tracks `TilePath`.** It is a hand-maintained description of what the
+editor draws, and nothing can check that automatically — so every row is
+asserted literally in `tests/unit/services/tileGeometry.test.ts`, and a test
+iterates `TILE_TYPES` so the next palette addition cannot arrive without one.
+The one row worth reading twice is `straight-45`: the palette calls it "Corner"
+and it draws `(0,H)→(H,0)`, joining the **west and north edge midpoints**. It
+does not run corner to corner.
+
+`DRAWN_LEGS` in `packages/frontend/src/diagram/pointRoads.ts` is two rows of
+this table, maintained by hand on the other side of the wire. Same situation as
+`findBlockRuns` existing twice; #75 unifies both.
+
+**`track-not-joined`** is the finding this makes possible: drawn track running
+into a tile that draws nothing back. `warning`, because the drawing contradicts
+itself, and it is the one case where the new model produces an end an operator
+would not predict from looking at the diagram. Zero findings on Westgate Hollow
+as drawn.

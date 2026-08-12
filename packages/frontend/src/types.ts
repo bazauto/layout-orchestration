@@ -362,6 +362,13 @@ export type GridDiagnostic =
     }
   | { kind: 'diamond-blind-spot'; severity: 'warning'; at: { x: number; y: number } }
   | {
+      kind: 'track-not-joined';
+      severity: 'warning';
+      at: { x: number; y: number };
+      edge: TileEdge;
+      against: { x: number; y: number };
+    }
+  | {
       kind: 'buffer-contradicted-by-edge';
       severity: 'warning';
       blockId: string;

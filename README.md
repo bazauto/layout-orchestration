@@ -311,10 +311,13 @@ the Edges tab rather than derived from grid tiles (#78), but the two representat
 no longer entirely unchecked against each other: block ends are generated from the drawing
 as 8-point cardinal labels with a sticky manual override (#72), buffer stops assert that an
 end has no onward connection, and `GET .../grid/diagnostics` reports where the drawing and
-the graph disagree (#84). All of it is advisory — nothing in `domain/` reads a tile, and no
-diagnostic can refuse a write or halt a layout. The classification pass marking which
-existing Westgate Hollow tiles are deliberately decorative (#71) is manual and still to be
-done; until it is, untagged tiles report as unclassified to-dos. Each layout is capped at
+the graph disagree (#84). A block's openings come from where its **drawn track leaves the
+run** — tile type and rotation — not from which cells sit next to each other, so two yard
+roads drawn side by side no longer read as opening into one another (#91). All of it is
+advisory — nothing in `domain/` reads a tile, and no diagnostic can refuse a write or halt
+a layout. The classification pass marking which existing Westgate Hollow tiles are
+deliberately decorative (#71) is done: the layout is 90 tiles, 79 tagged to a block and 11
+decorative, with none unclassified. Each layout is capped at
 2,000 `block_edges` —
 a deliberate admission-control limit on `POST .../edges` (not a physical layout constraint;
 Westgate Hollow is ~40 edges), enforced only on create and only in `TopologyService`, not

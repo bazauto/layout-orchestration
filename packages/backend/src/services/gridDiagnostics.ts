@@ -38,9 +38,16 @@ import {
   BlockEnd,
   BlockId,
   PointId,
+  TileEdge,
   classifyTile,
 } from '../domain/types';
-import { BlockOpening, Coordinate, EndLabelCollision, GeometryTile } from './gridGeometry';
+import {
+  BlockOpening,
+  Coordinate,
+  EndLabelCollision,
+  GeometryTile,
+  UnjoinedEdge,
+} from './gridGeometry';
 
 export type DiagnosticSeverity = 'warning' | 'info';
 
@@ -69,6 +76,14 @@ export type GridDiagnostic =
     }
   /** #83 item 4 / #26 — a plain diamond is drawn, and route conflicts through it are not detected. */
   | { kind: 'diamond-blind-spot'; severity: 'warning'; at: Coordinate }
+  /** #91 — drawn track runs into a tile that draws nothing back. The drawing looks continuous and the block ends there. */
+  | {
+      kind: 'track-not-joined';
+      severity: 'warning';
+      at: Coordinate;
+      edge: TileEdge;
+      against: Coordinate;
+    }
   /** #84 — a buffer says this end is finished; an edge says track continues. One of them is wrong. */
   | {
       kind: 'buffer-contradicted-by-edge';
@@ -103,6 +118,8 @@ export interface DiagnosticsInput {
   ends: readonly BlockEnd[];
   openings: readonly BlockOpening[];
   collisions: readonly EndLabelCollision[];
+  /** #91 — places one tile's drawn track runs into another that draws nothing back. */
+  unjoined: readonly UnjoinedEdge[];
 }
 
 /**
@@ -116,6 +133,7 @@ export function runGridDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
   const out: GridDiagnostic[] = [];
 
   out.push(...tileDiagnostics(input));
+  out.push(...unjoinedDiagnostics(input));
   out.push(...annotationDiagnostics(input));
   out.push(...endDiagnostics(input));
   out.push(...detectionDiagnostics(input));
@@ -199,6 +217,25 @@ function tileDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
   }
 
   return out;
+}
+
+/**
+ * #91 — drawn track that stops against a tile which has nothing meeting it.
+ *
+ * `warning`, not `info`: this is the "two representations disagree" class, and
+ * the two representations here are the drawing and itself. Track drawn up to a
+ * boundary reads as continuous, so the block quietly ending at that cell looks
+ * like a generator fault rather than a drawing one. This is the finding that
+ * explains it.
+ */
+function unjoinedDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
+  return input.unjoined.map((u) => ({
+    kind: 'track-not-joined' as const,
+    severity: 'warning' as const,
+    at: u.at,
+    edge: u.edge,
+    against: u.against,
+  }));
 }
 
 function annotationDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {

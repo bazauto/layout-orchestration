@@ -16,6 +16,19 @@
  * it is unit-testable without a database and reusable by the shared renderer
  * when #75 lands.
  *
+ * ## What an opening is
+ *
+ * A place the block's **drawn track leaves the run** — through a tile edge the
+ * drawing touches, given tile type and rotation (`./tileGeometry`). Not a place
+ * a neighbouring cell happens to belong to something else.
+ *
+ * That distinction is #91. Two parallel roads of a yard touch along their whole
+ * length and connect nowhere; under the old adjacency rule every tile of both
+ * read as an opening, the whole siding fused into one phantom end at its middle,
+ * and the two real ends vanished. Connectivity is mutual — the neighbour's own
+ * drawn edges must include the opposite edge — so track butted against a tile
+ * that draws nothing back is an end, reported by `findUnjoinedEdges`.
+ *
  * ## What a generated label means, and what it does not
  *
  * A cardinal end label **describes the diagram, not the railway**. The drawing
@@ -42,9 +55,11 @@ import {
   CARDINAL_END_LABELS,
   CardinalEndLabel,
   GridTileMetadata,
+  TileEdge,
   TileType,
   classifyTile,
 } from '../domain/types';
+import { EDGE_OFFSET, drawnEdges, oppositeEdge, terminatesTrack } from './tileGeometry';
 
 /** The minimum a tile must expose for any of this. Parsed metadata, not the raw JSON column. */
 export interface GeometryTile {
@@ -188,33 +203,29 @@ interface RawOpening {
 }
 
 /**
- * A tile of a run through which the block opens, and which way it faces.
+ * One place drawn track leaves a run, before it has been named.
  *
- * `outward` is the mean offset toward whatever is on the other side, averaged
- * over that tile's foreign neighbours — **one per tile, not one per
- * direction**. A cell at a junction touches its neighbour block on up to three
- * of eight sides, and treating those as three openings would generate three
- * end labels where the railway has one opening.
+ * **One per drawn tile edge, not one per tile** (#91). The previous model
+ * produced one per tile, on the reasoning that a junction cell touches its
+ * neighbour on up to three of eight *sides* — but that was a consequence of
+ * counting adjacency. Under connectivity the unit is a leg, and two legs
+ * leading to two different blocks are two different places the block opens.
+ * Adjacent openings facing the same way are still fused into one end below.
  */
-interface OpeningTile {
+interface RunOpening {
   at: Coordinate;
+  /** Half a cell toward what lies beyond, so the bearing maths downstream is unchanged. */
   outward: Coordinate;
+  /** Only a terminating tile sets this (see the buffer rule in `runOpenings`). */
   terminated: boolean;
 }
 
 /**
  * Derives every block's openings and their generated cardinal labels.
  *
- * Two things count as an opening, and both are needed:
- *
- * - a **contact**: a tile of the block sitting next to a tile that is not of
- *   that block. This is where the block hands over — to another block, or to
- *   the undetected plain track #71 is about.
- * - a **terminus**: a tile of the block with at most one drawn neighbour of
- *   any kind, i.e. the end of a line. Without this a siding ending in buffers
- *   would produce no end at all, since it touches nothing foreign — and that
- *   dead end is exactly the one #84 wants to distinguish from an unauthored
- *   edge.
+ * An opening is a place **drawn track leaves the run** — see `runOpenings` for
+ * the rule. Adjacency plays no part: two blocks drawn side by side touch along
+ * their whole length and connect nowhere.
  *
  * The bearing runs from the *run's* centroid, not the block's: a block drawn
  * in two disconnected places has two centroids, and averaging them puts the
@@ -222,7 +233,13 @@ interface OpeningTile {
  */
 export function generateBlockEnds(tiles: readonly GeometryTile[]): GeneratedEnds {
   const byKey = new Map<string, GeometryTile>();
-  for (const t of tiles) byKey.set(key(t.x, t.y), t);
+  const edgesByKey = new Map<string, ReadonlySet<TileEdge>>();
+  for (const t of tiles) {
+    byKey.set(key(t.x, t.y), t);
+    // Rotation applied once, here. Every question below is asked of the tile as
+    // drawn, not as authored.
+    edgesByKey.set(key(t.x, t.y), drawnEdges(t.tileType, t.metadata));
+  }
 
   const raw: RawOpening[] = [];
 
@@ -231,61 +248,17 @@ export function generateBlockEnds(tiles: readonly GeometryTile[]): GeneratedEnds
     const cx = run.tiles.reduce((s, t) => s + t.x, 0) / run.tiles.length;
     const cy = run.tiles.reduce((s, t) => s + t.y, 0) / run.tiles.length;
 
-    const openingTiles: OpeningTile[] = [];
+    const openings = runOpenings(run, memberKeys, byKey, edgesByKey, { x: cx, y: cy });
 
-    for (const m of run.tiles) {
-      const tile = byKey.get(key(m.x, m.y))!;
-      const foreign: Coordinate[] = [];
-      let neighbourCount = 0;
-
-      for (const d of NEIGHBOURS) {
-        const nKey = key(m.x + d.x, m.y + d.y);
-        if (!byKey.has(nKey)) continue;
-        neighbourCount++;
-        if (!memberKeys.has(nKey)) foreign.push(d);
-      }
-
-      // A buffer tile is *always* an opening, whatever its neighbour count.
-      // It is the author's explicit assertion that track ends here, and the
-      // generic end-of-line test below misses it whenever parallel roads of
-      // one block are drawn on adjacent rows — which is most yards.
-      const terminated = tile.tileType === 'buffer';
-      // A terminus otherwise: the end of a drawn line, with nothing beyond it.
-      // Without this, a siding ending in buffers touches nothing foreign and
-      // would produce no end at all.
-      const isTerminus = terminated || neighbourCount <= 1;
-
-      if (foreign.length === 0) {
-        if (isTerminus) {
-          // A dead end has nothing to point at, so the direction away from the
-          // run's own centre is the only honest outward vector available.
-          openingTiles.push({ at: m, outward: { x: m.x - cx, y: m.y - cy }, terminated });
-        }
-        continue;
-      }
-
-      openingTiles.push({
-        at: m,
-        // Half a cell toward the mean foreign neighbour: the midpoint of the
-        // handover, which points outward even for a contact on the far side.
-        outward: {
-          x: foreign.reduce((s, d) => s + d.x, 0) / foreign.length / 2,
-          y: foreign.reduce((s, d) => s + d.y, 0) / foreign.length / 2,
-        },
-        terminated,
-      });
-    }
-
-    // Adjacent opening tiles facing the same way are ONE opening. A block
-    // meeting its neighbour along a three-cell face has one end there, not
-    // three — and three generated labels for one physical opening is worse
-    // than none, because an edge then references a name for a place that does
-    // not exist.
+    // Adjacent openings facing the same way are ONE opening. A block meeting
+    // its neighbour along a three-cell face has one end there, not three — and
+    // three generated labels for one physical opening is worse than none,
+    // because an edge then references a name for a place that does not exist.
     //
     // Facing the same way is not optional: on a two-tile block the west end
     // and the east end are adjacent cells, and adjacency alone would fuse the
     // two opposite ends of the block into a single mid-pointing one.
-    for (const cluster of clusterTiles(openingTiles, sameDirection)) {
+    for (const cluster of clusterTiles(openings, sameDirection)) {
       const px =
         cluster.reduce((s, o) => s + o.at.x + o.outward.x, 0) / cluster.length;
       const py =
@@ -298,12 +271,169 @@ export function generateBlockEnds(tiles: readonly GeometryTile[]): GeneratedEnds
         blockId: run.blockId,
         at: representative(cluster.map((o) => o.at)),
         label,
-        terminated: cluster.some((o) => o.terminated),
+        terminated: allTerminated(cluster),
       });
     }
   }
 
   return groupOpenings(raw);
+}
+
+/**
+ * Every place drawn track leaves one run, one per drawn tile edge.
+ *
+ * The rule, per member tile, per edge its track touches:
+ *
+ * | the drawn edge faces | result |
+ * |---|---|
+ * | a tile of this run whose own track meets it | internal — nothing |
+ * | a tile of another run whose own track meets it | a **connection** opening |
+ * | an empty cell | a **terminus** opening (open air) |
+ * | an occupied cell whose track does *not* meet it | a **terminus** opening |
+ *
+ * "Meets it" is mutual: the neighbour's own rotated edge set must contain the
+ * opposite edge. A tile that merely sits alongside another asserts nothing,
+ * which is the whole of #91.
+ *
+ * The last row is the case an operator would not predict from looking at the
+ * drawing, so `findUnjoinedEdges` reports it separately as `track-not-joined`.
+ *
+ * **The buffer rule.** A `buffer` draws a stub to one edge and a stop block at
+ * the centre, asserting that track ends here. So it contributes a connection
+ * opening if its stub joins another run's track, and then exactly one terminus
+ * on its *closed* side — but never an open-air opening from the stub itself. It
+ * cannot both end the track and have track leaving both ways.
+ */
+function runOpenings(
+  run: BlockRun,
+  memberKeys: ReadonlySet<string>,
+  byKey: ReadonlyMap<string, GeometryTile>,
+  edgesByKey: ReadonlyMap<string, ReadonlySet<TileEdge>>,
+  centroid: Coordinate,
+): RunOpening[] {
+  const out: RunOpening[] = [];
+
+  for (const m of run.tiles) {
+    const tile = byKey.get(key(m.x, m.y))!;
+    const edges = edgesByKey.get(key(m.x, m.y))!;
+    const terminating = terminatesTrack(tile.tileType);
+
+    for (const edge of edges) {
+      const offset = EDGE_OFFSET[edge];
+      const nKey = key(m.x + offset.dx, m.y + offset.dy);
+      const neighbourEdges = edgesByKey.get(nKey);
+      const joins = neighbourEdges?.has(oppositeEdge(edge)) ?? false;
+
+      if (joins && memberKeys.has(nKey)) continue; // stays inside the block
+
+      // A terminating tile's stub never opens into open air or into a wall.
+      if (!joins && terminating) continue;
+
+      out.push({
+        at: m,
+        // Half a cell toward the neighbouring cell: the midpoint of the
+        // handover, which points outward whichever side the neighbour is on.
+        outward: { x: offset.dx / 2, y: offset.dy / 2 },
+        terminated: false,
+      });
+    }
+
+    if (!terminating) continue;
+
+    // The closed side is the direction the stop block faces: away from the mean
+    // of the edges the stub touches.
+    const closed = meanOffset(edges);
+    out.push({
+      at: m,
+      outward:
+        closed === null
+          ? // No drawn edge at all — only reachable for a terminating type with
+            // an empty edge set, which nothing in the palette produces today.
+            // Fall back to the old dead-end vector rather than inventing one.
+            { x: m.x - centroid.x, y: m.y - centroid.y }
+          : { x: -closed.x / 2, y: -closed.y / 2 },
+      terminated: true,
+    });
+  }
+
+  return out;
+}
+
+/** Drawn track that stops against a tile which has nothing meeting it. */
+export interface UnjoinedEdge {
+  at: Coordinate;
+  edge: TileEdge;
+  /** The cell it butts against. Always occupied — open air is a legitimate line end, not a fault. */
+  against: Coordinate;
+}
+
+/**
+ * Finds every place one tile's drawn track runs into another tile that draws
+ * nothing back (#91).
+ *
+ * This is the one case in the connectivity model an operator would not predict
+ * from looking at the drawing: the track appears continuous, and the block
+ * quietly ends there. The diagnostics report it as `track-not-joined` so the
+ * end has an explanation rather than looking like a generator bug.
+ *
+ * Over **all** tiles, not only block ones. The run walk in `generateBlockEnds`
+ * only iterates block-classified tiles, so it would miss a decorative tile
+ * drawing into a block tile that does not meet it — and that is the direction
+ * the mistake usually points, since decorative track is the stuff drawn last.
+ *
+ * Both sides of a mismatch are reported, from each tile that draws into the
+ * other. That is intentional: they are two different cells to go and look at.
+ */
+export function findUnjoinedEdges(tiles: readonly GeometryTile[]): UnjoinedEdge[] {
+  const edgesByKey = new Map<string, ReadonlySet<TileEdge>>();
+  for (const t of tiles) edgesByKey.set(key(t.x, t.y), drawnEdges(t.tileType, t.metadata));
+
+  const out: UnjoinedEdge[] = [];
+
+  for (const t of tiles) {
+    for (const edge of edgesByKey.get(key(t.x, t.y))!) {
+      const offset = EDGE_OFFSET[edge];
+      const against = { x: t.x + offset.dx, y: t.y + offset.dy };
+      const neighbour = edgesByKey.get(key(against.x, against.y));
+
+      // Nothing there at all is a line end, which is ordinary and often
+      // deliberate. Only track meeting a wall is a finding.
+      if (!neighbour) continue;
+      if (neighbour.has(oppositeEdge(edge))) continue;
+
+      out.push({ at: { x: t.x, y: t.y }, edge, against });
+    }
+  }
+
+  // Sorted so the diagnostics list does not reshuffle between polls.
+  return out.sort((a, b) => a.at.y - b.at.y || a.at.x - b.at.x || a.edge.localeCompare(b.edge));
+}
+
+function meanOffset(edges: ReadonlySet<TileEdge>): Coordinate | null {
+  if (edges.size === 0) return null;
+  let x = 0;
+  let y = 0;
+  for (const e of edges) {
+    x += EDGE_OFFSET[e].dx;
+    y += EDGE_OFFSET[e].dy;
+  }
+  return { x: x / edges.size, y: y / edges.size };
+}
+
+/**
+ * An end is a finished dead end only if **every** opening making it up is
+ * terminated.
+ *
+ * Deliberately not `some()`, which is one of the mechanisms of #91: a single
+ * buffer tile marked a whole fused siding as finished, which suppressed
+ * `end-unfinished` on a layout with no authored edges at all. It stays wrong
+ * under the connectivity model for a real shape — a handover face where one cell
+ * is buffered and the next continues into another block reads as "finished"
+ * under `some()`, and would raise a false `buffer-contradicted-by-edge` the
+ * moment that edge was authored.
+ */
+function allTerminated(openings: readonly { terminated: boolean }[]): boolean {
+  return openings.every((o) => o.terminated);
 }
 
 /**
@@ -345,7 +475,7 @@ function groupOpenings(raw: readonly RawOpening[]): GeneratedEnds {
       blockId: cluster[0].blockId,
       label: cluster[0].label,
       at: representative(cluster.map((o) => o.at)),
-      terminated: cluster.some((o) => o.terminated),
+      terminated: allTerminated(cluster),
     });
   }
 
@@ -406,7 +536,7 @@ function clusterTiles<T extends { at: Coordinate }>(
  * degrees apart and is still one opening. What it reliably rejects is the
  * opposite pair, which is the case that matters.
  */
-function sameDirection(a: OpeningTile, b: OpeningTile): boolean {
+function sameDirection(a: RunOpening, b: RunOpening): boolean {
   return a.outward.x * b.outward.x + a.outward.y * b.outward.y > 0;
 }
 

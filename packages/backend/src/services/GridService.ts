@@ -16,7 +16,7 @@
 import { ILayoutRepository, GridTileRecord } from '../ports/ILayoutRepository';
 import { GridTileMetadata, LayoutId } from '../domain/types';
 import { GridTileWriteInput, parseTileMetadata } from './validation';
-import { Coordinate, GeometryTile, generateBlockEnds } from './gridGeometry';
+import { Coordinate, GeometryTile, findUnjoinedEdges, generateBlockEnds } from './gridGeometry';
 import { GridDiagnostic, runGridDiagnostics } from './gridDiagnostics';
 
 /** Thrown when `:layoutId` does not resolve to a layout. Mapped to 404. */
@@ -152,6 +152,9 @@ export class GridService {
       ends,
       openings,
       collisions,
+      // A separate pass over every tile, not only the block ones the run walk
+      // visits (#91).
+      unjoined: findUnjoinedEdges(tiles),
     });
   }
 

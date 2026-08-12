@@ -12,7 +12,7 @@
  * rendering an SVG.
  */
 
-import { GridDiagnostic } from '../types';
+import { GridDiagnostic, TileEdge } from '../types';
 
 export interface DiagnosticNames {
   blocks: ReadonlyMap<string, string>;
@@ -26,6 +26,18 @@ const named = (id: string, names: ReadonlyMap<string, string>) => names.get(id) 
 const at = (c: { x: number; y: number }) => `(${c.x}, ${c.y})`;
 
 const atList = (cs: readonly { x: number; y: number }[]) => cs.map(at).join(', ');
+
+/** Spelled out, because `nw` in a sentence reads as a typo rather than a direction. */
+const EDGE_NAMES: Record<TileEdge, string> = {
+  n: 'north',
+  ne: 'north-east',
+  e: 'east',
+  se: 'south-east',
+  s: 'south',
+  sw: 'south-west',
+  w: 'west',
+  nw: 'north-west',
+};
 
 export function describeDiagnostic(d: GridDiagnostic, names: DiagnosticNames): string {
   switch (d.kind) {
@@ -48,6 +60,12 @@ export function describeDiagnostic(d: GridDiagnostic, names: DiagnosticNames): s
       // #83 item 4. Worth saying plainly rather than as a footnote: the editor
       // will let you draw a piece of trackwork the safety model cannot see.
       return `Plain diamond crossing at ${at(d.at)}: route conflicts through it are NOT detected (#26). Two routes can be granted across it.`;
+
+    case 'track-not-joined':
+      // #91. Says which way the track is drawn as well as where, because the
+      // two cells look joined — that is the whole problem — and the operator
+      // needs to know which of the two to redraw.
+      return `Track at ${at(d.at)} is drawn leaving through its ${EDGE_NAMES[d.edge]} side, but the tile at ${at(d.against)} has nothing meeting it. The block ends at that edge.`;
 
     case 'buffer-contradicted-by-edge':
       return `Block ${named(d.blockId, names.blocks)} end '${d.label}' has a buffer stop, but ${d.edgeIds.length} edge(s) leave it. The drawing and the track graph disagree.`;

@@ -13,6 +13,7 @@ import {
   GeometryTile,
   bearingLabel,
   findBlockRuns,
+  findUnjoinedEdges,
   generateBlockEnds,
 } from '../../../src/services/gridGeometry';
 import { GridTileMetadata, TileType } from '../../../src/domain/types';
@@ -27,6 +28,52 @@ function tile(
 }
 
 const inBlock = (id: string): GridTileMetadata => ({ blockId: id });
+
+describe('findUnjoinedEdges', () => {
+  it('reports track that runs into a tile drawing nothing back', () => {
+    // The horizontal run's east edge meets a tile drawn vertically, which has
+    // nothing on its west boundary. The drawing looks continuous; it is not.
+    expect(
+      findUnjoinedEdges([
+        tile(0, 0, inBlock('b1')),
+        tile(1, 0, { blockId: 'b2', rotation: 90 }),
+      ]),
+    ).toEqual([{ at: { x: 0, y: 0 }, edge: 'e', against: { x: 1, y: 0 } }]);
+  });
+
+  it('never reports a line ending in open air', () => {
+    // An unoccupied neighbour is a legitimate end of the line — most of a
+    // half-drawn layout looks like this, and flagging it would bury the real
+    // findings.
+    expect(findUnjoinedEdges([tile(0, 0, inBlock('b1'))])).toEqual([]);
+  });
+
+  it('catches decorative track drawn into a block that does not meet it', () => {
+    // The direction the mistake usually points: decorative track is drawn last,
+    // against a block already in place. The run walk only visits block tiles,
+    // so this pass has to cover all of them.
+    const found = findUnjoinedEdges([
+      tile(0, 0, { trackRole: 'decorative' }),
+      tile(1, 0, { blockId: 'b1', rotation: 90 }),
+    ]);
+
+    expect(found).toEqual([{ at: { x: 0, y: 0 }, edge: 'e', against: { x: 1, y: 0 } }]);
+  });
+
+  it('is sorted, so the diagnostics list does not reshuffle between polls', () => {
+    const found = findUnjoinedEdges([
+      tile(5, 5, inBlock('b1')),
+      tile(6, 5, { blockId: 'b2', rotation: 90 }),
+      tile(0, 1, inBlock('b3')),
+      tile(1, 1, { blockId: 'b4', rotation: 90 }),
+    ]);
+
+    expect(found.map((u) => u.at)).toEqual([
+      { x: 0, y: 1 },
+      { x: 5, y: 5 },
+    ]);
+  });
+});
 
 describe('bearingLabel', () => {
   // North is the top of the *diagram*, so y decreasing is north. Getting this
@@ -83,6 +130,149 @@ describe('findBlockRuns', () => {
     // Two runs, not one: the decorative feeder between them is deliberately
     // not part of any block and must not silently join two blocks together.
     expect(runs).toHaveLength(2);
+  });
+});
+
+/**
+ * #91 — the shape that produced the issue. Two blocks drawn side by side touch
+ * along their whole length and connect nowhere, and before the fix every tile
+ * of both read as an opening toward the other.
+ */
+describe('generateBlockEnds — touching is not connecting (#91)', () => {
+  /** Two parallel single-row blocks, as ordinary as a layout gets: a two-road fiddle yard. */
+  const parallelRoads = (): GeometryTile[] => [
+    tile(0, 0, inBlock('b1')),
+    tile(1, 0, inBlock('b1')),
+    tile(2, 0, inBlock('b1')),
+    tile(0, 1, inBlock('b2')),
+    tile(1, 1, inBlock('b2')),
+    tile(2, 1, inBlock('b2')),
+  ];
+
+  const endsOf = (openings: ReturnType<typeof generateBlockEnds>['openings'], blockId: string) =>
+    openings
+      .filter((o) => o.blockId === blockId)
+      .map((o) => ({ label: o.label, at: o.at }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+
+  it('gives each of two parallel roads its own two ends', () => {
+    // Before the fix: one end per block, labelled `south`/`north`, sitting at
+    // (1,0)/(1,1) — the middle of the siding — and the two real ends absent.
+    const { openings, collisions } = generateBlockEnds(parallelRoads());
+
+    expect(endsOf(openings, 'b1')).toEqual([
+      { label: 'east', at: { x: 2, y: 0 } },
+      { label: 'west', at: { x: 0, y: 0 } },
+    ]);
+    expect(endsOf(openings, 'b2')).toEqual([
+      { label: 'east', at: { x: 2, y: 1 } },
+      { label: 'west', at: { x: 0, y: 1 } },
+    ]);
+    expect(collisions).toEqual([]);
+  });
+
+  it('does not open a block toward one it merely runs alongside', () => {
+    const { openings } = generateBlockEnds(parallelRoads());
+
+    // No drawn track crosses between the two rows, so neither block opens
+    // north or south at all. This is the assertion the whole issue reduces to.
+    expect(openings.every((o) => o.label !== 'north' && o.label !== 'south')).toBe(true);
+  });
+
+  it('recovers the buffered end of a yard road drawn beside another', () => {
+    // The Fiddle Yard shape: a buffer at the west end of each road, stub facing
+    // east into the run (`rotation: 180`), and the throat open at the east.
+    const tiles: GeometryTile[] = [
+      tile(0, 0, { blockId: 'b1', rotation: 180 }, 'buffer'),
+      tile(1, 0, inBlock('b1')),
+      tile(2, 0, inBlock('b1')),
+      tile(0, 1, { blockId: 'b2', rotation: 180 }, 'buffer'),
+      tile(1, 1, inBlock('b2')),
+      tile(2, 1, inBlock('b2')),
+    ];
+
+    const { openings } = generateBlockEnds(tiles);
+    const b1 = openings.filter((o) => o.blockId === 'b1');
+
+    expect(b1.find((o) => o.label === 'west')).toMatchObject({
+      at: { x: 0, y: 0 },
+      terminated: true,
+    });
+    expect(b1.find((o) => o.label === 'east')).toMatchObject({
+      at: { x: 2, y: 0 },
+      terminated: false,
+    });
+  });
+
+  it('honours rotation, so a vertical run gets vertical ends', () => {
+    const tiles: GeometryTile[] = [
+      tile(0, 0, { blockId: 'b1', rotation: 90 }),
+      tile(0, 1, { blockId: 'b1', rotation: 90 }),
+      tile(0, 2, { blockId: 'b1', rotation: 90 }),
+    ];
+
+    expect(endsOf(generateBlockEnds(tiles).openings, 'b1')).toEqual([
+      { label: 'north', at: { x: 0, y: 0 } },
+      { label: 'south', at: { x: 0, y: 2 } },
+    ]);
+  });
+
+  it('treats track butting a tile that does not meet it as an end, not a join', () => {
+    // `b2` is drawn vertical, so its west edge has nothing on it. `b1`'s track
+    // stops against a wall rather than continuing into it.
+    const tiles: GeometryTile[] = [
+      tile(0, 0, inBlock('b1')),
+      tile(1, 0, inBlock('b1')),
+      tile(2, 0, { blockId: 'b2', rotation: 90 }),
+    ];
+
+    const { openings } = generateBlockEnds(tiles);
+
+    expect(openings.find((o) => o.blockId === 'b1' && o.label === 'east')).toBeDefined();
+    expect(openings.some((o) => o.blockId === 'b2' && o.label === 'west')).toBe(false);
+  });
+
+  it('opens a block through a point’s divergent leg', () => {
+    // A point on `b1`'s row diverging down to `b2` on the next, which is the
+    // Westgate Hollow throat in miniature.
+    const tiles: GeometryTile[] = [
+      tile(0, 0, inBlock('b1')),
+      tile(1, 0, inBlock('b1')),
+      tile(2, 0, inBlock('b1'), 'point-right'),
+      // `straight-45` unrotated joins west and north — exactly the corner that
+      // takes the point's divergent leg down and across to the next row.
+      tile(2, 1, inBlock('b2'), 'straight-45'),
+      tile(1, 1, inBlock('b2')),
+      tile(0, 1, inBlock('b2')),
+    ];
+
+    const { openings } = generateBlockEnds(tiles);
+
+    // The point tile opens toward the tile below it, and that tile opens back.
+    expect(openings.some((o) => o.blockId === 'b1' && o.at.x === 2 && o.at.y === 0)).toBe(true);
+    expect(openings.some((o) => o.blockId === 'b2' && o.at.x === 2 && o.at.y === 1)).toBe(true);
+  });
+
+  it('never marks an open-air end as terminated', () => {
+    const { openings } = generateBlockEnds(parallelRoads());
+    expect(openings.every((o) => o.terminated === false)).toBe(true);
+  });
+
+  it('does not call a mixed face a finished dead end', () => {
+    // One cell of the face is buffered, the next continues into `b2`. Under the
+    // old `some()` aggregation the whole end read as terminated — which
+    // suppresses `end-unfinished`, and once the b1→b2 edge is authored raises a
+    // false `buffer-contradicted-by-edge`. It is unfinished until that edge
+    // exists, and that is what it now says.
+    const { openings } = generateBlockEnds([
+      tile(0, 0, inBlock('b1'), 'buffer'),
+      tile(0, 1, inBlock('b1')),
+      tile(1, 1, inBlock('b2')),
+    ]);
+
+    expect(openings.find((o) => o.blockId === 'b1' && o.label === 'east')).toMatchObject({
+      terminated: false,
+    });
   });
 });
 
@@ -180,12 +370,37 @@ describe('generateBlockEnds', () => {
     ]);
 
     expect(collisions).toEqual([]);
+
+    // The single-end-per-face rule is what this test is for, and it holds: one
+    // `east` on b1 and one `west` on b2, not three of each.
+    //
+    // The outer ends are new since #91 and are correct. Each of these tiles is
+    // a `straight-h`, so every one of them also draws a stub into the empty
+    // column beyond, and three cells of open track ending in mid-air is a real
+    // opening — the drawing simply does not say what is out there yet. Under
+    // the old adjacency model it was invisible, because nothing foreign was
+    // touching it.
     expect(openings.filter((o) => o.blockId === 'b1')).toEqual([
       { blockId: 'b1', label: 'east', at: { x: 0, y: 1 }, terminated: false },
+      { blockId: 'b1', label: 'west', at: { x: 0, y: 1 }, terminated: false },
     ]);
     expect(openings.filter((o) => o.blockId === 'b2')).toEqual([
+      { blockId: 'b2', label: 'east', at: { x: 1, y: 1 }, terminated: false },
       { blockId: 'b2', label: 'west', at: { x: 1, y: 1 }, terminated: false },
     ]);
+  });
+
+  it('reports nothing unjoined for a fully joined drawing', () => {
+    // The no-noise guarantee `track-not-joined` lives or dies by: this is the
+    // shape most of a layout is, and it must be silent.
+    expect(
+      findUnjoinedEdges([
+        tile(0, 0, inBlock('b1')),
+        tile(1, 0, inBlock('b1')),
+        tile(0, 1, inBlock('b2')),
+        tile(1, 1, inBlock('b2')),
+      ]),
+    ).toEqual([]);
   });
 
   it('produces nothing for a layout with no block-tagged tiles', () => {

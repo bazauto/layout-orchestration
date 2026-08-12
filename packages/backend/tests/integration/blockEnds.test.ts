@@ -382,6 +382,28 @@ describe('POST .../block-ends/generate', () => {
     ]);
   });
 
+  it('gives two sidings drawn on adjacent rows two ends each (#91)', async () => {
+    // The shape #91 is about, through the real write path and repository. Two
+    // yard roads touch along their whole length and connect nowhere.
+    await drawSiding(BLOCK_A, 0);
+    await drawSiding(BLOCK_B, 1);
+
+    const res = await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).collisions).toEqual([]);
+
+    const labelsOf = (blockId: string) =>
+      ends
+        .filter((e) => e.blockId === blockId)
+        .map((e) => e.label)
+        .sort();
+
+    // Before the fix each block got a single end named for the row above or
+    // below it, sitting in the middle of its own siding.
+    expect(labelsOf(BLOCK_A)).toEqual(['east', 'west']);
+    expect(labelsOf(BLOCK_B)).toEqual(['east', 'west']);
+  });
+
   it('is idempotent — running it twice changes nothing', async () => {
     await drawSiding(BLOCK_A, 0);
     await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
@@ -647,6 +669,56 @@ describe('GET .../grid/diagnostics', () => {
       (d: { kind: string }) => d.kind === 'block-without-detection',
     );
     expect(found).toMatchObject({ blockId: BLOCK_B, severity: 'info' });
+  });
+
+  it('reports every unfinished end of two adjacent yard roads (#91)', async () => {
+    // The "hides real work" consequence in #91: the fused end inherited a
+    // buffer flag from one tile, so `end-unfinished` never fired for either
+    // road even though the layout had no authored edges at all.
+    await drawSiding(BLOCK_A, 0, false);
+    await drawSiding(BLOCK_B, 1, false);
+    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
+
+    const unfinished = (await fetchDiagnostics()).filter(
+      (d: { kind: string }) => d.kind === 'end-unfinished',
+    );
+
+    expect(unfinished).toHaveLength(4);
+    expect(unfinished.every((d: { severity: string }) => d.severity === 'info')).toBe(true);
+  });
+
+  it('warns when drawn track runs into a tile that does not meet it (#91)', async () => {
+    // Horizontal track butted against a tile drawn vertically. It looks
+    // continuous and is not, and the block silently ends at that edge — so the
+    // end it produces needs an explanation on the same screen.
+    await putTile({ x: 0, y: 0, tileType: 'straight-h', metadata: { blockId: BLOCK_A } });
+    await putTile({
+      x: 1,
+      y: 0,
+      tileType: 'straight-h',
+      metadata: { blockId: BLOCK_B, rotation: 90 },
+    });
+
+    const found = (await fetchDiagnostics()).find(
+      (d: { kind: string }) => d.kind === 'track-not-joined',
+    );
+    expect(found).toMatchObject({
+      severity: 'warning',
+      at: { x: 0, y: 0 },
+      edge: 'e',
+      against: { x: 1, y: 0 },
+    });
+  });
+
+  it('says nothing about track that is properly joined (#91)', async () => {
+    // The false-positive guard, and the reason this is safe to turn on for a
+    // layout that is already drawn: two ordinary sidings produce none.
+    await drawSiding(BLOCK_A, 0);
+    await drawSiding(BLOCK_B, 1);
+
+    expect(
+      (await fetchDiagnostics()).some((d: { kind: string }) => d.kind === 'track-not-joined'),
+    ).toBe(false);
   });
 
   it('never Safe-Stops, however much it finds', async () => {
