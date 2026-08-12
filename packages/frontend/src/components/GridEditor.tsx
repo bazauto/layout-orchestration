@@ -18,6 +18,7 @@ import { assignRunTints, findBlockRuns } from '../diagram/blockRuns';
 import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, OCCUPANCY, SURFACE } from '../diagram/encoding';
 import { describeDiagnostic, partitionDiagnostics } from '../diagram/diagnostics';
 import { defaultPointRoads, edgeAnchor, isPointTile, roadLabel } from '../diagram/pointRoads';
+import { pointLabelAnchors, shortPointLabel } from '../diagram/pointLabels';
 import { GridTileMetadata, TileType, classifyTile } from '../types';
 import { BlockRecord, PointRecord, SensorRecord } from '../types';
 
@@ -704,6 +705,26 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
 
   const tintOf = useMemo(() => assignRunTints(runs, BLOCK_TINTS.length), [runs]);
 
+  /**
+   * The one tile per point that carries its name (#93).
+   *
+   * A point is drawn as two tiles — the point tile and the `straight-45`
+   * companion carrying the divergent road to the next row — and both are tagged
+   * with the same `pointId`, so labelling per tile drew every name twice.
+   */
+  const pointLabelAt = useMemo(
+    () =>
+      pointLabelAnchors(
+        Array.from(grid.values()).flatMap((t) => {
+          const pointId = parsedMeta.get(`${t.x},${t.y}`)?.pointId;
+          return pointId
+            ? [{ x: t.x, y: t.y, tileType: t.tileType as TileType, pointId }]
+            : [];
+        }),
+      ),
+    [grid, parsedMeta],
+  );
+
   const sensorNames = useMemo(() => new Map(sensors.map((s) => [s.id, s.name])), [sensors]);
   const blockNames = useMemo(() => new Map(blocks.map((b) => [b.id, b.name])), [blocks]);
   const pointNames = useMemo(() => new Map(points.map((p) => [p.id, p.name])), [points]);
@@ -1252,26 +1273,46 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
                       {end.terminated ? ' ⊣' : ''}
                     </text>
                   ))}
-                  {/* Point names sit on their own tile — a point is a single
-                      tile, so there is no run to collapse — and are drawn in a
-                      deliberately different style from block labels: points and
-                      blocks are different namespaces and must not look alike. */}
-                  {pName && labelsVisible(tile.x, tile.y) && (
-                    <text
-                      x={H}
-                      y={9}
-                      textAnchor="middle"
-                      fontSize={7}
-                      fill={INK.primary}
-                      fontFamily="monospace"
-                      fontStyle="italic"
-                      stroke={SURFACE.tile}
-                      strokeWidth={2.5}
-                      paintOrder="stroke"
-                    >
-                      ⌥{pName}
-                    </text>
-                  )}
+                  {/*
+                    #93 — the point's name, drawn **once per point** at the tile
+                    `pointLabelAnchors` chose, and abbreviated to what a 40px
+                    cell can hold. The full name is the `<title>`, which serves
+                    the hover tooltip and assistive technology from one place.
+
+                    The `<title>` sits on a wrapping `<g>` rather than inside
+                    the `<text>`. As a child of `<text>` it is not drawn, but it
+                    *is* part of that element's `textContent` — so anything
+                    reading the diagram's text back, the e2e spec included, sees
+                    `Yard ThroatYard Th…` and the abbreviation stops being one.
+
+                    Still deliberately unlike a block label — italic, at the top
+                    of the cell, where a block label is upright at the bottom.
+                    Points and blocks are different namespaces and must not look
+                    alike (#68). The leading `⌥` that used to carry that
+                    distinction is gone: it is U+2325, the Mac option key, and
+                    it resolved to a replacement box in the monospace fallback.
+                  */}
+                  {pName &&
+                    pointLabelAt.get(`${tile.x},${tile.y}`) === meta.pointId &&
+                    labelsVisible(tile.x, tile.y) && (
+                      <g>
+                        <title>{pName}</title>
+                        <text
+                          x={H}
+                          y={9}
+                          textAnchor="middle"
+                          fontSize={8}
+                          fill={INK.primary}
+                          fontFamily="monospace"
+                          fontStyle="italic"
+                          stroke={SURFACE.tile}
+                          strokeWidth={2.5}
+                          paintOrder="stroke"
+                        >
+                          {shortPointLabel(pName)}
+                        </text>
+                      </g>
+                    )}
                 </g>
               );
             })}

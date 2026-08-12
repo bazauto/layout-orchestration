@@ -192,3 +192,45 @@ errors is how an operator learns to ignore the findings that matter.
 **Recomputed at the end of a gesture, not per cell.** The findings are derived
 from the whole layout, so recomputing per painted cell of a drag would be one
 round trip per tile for a result nobody reads until the drag stops.
+
+---
+
+## D10 — A point is labelled once, by its identifier, at the tile that depicts it
+
+**Decision (#93).** The point name is drawn **once per point**, at the tile
+chosen by `diagram/pointLabels.ts#pointLabelAnchors`, abbreviated by
+`shortPointLabel`, with the full name in a `<title>`.
+
+**Why once per point and not once per tile.** A point is drawn as *two* tiles —
+the `point-left`/`point-right` tile, and a `straight-45` companion carrying the
+divergent road across to the adjacent row — and both are tagged with the same
+`pointId`, because both depict part of that point. Labelling per tile therefore
+drew every name twice, one cell below itself. The point tile wins the choice
+because that is where the roads and their `N`/`R` letters already are, so the
+name lands with the rest of the point's annotation.
+
+The same two-tiles-one-point fact is why `point-tile-unmapped` had to be gated on
+tile type (`docs/track-grid.md` D11) — it is worth knowing as a shape of this
+drawing, not as two separate bugs.
+
+**Why abbreviate.** A tile is 40px and `P1 - Fiddle Yard` is about 67px at the
+label's size, so every name overflowed by most of a tile in each direction. On
+Westgate Hollow `P5 - Goods Shed` and `P6 - Engine Shed` are one cell apart and
+ran together into a single unreadable string. The layout's own convention is
+`P1 - Fiddle Yard` — an identifier, then what it serves — so the identifier is
+what the diagram draws, exactly as a lever number does on a real signalling
+diagram. A name not following the convention truncates rather than being assumed
+to have one.
+
+**Nothing is hidden, it is moved.** The full name is the `<title>`, which is both
+the hover tooltip and what assistive technology reads. That `<title>` belongs on
+a wrapping `<g>` and **not** inside the `<text>`: as a child of `<text>` it is
+still not drawn, but it *is* part of that element's `textContent`, so anything
+reading the diagram back sees `Yard ThroatYard Th…` and the abbreviation quietly
+stops being one.
+
+**Why the leading `⌥` is gone.** It was carrying the "points and blocks are
+different namespaces" distinction from #68, and it is U+2325 — the Mac option
+key — which resolves to a replacement box in the monospace fallback. The
+distinction is carried by position and slant instead: a point label is italic at
+the top of its cell, a block label upright at the bottom.
