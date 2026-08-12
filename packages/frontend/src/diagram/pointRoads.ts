@@ -51,6 +51,11 @@ export function edgeAnchor(edge: TileEdge, size: number): { x: number; y: number
  * leg from the west centre up to the north centre; `point-right` diverges
  * downward to the south instead. These constants have to track that geometry —
  * if the drawing changes, so does this.
+ *
+ * These are two rows of `TILE_LEGS` in the backend's
+ * `packages/backend/src/services/tileGeometry.ts`, which carries the same
+ * mapping for every tile type and must stay equal to these two. A known
+ * duplicate across the wire, alongside `findBlockRuns`; #75 unifies both.
  */
 const DRAWN_LEGS: Partial<Record<TileType, { through: [TileEdge, TileEdge]; divergent: [TileEdge, TileEdge] }>> = {
   'point-left':  { through: ['w', 'e'], divergent: ['w', 'n'] },

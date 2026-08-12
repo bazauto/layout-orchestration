@@ -125,9 +125,58 @@ it its meaning is frozen. But it means **a block end called `north` can end up
 pointing east on the drawing.** Recorded here so nobody later "fixes" it and
 rewrites the track graph as a side effect.
 
+### An opening is drawn connectivity, not cell adjacency (#91)
+
+**A block opens where its drawn track leaves the run** — through a tile edge the
+drawing actually touches, given the tile's type and rotation. Not where a
+neighbouring cell happens to belong to something else.
+
+The distinction is the whole of #91, and the shape that exposed it is the most
+ordinary one a model railway has. Two parallel roads of a yard, drawn on
+adjacent rows, touch along their entire length and connect nowhere. Under the
+old adjacency rule every tile of both read as an opening toward the other; they
+all faced the same way and were all mutually adjacent, so the clustering fused
+them into a single phantom end at the *middle* of the siding, and the two real
+ends — the buffer and the throat — produced nothing at all. Seven of Westgate
+Hollow's nine blocks were wrong, and the two that were right were the only two
+with nothing drawn alongside them.
+
+Connectivity is **mutual**: a tile joins its neighbour only when the neighbour's
+own drawn edges include the opposite edge. Track drawn up to a boundary that
+nothing meets is therefore an end, not a join — it looks continuous, so
+`GET .../grid/diagnostics` reports it as `track-not-joined` rather than leaving
+an unexplained end in the middle of a run.
+
+**A buffer contributes one terminus, on its closed side**, plus a connection if
+its stub joins another run. It never yields an open-air opening: the tile asserts
+track ends here, so it cannot also have track leaving both ways.
+
+**An end is a finished dead end only if *every* opening making it up is
+terminated.** Aggregating with `some()` was the mechanism by which one buffer
+tile marked a whole fused siding as finished — which suppressed `end-unfinished`
+on a layout with zero authored edges, hiding the fact that nothing was connected
+to anything. It stays wrong for a real shape: a handover face with one buffered
+cell and one continuing into another block is unfinished until that edge exists.
+
+**A throat may yield one end or two**, depending on how the bearings of its
+outward legs round. Both are legitimate — `(from_block_id, from_end)` is
+deliberately not unique (below), so one end may carry several edges. Do not add
+a merge rule: over-merging is two openings quietly sharing one name, which is
+exactly what the collision refusal above exists to prevent, and it is worse than
+two names for one place.
+
+**Where two openings of one block genuinely collide**, the generator still
+refuses to name either. On Westgate Hollow the Engine / Goods Transfer opens
+toward Engine Shed 2 at (18,8) and Goods Shed at (19,10), and both bear
+`southeast` from the run centroid; no bearing scheme can separate them, because
+the only distinguishing fact is which block is on the other side. The operator
+resolves it by hand-creating two pinned ends. Such an end has no geometry to sit
+on and does not draw on the diagram — #97 is the anchor coordinate that would
+fix that.
+
 ### Geometry can propose connectivity; it can never supply length
 
-`services/gridGeometry.ts` derives openings from tile adjacency. It does not,
+`services/gridGeometry.ts` derives openings from drawn connectivity. It does not,
 and must not, derive distance. Tile count bears no relation to physical extent —
 the Westgate Hollow entry feeder is drawn long and is short in reality, and is
 not a block at all. `block_edges.lengthMm` stays authored, with
