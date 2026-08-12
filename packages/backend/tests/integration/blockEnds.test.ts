@@ -662,6 +662,46 @@ describe('GET .../grid/diagnostics', () => {
     expect(found).toMatchObject({ pointId: POINT_ID, severity: 'info' });
   });
 
+  it('does not demand a leg mapping from a point’s companion tile', async () => {
+    // #92. A point is drawn as two tiles: the point tile, and a `straight-45`
+    // carrying the divergent road across to the adjacent row. Both are tagged
+    // with the same point. Only the first has legs — `defaultPointRoads`
+    // returns nothing for the companion and the editor hides the control — so
+    // demanding a mapping asked for something no operator could give.
+    await putTile({ x: 0, y: 0, tileType: 'straight-45', metadata: { pointId: POINT_ID } });
+
+    expect(
+      (await fetchDiagnostics()).some((d: { kind: string }) => d.kind === 'point-tile-unmapped'),
+    ).toBe(false);
+  });
+
+  it('reports a pinned end with no opening, even with no edge referencing it', async () => {
+    // #92. `end-not-on-diagram` only fires once an edge depends on the end, so
+    // on a layout with no edges authored yet a pinned end naming track nobody
+    // has drawn was reported by nothing at all.
+    await app.inject({
+      method: 'POST',
+      url: ENDS_URL,
+      payload: { blockId: BLOCK_A, label: 'north' },
+    });
+
+    const found = (await fetchDiagnostics()).find(
+      (d: { kind: string }) => d.kind === 'pinned-end-not-on-diagram',
+    );
+    expect(found).toMatchObject({ blockId: BLOCK_A, label: 'north', severity: 'info' });
+  });
+
+  it('stays quiet about a generated end that the drawing does place', async () => {
+    await drawSiding(BLOCK_A, 0);
+    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
+
+    expect(
+      (await fetchDiagnostics()).some(
+        (d: { kind: string }) => d.kind === 'pinned-end-not-on-diagram',
+      ),
+    ).toBe(false);
+  });
+
   it('flags a drawn block that no in-service sensor reports on', async () => {
     await drawSiding(BLOCK_B, 0);
 

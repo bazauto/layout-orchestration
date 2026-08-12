@@ -76,6 +76,9 @@ export function describeDiagnostic(d: GridDiagnostic, names: DiagnosticNames): s
     case 'end-not-on-diagram':
       return `Block ${named(d.blockId, names.blocks)} end '${d.label}' is referenced by edges but has nowhere on the drawing to sit.`;
 
+    case 'pinned-end-not-on-diagram':
+      return `Block ${named(d.blockId, names.blocks)} end '${d.label}' is pinned but has no opening on the drawing — draw the track it names, or delete it before an edge depends on it.`;
+
     case 'end-label-collision':
       return `Block ${named(d.blockId, names.blocks)} has two openings facing '${d.label}' (${atList(d.at)}). Name one of them by hand — the generator will not guess.`;
 

@@ -40,6 +40,7 @@ import {
   PointId,
   TileEdge,
   classifyTile,
+  depictsPoint,
 } from '../domain/types';
 import {
   BlockOpening,
@@ -96,6 +97,8 @@ export type GridDiagnostic =
   | { kind: 'end-unfinished'; severity: 'info'; blockId: BlockId; label: string; at: Coordinate }
   /** #72 — an end an edge references, with no opening on the drawing to put it at. */
   | { kind: 'end-not-on-diagram'; severity: 'warning'; blockId: BlockId; label: string }
+  /** #92 — a *pinned* end with no opening and nothing referencing it yet. Authored deliberately, so its absence from the drawing is worth saying before an edge depends on it. */
+  | { kind: 'pinned-end-not-on-diagram'; severity: 'info'; blockId: BlockId; label: string }
   /** #72 — two openings of one block face the same way, so the generator refused to name either. */
   | {
       kind: 'end-label-collision';
@@ -203,7 +206,18 @@ function tileDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
     // point is reverse and still not know which line to draw. Cheap to author
     // now while the points are being placed; a retrofit means revisiting every
     // point tile by hand (#73).
-    if (meta.pointId !== undefined && (meta.pointRoads?.length ?? 0) === 0) {
+    //
+    // Gated on the tile *type*, not on `pointId` alone (#92). A point is drawn
+    // as two tiles — the point tile, and a `straight-45` companion carrying the
+    // divergent road to the adjacent row — and both are tagged with the same
+    // `pointId`. Only the first has legs to map: `defaultPointRoads` returns
+    // nothing for the companion and the editor hides the mapping control for
+    // it, so asking for one was asking for something no operator could give.
+    if (
+      meta.pointId !== undefined &&
+      depictsPoint(tile.tileType) &&
+      (meta.pointRoads?.length ?? 0) === 0
+    ) {
       out.push({ kind: 'point-tile-unmapped', severity: 'info', at, pointId: meta.pointId });
     }
 
@@ -297,14 +311,31 @@ function endDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
     const opening = openingByEnd.get(k);
 
     if (!opening) {
-      // Only worth reporting for an end something actually depends on. An
-      // unpinned generated end always has an opening by construction, and a
-      // hand-created one for track not yet drawn is a legitimate work order,
-      // not a mistake.
+      // An end an edge depends on, with nowhere on the drawing to sit: the two
+      // representations disagree about something load-bearing.
       if (edgeIds.length > 0) {
         out.push({
           kind: 'end-not-on-diagram',
           severity: 'warning',
+          blockId: end.blockId,
+          label: end.label,
+        });
+        continue;
+      }
+
+      // Nothing references it yet — but it was **pinned**, which is an explicit
+      // assertion that this end outranks geometry permanently (#72). That is a
+      // different thing from a generated end, which always has an opening by
+      // construction, and it is worth saying before an edge is authored against
+      // a name the drawing does not place anywhere (#92).
+      //
+      // `info`, not `warning`: authoring an end ahead of the track it names is a
+      // legitimate work order, and the whole severity rule here is that an
+      // unfinished layout is a normal state.
+      if (end.pinned) {
+        out.push({
+          kind: 'pinned-end-not-on-diagram',
+          severity: 'info',
           blockId: end.blockId,
           label: end.label,
         });
