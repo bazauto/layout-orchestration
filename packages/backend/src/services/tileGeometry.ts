@@ -204,3 +204,47 @@ export function drawnEdges(tileType: string, metadata: GridTileMetadata = {}): R
 export function terminatesTrack(tileType: string): boolean {
   return TERMINATING_TILE_TYPES.has(tileType as TileType);
 }
+
+/**
+ * One side of one tile — a place track can cross a cell boundary.
+ *
+ * `edge` is in the **rotated** (screen) frame, unlike everything in `TILE_LEGS`.
+ * A port is a position on the drawing, so it has already been placed; a leg is a
+ * property of the tile's shape, so it has not. Keeping the two frames distinct
+ * is what stops a rotation being applied twice.
+ */
+export interface Port {
+  x: number;
+  y: number;
+  edge: TileEdge;
+}
+
+export const portKey = (p: Port): string => `${p.x},${p.y},${p.edge}`;
+
+/**
+ * The port on the far side of the same boundary.
+ *
+ * Pure arithmetic — it does not check that a tile is actually there. A walk
+ * steps to `opposingPort` and *then* asks what it found, because "nothing there"
+ * is a legitimate answer that means the line ends.
+ */
+export function opposingPort(port: Port): Port {
+  const offset = EDGE_OFFSET[port.edge];
+  return { x: port.x + offset.dx, y: port.y + offset.dy, edge: oppositeEdge(port.edge) };
+}
+
+/**
+ * The edges a walk entering through `edge` can leave by.
+ *
+ * The point of taking legs rather than an edge set: entering a `crossing` from
+ * the west offers only the east, never the north. A junction that let any road
+ * reach any other would propose track connections that do not exist.
+ */
+export function exitsFrom(legs: readonly TileLeg[], edge: TileEdge): TileEdge[] {
+  const out: TileEdge[] = [];
+  for (const [a, b] of legs) {
+    if (a === edge) out.push(b);
+    else if (b === edge) out.push(a);
+  }
+  return out;
+}

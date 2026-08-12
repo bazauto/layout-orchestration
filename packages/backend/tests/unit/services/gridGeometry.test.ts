@@ -380,14 +380,24 @@ describe('generateBlockEnds', () => {
     // opening — the drawing simply does not say what is out there yet. Under
     // the old adjacency model it was invisible, because nothing foreign was
     // touching it.
-    expect(openings.filter((o) => o.blockId === 'b1')).toEqual([
-      { blockId: 'b1', label: 'east', at: { x: 0, y: 1 }, terminated: false },
-      { blockId: 'b1', label: 'west', at: { x: 0, y: 1 }, terminated: false },
+    const named = (blockId: string) =>
+      openings
+        .filter((o) => o.blockId === blockId)
+        .map(({ label, at, terminated }) => ({ label, at, terminated }));
+
+    expect(named('b1')).toEqual([
+      { label: 'east', at: { x: 0, y: 1 }, terminated: false },
+      { label: 'west', at: { x: 0, y: 1 }, terminated: false },
     ]);
-    expect(openings.filter((o) => o.blockId === 'b2')).toEqual([
-      { blockId: 'b2', label: 'east', at: { x: 1, y: 1 }, terminated: false },
-      { blockId: 'b2', label: 'west', at: { x: 1, y: 1 }, terminated: false },
+    expect(named('b2')).toEqual([
+      { label: 'east', at: { x: 1, y: 1 }, terminated: false },
+      { label: 'west', at: { x: 1, y: 1 }, terminated: false },
     ]);
+
+    // The three cells of the handover face are one opening, and it carries all
+    // three boundaries — which is what lets #78 tell which end a walk arrived
+    // at when an end is several cells wide.
+    expect(openings.find((o) => o.blockId === 'b1' && o.label === 'east')!.ports).toHaveLength(3);
   });
 
   it('reports nothing unjoined for a fully joined drawing', () => {

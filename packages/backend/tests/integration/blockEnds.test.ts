@@ -126,7 +126,14 @@ function makeRepo(): ILayoutRepository {
     }),
     listBlockEdges: vi.fn(async (layoutId: string) => edges.filter((e) => e.layoutId === layoutId)),
     getBlockEdge: vi.fn(async (id: string) => edges.find((e) => e.id === id) ?? null),
-    createBlockEdge: vi.fn(),
+    // Functional, so #78's accept path can be exercised end to end: a proposal
+    // is accepted by POSTing it to the ordinary edges route, and that has to
+    // actually create a row for the re-propose to see it.
+    createBlockEdge: vi.fn(async (data: Omit<BlockEdge, 'id'>) => {
+      const created = { id: `edge-${nextId++}`, ...data };
+      edges.push(created);
+      return created;
+    }),
     updateBlockEdge: vi.fn(),
     deleteBlockEdge: vi.fn(),
     listBlockEnds: vi.fn(async (layoutId: string) => ends.filter((e) => e.layoutId === layoutId)),
@@ -764,6 +771,112 @@ describe('GET .../grid/diagnostics', () => {
   it('never Safe-Stops, however much it finds', async () => {
     await putTile({ x: 0, y: 0, tileType: 'crossing' });
     await fetchDiagnostics();
+    expect(service.getSystemStatus().status).toBe('online');
+  });
+});
+
+// ─── Edge proposals (#78) ──────────────────────────────────────────────────
+
+describe('GET .../grid/edge-proposals', () => {
+  const PROPOSALS_URL = `${GRID_URL}/edge-proposals`;
+
+  const fetchProposals = async () =>
+    JSON.parse((await app.inject({ method: 'GET', url: PROPOSALS_URL })).body);
+
+  /** Two blocks joined by one cell of undetected feeder — the shape #78 exists for. */
+  async function drawConnectedPair() {
+    await putTile({ x: 0, y: 0, tileType: 'straight-h', metadata: { blockId: BLOCK_A } });
+    await putTile({ x: 1, y: 0, tileType: 'straight-h', metadata: { trackRole: 'decorative' } });
+    await putTile({ x: 2, y: 0, tileType: 'straight-h', metadata: { blockId: BLOCK_B } });
+    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
+  }
+
+  it('404s for a layout that does not exist', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/layouts/nope/grid/edge-proposals',
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('proposes the connection the drawing implies, in both directions', async () => {
+    await drawConnectedPair();
+
+    const { proposals, notes } = await fetchProposals();
+
+    expect(notes).toEqual([]);
+    expect(proposals).toHaveLength(2);
+    expect(proposals.every((p: { lengthMm: null }) => p.lengthMm === null)).toBe(true);
+    expect(proposals.every((p: { status: string }) => p.status === 'new')).toBe(true);
+    expect(new Set(proposals.map((p: { pairId: string }) => p.pairId)).size).toBe(1);
+  });
+
+  it('is a read, so an operator may run it', async () => {
+    await drawConnectedPair();
+    await authenticateAsOperator(app);
+
+    const res = await app.inject({ method: 'GET', url: PROPOSALS_URL });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('has no write verb at all — accepting is the ordinary edges route', async () => {
+    // The structural guarantee behind "this is not a bypass": there is nothing
+    // here to POST to, so an accepted proposal can only travel through
+    // `TopologyService.createEdge` and its validation.
+    for (const method of ['POST', 'PUT', 'DELETE'] as const) {
+      const res = await app.inject({ method, url: PROPOSALS_URL, payload: {} });
+      expect(res.statusCode, `${method} should not be routed`).toBe(404);
+    }
+  });
+
+  it('reports a connection as existing once the operator has accepted it', async () => {
+    await drawConnectedPair();
+    const [first] = (await fetchProposals()).proposals;
+
+    // Accepted by posting the proposal to the normal route, with no `lengthMm`.
+    const created = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/edges`,
+      payload: {
+        fromBlockId: first.fromBlockId,
+        fromEnd: first.fromEnd,
+        toBlockId: first.toBlockId,
+        toEnd: first.toEnd,
+        pointConditions: first.pointConditions,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(JSON.parse(created.body).lengthMm).toBeNull();
+
+    // Re-proposing now reports it rather than hiding it — silence would be
+    // indistinguishable from "not found".
+    const again = (await fetchProposals()).proposals.find(
+      (p: { fromBlockId: string; toBlockId: string }) =>
+        p.fromBlockId === first.fromBlockId && p.toBlockId === first.toBlockId,
+    );
+    expect(again.status).toBe('existing');
+    expect(again.existingEdgeId).toBe(JSON.parse(created.body).id);
+  });
+
+  it('proposes nothing across untagged track, and says which cell to classify', async () => {
+    await putTile({ x: 0, y: 0, tileType: 'straight-h', metadata: { blockId: BLOCK_A } });
+    await putTile({ x: 1, y: 0, tileType: 'straight-h' });
+    await putTile({ x: 2, y: 0, tileType: 'straight-h', metadata: { blockId: BLOCK_B } });
+
+    const { proposals, notes } = await fetchProposals();
+
+    expect(proposals).toEqual([]);
+    expect(notes).toContainEqual({ kind: 'blocked-by-unclassified', at: { x: 1, y: 0 } });
+    // Advisory, like every other read of the drawing.
+    expect(service.getSystemStatus().status).toBe('online');
+  });
+
+  it('never Safe-Stops, however little sense the drawing makes', async () => {
+    // A lone diamond tagged to nothing: no ends, no classification, no
+    // connections. A proposal run reads the drawing and can never reach
+    // `SystemHealth`, the same posture the diagnostics take.
+    await putTile({ x: 0, y: 0, tileType: 'crossing' });
+    await fetchProposals();
     expect(service.getSystemStatus().status).toBe('online');
   });
 });

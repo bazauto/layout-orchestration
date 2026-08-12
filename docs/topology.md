@@ -174,6 +174,44 @@ resolves it by hand-creating two pinned ends. Such an end has no geometry to sit
 on and does not draw on the diagram — #97 is the anchor coordinate that would
 fix that.
 
+### Proposing candidate edges from the drawing (#78)
+
+`GET /api/layouts/:layoutId/grid/edge-proposals` walks the drawing and returns
+the connections it implies, as candidate `block_edges` rows for an operator to
+accept or reject. It **writes nothing**, and there is deliberately no accept
+endpoint: accepting a proposal is an ordinary `POST .../edges`, validated by
+`TopologyService` exactly as a hand-authored edge is. No bypass can exist,
+because there is no second write path to bypass through.
+
+This does not make the track graph derived. `block_edges` stays authored; what
+stops is the *transcription*. The drawing already describes the railway, and
+typing it out again by hand is where the two representations drift apart.
+
+**The walk is over tile ports, not cells**, which is why it could only be built
+after #91. Two yard roads drawn on adjacent rows touch along their whole length,
+so a cell-based walk would propose an edge between every pair of parallel
+sidings on the layout.
+
+**Point conditions come from the drawn `pointRoads`, at both ends of the walk.**
+A throat tile is tagged to the block it serves, so a block's opening frequently
+sits *on* a point — and crossing it costs whatever the road using that leg
+requires. A road only counts if it joins the boundary to a leg leading **into
+that block**: without that test a point reads as "any leg reaches any other", and
+Westgate Hollow proposed `Fiddle Yard 1 ↔ Fiddle Yard 2`, a connection P1 cannot
+make since both yards hang off its diverging legs and meet only at the toe.
+
+**It under-proposes, audibly.** An unclassified tile, a point with no leg
+mapping, and a boundary with no road leading into the block each stop the walk
+and leave a note naming the cell. A missing candidate costs a minute of typing;
+a wrong one is a route granted over track that is not there. Silence and refusal
+are indistinguishable from outside, so the notes are the whole difference between
+a to-do list and a mystery.
+
+**What it cannot check.** A point's leg mapping is unverifiable authored data
+(`docs/track-grid.md` D9), and a proposal inherits that uncertainty exactly. This
+does not make point wiring checkable; it makes the drawing and the graph state
+the same thing instead of two different things.
+
 ### Geometry can propose connectivity; it can never supply length
 
 `services/gridGeometry.ts` derives openings from drawn connectivity. It does not,
