@@ -14,6 +14,7 @@ style preferences.
 | `docs/project-plan.md` | Phase roadmap (0–3) |
 | `docs/mqtt-contract.md` | **Binding** MQTT topics, payloads, QoS, retention |
 | `docs/topology.md` | Track graph (`block_edges`): validation, deferred items |
+| `docs/track-graph-compilation.md` | **Accepted design, not yet built (#103).** The drawing *compiles* to `block_edges` under operator review; `block_ends` is deleted; `lengthMm` moves to blocks (D1–D10). Read before extending #72 or #78. |
 | `docs/track-grid.md` | `grid_tiles` — the Track Editor's **drawing**, its validated write path, why a tile carries no authority, and what makes two tiles connected (D1–D12) |
 | `docs/route-locking.md` | Route reservation and locking (D1–D14) decision record |
 | `docs/pathfinding.md` | Pathfinding, setting the road, and route faults (P1–P8) |
@@ -228,6 +229,16 @@ Things that look like bugs or oversights and are not. Each was a deliberate deci
 
 Recorded rather than closed — do not treat any of these as bugs to fix in passing:
 
+- **The drawing↔graph model is being replaced (#103, `docs/track-graph-compilation.md`).**
+  Accepted 2026-08-13, not built. `block_edges` will be *compiled* from the drawing under
+  operator review; `block_ends` is deleted; end labels become disposable compiler output;
+  `lengthMm` moves to `blocks`. The root fault: `block_ends.label` is both the join key
+  `block_edges` references and a geometry-derived description, and `pinned`, the rename
+  409, adoption and the collision refusal are all that conflict surfacing. **Do not build
+  further on #72's or #78's model** — including the anchor coordinate in #97, which is
+  rejected. Two live bugs it surfaced, fixable independently: #104 (a point tile tinted as
+  a neighbouring block silently drops edges) and #105 (B4's edge-length convention does
+  not decompose and overshoots by a block).
 - **A point lock is an authority guarantee, not a physical position guarantee.** There is
   still no point-position feedback channel (#25).
 - **Two routes fouling at a plain (non-switched) diamond crossing is not caught**, since
@@ -240,9 +251,11 @@ Recorded rather than closed — do not treat any of these as bugs to fix in pass
   `end-label-collision` drops *both* openings from `generateBlockEnds`, so a hand-created
   end matching one of them authors edges fine but never gets geometry: it lists as "not
   placed", reports `pinned-end-not-on-diagram`, and yields no proposals through those
-  ends. Closing it needs `block_ends` to name a specific opening (an anchor coordinate),
-  which is a schema change against a live database. Westgate Hollow has exactly one
-  (`Engine / Goods Transfer`, two openings both bearing south-east) — see `docs/topology.md`.
+  ends. Westgate Hollow has exactly one (`Engine / Goods Transfer`, two openings both
+  bearing south-east). **Both obvious fixes are rejected** — an anchor coordinate (#97)
+  and a 16-point bearing, which separates these two angles by coincidence and breaks the
+  correspondence with `TileEdge`. #103 dissolves it instead: a disposable label may be
+  disambiguated freely, so the refusal has no reason to exist.
 - **Westgate Hollow's classification pass is done** (90 tiles: 79 block, 11 decorative, 0
   unclassified) and every block has in-service sensors, so `unclassified-tile` and
   `block-without-detection` are both silent on the live layout — that is a finished

@@ -44,6 +44,21 @@ free text, stay un-FK'd, and an end label with no other referent stays legal.
 
 ## Block ends: derived by default, authored by exception (#72)
 
+> **Superseded in design, not yet in code.** Everything in this section and in
+> "Proposing candidate edges from the drawing" below describes what ships today
+> and is accurate. It is replaced by `docs/track-graph-compilation.md`
+> (accepted 2026-08-13, tracking issue **#103**), which deletes `block_ends`
+> entirely: the drawing compiles to `block_edges` under operator review, an end
+> label becomes disposable compiler output that nothing references and nobody
+> edits, and `lengthMm` moves to `blocks`.
+>
+> The root fault it fixes: **`block_ends.label` is simultaneously the join key
+> `block_edges` references and a geometry-derived description.** An identifier
+> must be stable and a description must not be; `pinned`, the rename 409,
+> adoption, and the collision refusal below are all that conflict surfacing.
+>
+> Read the new document before extending anything here.
+
 ### The problem
 
 Authoring an edge meant looking at the drawing, deciding that the left-hand end
@@ -140,12 +155,22 @@ and becomes the warning `end-not-on-diagram` as soon as an edge references it.
 `proposeEdges` also starts no walk from either opening and arrives at them with
 `toEnd: null`, so that block gets no proposals through those ends.
 
-Closing it needs an end to be able to name a **specific opening** rather than a
-bearing — an anchor coordinate on `block_ends`, matched against the colliding
-cluster containing it. That is a schema change against a live database and is
-not attempted here. Westgate Hollow has exactly one today
-(`Engine / Goods Transfer`, two openings both bearing south-east from the run
-centroid), and the two edges through them are hand-authored.
+Westgate Hollow has exactly one today (`Engine / Goods Transfer`, two openings
+both bearing south-east from the run centroid at 118.5° and 134.7°).
+
+An anchor coordinate on `block_ends` — a pinned end naming a *specific opening*
+rather than a bearing — was the obvious fix and was **rejected** (#97). So was
+falling back to a 16-point bearing, which happens to separate those two angles
+and is therefore a coincidence rather than an argument; it also breaks the
+correspondence between an end label and `TileEdge`, the drawing's own eight-way
+vocabulary.
+
+Both are answers to a question that stops being asked. Under
+`docs/track-graph-compilation.md` the label is disposable compiler output that
+nothing references, so the generator may disambiguate freely
+(`southeast-1`/`southeast-2`) and a collision becomes an ordinary compile gap.
+The refusal exists *only* because a guessed identifier could be typed wrong into
+an edge later, and there is no later once edges are compiled.
 
 ### Known property: a cardinal label describes the diagram, not the railway
 
