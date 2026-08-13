@@ -882,6 +882,26 @@ over-constraint stated, and revisit if it ever refuses a route in practice.
 
 The write. Small, and the one to review hardest.
 
+> **Shipped.** Built as planned, with three notes:
+>
+> 1. **OQ7 needs no special case.** The plan asked PR 3 to "detect the conflict
+>    and refuse the apply with a named reason rather than letting SQLite raise
+>    it". That falls out of step 3.2's pre-validation for free:
+>    `validateTopology`'s `duplicate-connection` check keys on exactly the same
+>    tuple as `block_edges_connection_unq`, so the collision is a named 422
+>    before any write. Covered by an integration test that *draws* the shape (a
+>    point tile tinted as the block it serves, reached through its toe) rather
+>    than hand-building the edges. Choosing between OQ7's options (a)–(d)
+>    remains deferred until a real drawing produces one.
+> 2. **`CompileFingerprintMismatchError` lives in `CompileService.ts`**, not
+>    `TopologyService.ts` as step 3.2 lists it. The comparison happens in
+>    `apply`; `replaceGraph` only stores the fingerprint it is handed.
+> 3. **`LockedByRouteError` was previously mapped to a 409 nowhere in the HTTP
+>    layer** — `PUT`/`DELETE .../edges` and the block/point deletes all reach
+>    Fastify's default handler and answer **500** when a route holds the target.
+>    Pre-existing, not introduced here, and not fixed here either: the new
+>    `mapCompileError` maps it correctly for the apply. Worth its own small PR.
+
 #### Step 3.1 — Repository: the atomic replace
 
 **Files:** `packages/backend/src/ports/ILayoutRepository.ts`,

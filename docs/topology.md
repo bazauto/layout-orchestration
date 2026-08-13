@@ -367,31 +367,33 @@ and nothing here re-litigates it. What follows is what exists in the code.
 
 Shipped so far: the compiler and its completeness assertions
 (`services/trackGraphCompiler.ts`), the openings generator
-(`gridGeometry.ts#compileOpenings`), the `compiled_graphs` provenance row, and
-the two read surfaces below. **Nothing writes `block_edges` from a compile yet**
-— the apply, the `auto` gate and the review UI are still to come, and
-`block_ends` and the manual edge write path are both still live.
+(`gridGeometry.ts#compileOpenings`), the `compiled_graphs` provenance row, the
+two read surfaces below, and **the apply**. Still to come: the `auto` gate on
+gaps and the review UI. `block_ends` and the manual edge write path are both
+still live and are deleted later in #103.
 
-### The two read surfaces
+### The three surfaces
 
 | Route | Answers | Cost |
 |---|---|---|
 | `GET /api/layouts/:layoutId/grid/openings` | where each block opens, named | geometry only, no walk |
 | `GET /api/layouts/:layoutId/topology/compile` | the whole candidate graph, its gaps, and a diff against the live one | full branch search |
+| `POST /api/layouts/:layoutId/topology/compile/apply` | writes it, if the drawing still matches | full branch search + one transaction |
 
-Two routes rather than one because they answer different questions at different
+The two reads are separate because they answer different questions at different
 prices (D-H). "Where does this block open" is a question about the drawing and
 the Track Editor asks it on every stroke, the way it already asks for grid
 diagnostics; "what edges does that imply" is a review action taken when the
-panel is opened. Neither is admin-gated, matching `grid/diagnostics` and
+panel is opened. Neither read is admin-gated, matching `grid/diagnostics` and
 `grid/edge-proposals`: the **write** is what is gated, and an operator being
 able to see why the layout will not go into `auto` is the point of the surface.
 
-A layout that does not exist is a 404 on both. A drawing that compiles to more
-edges than the review surface will render is a 409 carrying `{ limit, found }`,
-mirroring `EdgeLimitExceededError` on `POST .../edges` — never a bare 500,
-because "no connections found" and "I gave up" must not look the same from
-outside. **Neither route can Safe-Stop**, however many gaps it reports (D9).
+A layout that does not exist is a 404 on all three. A drawing that compiles to
+more edges than the review surface will render is a 409 carrying
+`{ limit, found }`, mirroring `EdgeLimitExceededError` on `POST .../edges` —
+never a bare 500, because "no connections found" and "I gave up" must not look
+the same from outside. **Nothing here can Safe-Stop**, however many gaps it
+reports and whichever way the apply goes (D9).
 
 ### What the compiler asserts, and why over its own output
 
@@ -432,6 +434,75 @@ fingerprint like any other edit and two different corruptions do not hash alike.
 Staleness — a stored fingerprint that differs from the drawing's, or no stored
 row at all — is a **warning, never a gate**. Gating on it would stop an operator
 moving a platform tile.
+
+### Applying: `POST .../topology/compile/apply`
+
+Admin-only, and the only thing in the system that writes a compiled graph. The
+body carries a **fingerprint and nothing else** — never rows. An apply that
+accepted edges would be a second authoring path wearing the compiler's name,
+which is precisely the bypass D1 and D3 exist to make impossible; the schema is
+`.strict()`, so a body that tries is a 400.
+
+The service recompiles the drawing as it stands, refuses if the result differs
+from the fingerprint that was reviewed, and hands the edges to
+`TopologyService.replaceGraph`. What the operator approves is *that drawing*,
+and the fingerprint is how they say so.
+
+**The order is load-bearing: refuse first, write second, never
+write-then-discover.** `reloadTopology()` applies Safe-Stop when it loads a
+graph with a fatal violation, so an apply that could write rows and *then* have
+them rejected on reload would turn an authoring action into a halted railway.
+Every refusal therefore precedes `replaceBlockEdges`, in this order:
+
+1. **any route holding anything in this layout** → `LockedByRouteError`. Not a
+   per-edge guard (D-E): every row is about to be deleted and rewritten with
+   regenerated labels, so "is *this* edge held" has no answer worth acting on —
+   the row may not survive and the label a live route recorded may not exist
+   afterwards. This is what makes D8's accepted consequence safe. Cancel the
+   route, then apply: an ordering requirement, not a deadlock.
+2. **over `MAX_EDGES_PER_LAYOUT`** → `EdgeLimitExceededError`. Admission control
+   on the whole candidate set, which is where it always belonged.
+3. **`validateTopology` over the candidate graph**, with synthetic ids →
+   `TopologyRejectedError`. The same full pass the load path runs, so a graph
+   that passes here is one `reloadTopology` will accept.
+4. `repo.replaceBlockEdges` — one transaction: old edges out, new edges in,
+   fingerprint stamped. What validation cannot see is a DB constraint, and the
+   rollback is the mechanism rather than a nicety: a half-written graph is a
+   railway nobody authored and nobody reviewed.
+
+| condition | status | body |
+|---|---|---|
+| success | 200 | `CompileView` (diff now empty, `stale` false) |
+| bad body | 400 | `{ error, details }` |
+| unknown layout | 404 | `{ error }` |
+| fingerprint mismatch | 409 | `{ error, expected, actual }` |
+| a route holds the layout | 409 | `{ error, routeId }` |
+| over the cap | 409 | `{ error, limit, current }` |
+| candidate graph invalid | 422 | `{ error, violations }` |
+
+**A recompile is a replace, not a merge** (D3). On a deployment whose
+`block_edges` is not empty, the first apply deletes every hand-authored edge the
+compile does not reproduce. Westgate Hollow has none — verified, 0 rows — so
+this is a statement about other deployments, and the diff review is the
+protection. There is deliberately no merge mode.
+
+**Gaps do not refuse an apply** (D6). A partial graph is legitimate and is how a
+layout is actually built up, one corner at a time; it is `SystemMode: auto` that
+a gap gates, not the compile. Refusing here would leave an operator holding an
+empty graph with no way to make it less empty.
+
+#### The unique-index conflict is caught by the pre-validation
+
+A point tile carrying a `blockId` and reached through its toe emits one edge per
+road — for a binary point, two rows differing only in `pointConditions`. Those
+collide on `block_edges_connection_unq`, which excludes conditions.
+
+This needs **no special case**: `validateTopology`'s `duplicate-connection`
+check keys on exactly the same tuple as that index, so the collision surfaces as
+a named 422 before anything is written, rather than as an opaque failure from
+SQLite half way through a batch. Westgate Hollow does not draw this shape today,
+but the design permits it (a point genuinely can sit inside a block), so it is
+covered by a test rather than left to chance.
 
 ### The diff is matched in two passes
 

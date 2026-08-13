@@ -300,6 +300,55 @@ export class DrizzleRepository implements ILayoutRepository {
     this.db.delete(blockEdges).where(eq(blockEdges.id, id)).run();
   }
 
+  /**
+   * Swaps the whole edge set for a compiled one and stamps its provenance, in
+   * one transaction (#103).
+   *
+   * Transactional for a sharper reason than tidiness. `TopologyService` has
+   * already validated the candidate graph in full before calling this, so what
+   * remains is what validation cannot see: a DB constraint. If the unique index
+   * refuses an insert half way through, a non-transactional version would leave
+   * the layout describing *part* of a railway — a graph nobody authored,
+   * nobody reviewed, and that Safe-Stops the layout on the next reload. That is
+   * exactly the write-then-discover failure D9 forbids, so the rollback is not
+   * a nicety, it is the mechanism.
+   *
+   * The `compiled_graphs` upsert is inside the same transaction because a
+   * fingerprint recorded for a graph that did not store is a lie about which
+   * drawing the pathfinder is planning on — and the next `apply` would read it
+   * as up to date and refuse to help.
+   */
+  async replaceBlockEdges(
+    layoutId: string,
+    edges: readonly Omit<BlockEdge, 'id' | 'layoutId'>[],
+    fingerprint: string,
+    compiledAt: Date,
+  ): Promise<BlockEdge[]> {
+    const rows = edges.map((edge) => ({
+      id: randomUUID(),
+      layoutId,
+      fromBlockId: edge.fromBlockId,
+      fromEnd: edge.fromEnd,
+      toBlockId: edge.toBlockId,
+      toEnd: edge.toEnd,
+      pointConditions: JSON.stringify(edge.pointConditions),
+    }));
+
+    this.db.transaction((tx) => {
+      tx.delete(blockEdges).where(eq(blockEdges.layoutId, layoutId)).run();
+      for (const row of rows) tx.insert(blockEdges).values(row).run();
+      tx.insert(compiledGraphs)
+        .values({ layoutId, drawingFingerprint: fingerprint, compiledAt })
+        .onConflictDoUpdate({
+          target: compiledGraphs.layoutId,
+          set: { drawingFingerprint: fingerprint, compiledAt },
+        })
+        .run();
+    });
+
+    return this.listBlockEdges(layoutId);
+  }
+
   // ─── Block Ends ─────────────────────────────────────────────────────────────
 
   async listBlockEnds(layoutId: string): Promise<BlockEnd[]> {

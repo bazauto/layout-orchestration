@@ -371,6 +371,16 @@ stays testable standalone (a hand-rolled `IRouteLockView` in tests, no real
   and it cannot be traversed into reserved track because the target block is
   already locked — the block/point locks are what protect a live route, not
   an admission check on every new edge.
+- `replaceGraph` (#103's compiled apply) is refused when **any** route holds
+  **anything** in the layout — `findAnyHeldRoute`, not a per-target lookup.
+  This is not extra caution; the per-target guards genuinely do not compose
+  into it. A compiled apply deletes every edge in the layout and regenerates
+  every end label, so "is *this* edge held" has no answer worth acting on: the
+  row may not survive, and the `fromEnd`/`toEnd` strings a live reservation
+  recorded in its path may name openings that no longer exist afterwards. It is
+  also what makes end labels safe to treat as disposable
+  (`docs/track-graph-compilation.md` D8) — nothing can be holding a stale one
+  when they are regenerated.
 
 Note the interaction with the existing rule that edge writes stay permitted
 during Safe-Stop for recovery (`docs/topology.md`): still true, but a

@@ -22,6 +22,7 @@ import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter'
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
 import {
   BlockRecord,
+  CompiledGraphRecord,
   GridTileRecord,
   ILayoutRepository,
   LocoRecord,
@@ -88,6 +89,7 @@ function makeInMemoryRepo(): InMemoryLayoutRepository {
   let sensors: SensorRecord[] = [];
   let locos: LocoRecord[] = [];
   const edgeRows = new Map<string, RawEdgeRow>();
+  const compiledGraphs = new Map<string, CompiledGraphRecord>();
   const reservations = new Map<string, StoredReservation>();
 
   function rowsForLayout(layoutId: string): RawEdgeRow[] {
@@ -101,7 +103,15 @@ function makeInMemoryRepo(): InMemoryLayoutRepository {
 
   return {
     listLayouts: vi.fn().mockResolvedValue([]),
-    getLayout: vi.fn().mockResolvedValue(null),
+    // Resolves for the scenario layout and nothing else. It used to answer
+    // `null` unconditionally, which was harmless while nothing looked — but
+    // `CompileService` checks the layout exists before it reads a drawing, so a
+    // blanket `null` turned every scenario compile into a 404.
+    getLayout: vi
+      .fn()
+      .mockImplementation(async (id: string) =>
+        id === LAYOUT_ID ? { id: LAYOUT_ID, name: 'Scenario Layout', createdAt: new Date() } : null,
+      ),
     createLayout: vi.fn(),
     deleteLayout: vi.fn(),
 
@@ -201,6 +211,44 @@ function makeInMemoryRepo(): InMemoryLayoutRepository {
     deleteBlockEdge: vi.fn().mockImplementation(async (id: string) => {
       edgeRows.delete(id);
     }),
+
+    // ── Compiled graph provenance (#103) ────────────────────────────────────
+
+    getCompiledGraph: vi.fn().mockImplementation(async (layoutId: string) =>
+      compiledGraphs.get(layoutId) ?? null,
+    ),
+    replaceBlockEdges: vi
+      .fn()
+      .mockImplementation(
+        async (
+          layoutId: string,
+          edges: readonly Omit<BlockEdge, 'id' | 'layoutId'>[],
+          fingerprint: string,
+          compiledAt: Date,
+        ) => {
+          // All-or-nothing in the real repository (one transaction). Nothing
+          // here can fail part way, so the in-memory version just does both
+          // halves — but keeping the *order* honest matters: the old rows go
+          // before the new ones arrive.
+          for (const [id, row] of [...edgeRows]) {
+            if (row.layoutId === layoutId) edgeRows.delete(id);
+          }
+          for (const edge of edges) {
+            const id = randomUUID();
+            edgeRows.set(id, {
+              id,
+              layoutId,
+              fromBlockId: edge.fromBlockId,
+              fromEnd: edge.fromEnd,
+              toBlockId: edge.toBlockId,
+              toEnd: edge.toEnd,
+              pointConditions: JSON.stringify(edge.pointConditions),
+            });
+          }
+          compiledGraphs.set(layoutId, { layoutId, drawingFingerprint: fingerprint, compiledAt });
+          return rowsForLayout(layoutId).map(parseBlockEdgeRow);
+        },
+      ),
 
     // ── Route Reservations (see docs/route-locking.md) ──────────────────────
 

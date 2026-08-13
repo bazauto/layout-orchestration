@@ -102,7 +102,12 @@ export class RecordNotFoundError extends Error {
  */
 export class LockedByRouteError extends Error {
   constructor(
-    readonly kind: 'edge' | 'block' | 'point',
+    /**
+     * `'graph'` is the whole edge set, not one row (#103, D-E). A compiled
+     * apply replaces everything and regenerates every end label, so there is no
+     * single target to name and no per-target guard that composes into one.
+     */
+    readonly kind: 'edge' | 'block' | 'point' | 'graph',
     readonly targetId: string,
     readonly routeId: string,
     targetLabelText?: string,
@@ -197,6 +202,111 @@ export class TopologyService {
     });
     await this.onTopologyChanged();
     return created;
+  }
+
+  /**
+   * Replaces this layout's whole edge set with a compiled graph (#103, D1/D3).
+   *
+   * The only write path for a compiled graph, for exactly the reason
+   * `createEdge` is the only one for an authored edge: a second writer is what
+   * "one process writes `block_edges`" forbids, and the cheapest way to keep
+   * that true is to not build one. `CompileService` compiles and reviews; the
+   * write lives here, beside the validation, the route-lock guard and
+   * `onTopologyChanged`.
+   *
+   * **The order below is load-bearing and is the whole of D9: refuse first,
+   * write second, never write-then-discover.** `reloadTopology()` applies
+   * Safe-Stop when it loads a graph with a fatal violation. So if this method
+   * could write rows and *then* have them rejected on reload, an authoring
+   * action would halt a running railway — the one thing a compile must never be
+   * able to do. Every refusal therefore happens before `replaceBlockEdges` is
+   * called at all, and the repository's transaction covers what validation
+   * cannot see.
+   *
+   * A recompile is a **replace, not a merge** (D3). On a layout with
+   * hand-authored edges the compile does not reproduce, those edges are gone.
+   * That is the design: a mixed graph reintroduces the two-representations
+   * problem at a new seam, and the diff review is where the operator sees it
+   * coming.
+   */
+  async replaceGraph(
+    layoutId: LayoutId,
+    edges: readonly EdgeCreateData[],
+    fingerprint: string,
+  ): Promise<BlockEdge[]> {
+    // 1. Nothing may be held. Not per-edge (D-E): every row is about to be
+    //    deleted and rewritten with regenerated labels, so "is *this* edge
+    //    held" has no answer worth acting on — the row may not survive, and the
+    //    label a live route recorded may not exist afterwards.
+    const holder = this.lockView.findAnyHeldRoute(layoutId);
+    if (holder) {
+      this.log.warn('[TopologyService] Rejected compiled graph — a route holds this layout', {
+        layoutId,
+        layoutName: this.names.get().layouts.get(layoutId),
+        routeId: holder,
+      });
+      throw new LockedByRouteError(
+        'graph',
+        layoutId,
+        holder,
+        layoutLabel(layoutId, this.names.get()),
+      );
+    }
+
+    // 2. Admission control on the whole candidate set, which is where it always
+    //    belonged: a cap on how much graph exists is a statement about the
+    //    graph, not about the one row that happened to arrive last.
+    if (edges.length > MAX_EDGES_PER_LAYOUT) {
+      this.log.warn('[TopologyService] Rejected compiled graph — over the edge cap', {
+        layoutId,
+        layoutName: this.names.get().layouts.get(layoutId),
+        limit: MAX_EDGES_PER_LAYOUT,
+        current: edges.length,
+      });
+      throw new EdgeLimitExceededError(
+        layoutId,
+        MAX_EDGES_PER_LAYOUT,
+        edges.length,
+        layoutLabel(layoutId, this.names.get()),
+      );
+    }
+
+    // 3. Validate the *whole proposed graph*, not each row against the live one.
+    //    `validateTopology` is the same full pass the load path runs, so a graph
+    //    that passes here is a graph `reloadTopology` will accept — which is
+    //    what makes step 4 safe to perform. Synthetic ids: the rows have none
+    //    yet, and `duplicate-edge-id` needs something to compare.
+    const context = await this.buildContext(layoutId);
+    const candidates: BlockEdge[] = edges.map((edge, i) => ({
+      id: `__compiled__${i}`,
+      layoutId,
+      ...edge,
+    }));
+
+    const violations = validateTopology(layoutId, candidates, context);
+    if (violations.length > 0) {
+      this.log.warn('[TopologyService] Rejected compiled graph', {
+        layoutId,
+        layoutName: this.names.get().layouts.get(layoutId),
+        edgeCount: candidates.length,
+        violations,
+      });
+      throw new TopologyRejectedError(violations, describeViolations(violations, this.names.get()));
+    }
+
+    // 4. One transaction: the old edges out, the new ones in, the fingerprint
+    //    stamped. Nothing partial can survive a failure here.
+    const written = await this.repo.replaceBlockEdges(layoutId, edges, fingerprint, new Date());
+
+    this.log.info('[TopologyService] Compiled graph applied', {
+      layoutId,
+      layoutName: this.names.get().layouts.get(layoutId),
+      edgeCount: written.length,
+      fingerprint,
+    });
+
+    await this.onTopologyChanged();
+    return written;
   }
 
   async updateEdge(layoutId: LayoutId, id: BlockEdgeId, patch: EdgeUpdateData): Promise<BlockEdge> {

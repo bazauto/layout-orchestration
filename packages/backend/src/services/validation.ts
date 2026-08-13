@@ -182,6 +182,20 @@ export const edgeUpdateSchema = edgeCreateSchema.partial().strict();
 
 export type EdgeUpdateInput = z.infer<typeof edgeUpdateSchema>;
 
+/**
+ * Write schema for `POST .../topology/compile/apply` (#103, D10).
+ *
+ * **A fingerprint and nothing else.** There is deliberately no `edges` field:
+ * the apply recompiles from the drawing, and a body that could carry rows would
+ * be a second authoring path wearing the compiler's name — the exact bypass D1
+ * and D3 are built to make impossible. `.strict()` means a body that tries is a
+ * 400 rather than a silently ignored field, which matters more here than
+ * anywhere else in this file.
+ */
+export const compileApplySchema = z.object({ fingerprint: z.string().min(1) }).strict();
+
+export type CompileApplyInput = z.infer<typeof compileApplySchema>;
+
 // ─── Blocks ─────────────────────────────────────────────────────────────
 
 /**

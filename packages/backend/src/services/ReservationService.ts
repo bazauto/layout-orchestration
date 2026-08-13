@@ -509,6 +509,20 @@ export class ReservationService implements IRouteLockView {
     return this.findHolder(layoutId, 'edge', edgeId);
   }
 
+  /**
+   * Any route holding anything in this layout (#103, D-E).
+   *
+   * Deliberately ignores `kind` and `targetId`: the caller is about to replace
+   * the entire edge set, so "which target" is not a question it can ask. An
+   * unreleased hold of any kind is a reason to refuse.
+   */
+  findAnyHeldRoute(layoutId: LayoutId): RouteId | null {
+    const route = this.stateManager
+      .listRoutes(['active', 'suspended'])
+      .find((r) => r.layoutId === layoutId && r.holds.some((h) => !h.released));
+    return route?.id ?? null;
+  }
+
   private findHolder(layoutId: LayoutId, kind: RouteHold['kind'], targetId: string): RouteId | null {
     const route = this.stateManager
       .listRoutes(['active', 'suspended'])
