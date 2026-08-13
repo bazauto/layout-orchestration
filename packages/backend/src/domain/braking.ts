@@ -24,7 +24,6 @@
  */
 
 import {
-  BlockEdgeId,
   BlockId,
   BrakingFault,
   BrakingFaultView,
@@ -40,7 +39,7 @@ import {
   RouteReservation,
 } from './types';
 import { TrackGraph } from './graph';
-import { edgeLabel, locoLabel } from './naming';
+import { blockLabel, edgeLabel, locoLabel } from './naming';
 
 // ─── Constants (B1, B3, B5) ────────────────────────────────────────────────────
 
@@ -233,18 +232,32 @@ function buildSteps(fromSpeedStep: number, direction: Direction): BrakingStep[] 
 // ─── Route-aware distance (B4, B5) ─────────────────────────────────────────────
 
 /**
- * Sums `BlockEdge.lengthMm` over the route's edges from
- * `confirmedIndex + 1` up to `targetIndex` inclusive — the measured track
- * between the exit end of the train's last confirmed block and the entry
- * boundary of `targetIndex` (B4). Blocks carry no length; edges carry all
- * distance, so there is no double-count and the train is credited with
- * nothing of the confirmed block's own length.
+ * Sums `blocks.length_mm` over the route's **intermediate** blocks — path
+ * indices `confirmedIndex + 1` through `targetIndex - 1` inclusive — which is
+ * the track between the exit boundary of the train's last confirmed block and
+ * the entry boundary of `targetIndex` (B4).
  *
- * Refuses `unmeasured-track` on the first NULL-length edge found in that
- * stretch, naming it. Deliberately does **not** fall back to
- * `DEFAULT_EDGE_LENGTH_MM` (the pathfinder's cost-only guess, P2 in
- * docs/pathfinding.md) — guessing a cost to steer a search is fine; guessing
- * a stopping distance is a collision if the guess is short.
+ * The target block contributes nothing: B4's target is its *entry* boundary,
+ * not its far end. Nor does the confirmed block, because the train may be
+ * anywhere within it.
+ *
+ * **Joints contribute zero** (D5, `docs/track-graph-compilation.md`). The
+ * undetected trackwork between two detected sections is not modelled, which
+ * underestimates the available distance and therefore brakes early — the safe
+ * direction.
+ *
+ * **Accepted consequence: an adjacent target yields zero.** When
+ * `targetIndex === confirmedIndex + 1` there are no intermediate blocks, the
+ * distance is `0`, and `planBrakingSchedule` refuses `insufficient-distance`.
+ * That is correct under block-level occupancy — the train may already be hard
+ * against the exit of its confirmed block — and it is the fail-safe direction,
+ * but it is a real behaviour change from the edge-length model (#105).
+ *
+ * Refuses `unmeasured-track` on the first block with no measured length,
+ * naming it. Deliberately does **not** fall back to `DEFAULT_BLOCK_LENGTH_MM`
+ * (the pathfinder's cost-only guess, P2 in docs/pathfinding.md) — guessing a
+ * cost to steer a search is fine; guessing a stopping distance is a collision
+ * if the guess is short.
  */
 export function remainingRouteDistanceMm(
   reservation: RouteReservation,
@@ -259,18 +272,13 @@ export function remainingRouteDistanceMm(
   }
 
   let distanceMm = 0;
-  for (let i = reservation.confirmedIndex + 1; i <= targetIndex; i++) {
-    // `edgeId` is null only for path index 0 (the route's starting block),
-    // which this loop never reaches — `confirmedIndex + 1` is always >= 1.
-    const edgeId = reservation.path[i].edgeId as BlockEdgeId;
-    const edge = graph.edges.get(edgeId);
-    if (!edge) {
-      return { ok: false, reason: { kind: 'unknown-edge', edgeId } };
+  for (let i = reservation.confirmedIndex + 1; i < targetIndex; i++) {
+    const blockId = reservation.path[i].blockId;
+    const lengthMm = graph.blockLengthsMm.get(blockId);
+    if (lengthMm === undefined) {
+      return { ok: false, reason: { kind: 'unmeasured-track', blockId } };
     }
-    if (edge.lengthMm === null) {
-      return { ok: false, reason: { kind: 'unmeasured-track', edgeId } };
-    }
-    distanceMm += edge.lengthMm;
+    distanceMm += lengthMm;
   }
 
   return { ok: true, distanceMm };
@@ -347,7 +355,7 @@ export function describeBrakingRefusal(reason: BrakingRefusal, book?: NameBook):
     case 'insufficient-distance':
       return `required stopping distance ${reason.requiredMm}mm exceeds available distance ${reason.availableMm}mm`;
     case 'unmeasured-track':
-      return `edge ${edgeLabel(reason.edgeId, book)} has no measured length — unsafe for automated braking`;
+      return `block ${blockLabel(reason.blockId, book)} has no measured length — unsafe for automated braking`;
     case 'unknown-edge':
       return `edge ${edgeLabel(reason.edgeId, book)} does not exist in the current track graph`;
     case 'target-behind-train':

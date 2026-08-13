@@ -27,6 +27,17 @@ export interface TrackGraph {
   readonly edges: ReadonlyMap<BlockEdgeId, BlockEdge>;
   readonly outgoing: ReadonlyMap<BlockId, readonly BlockEdge[]>;
   readonly incoming: ReadonlyMap<BlockId, readonly BlockEdge[]>;
+  /**
+   * Measured length per block, in mm. Distance is on the block, not the edge
+   * (D4, `docs/track-graph-compilation.md`).
+   *
+   * **An absent key means unmeasured, and the two consumers treat that
+   * differently on purpose**: the pathfinder costs it as
+   * `DEFAULT_BLOCK_LENGTH_MM` and searches on, because guessing a cost only
+   * picks a worse route; the braking model refuses outright, because guessing a
+   * stopping distance is a collision (`docs/pathfinding.md` P2).
+   */
+  readonly blockLengthsMm: ReadonlyMap<BlockId, number>;
 }
 
 /**
@@ -38,8 +49,16 @@ export interface TrackGraph {
  * `validateTopology` first and only call this once no fatal violation
  * remains, so in practice this constructor-time check should never fire
  * outside of tests exercising it directly.
+ *
+ * `blockLengthsMm` defaults to empty, which reads as "nothing is measured".
+ * That is the fail-safe default — braking refuses on an absent entry — which is
+ * what makes an optional parameter acceptable here at all.
  */
-export function buildTrackGraph(layoutId: LayoutId, edges: readonly BlockEdge[]): TrackGraph {
+export function buildTrackGraph(
+  layoutId: LayoutId,
+  edges: readonly BlockEdge[],
+  blockLengthsMm: ReadonlyMap<BlockId, number> = new Map(),
+): TrackGraph {
   const edgeMap = new Map<BlockEdgeId, BlockEdge>();
   const outgoing = new Map<BlockId, BlockEdge[]>();
   const incoming = new Map<BlockId, BlockEdge[]>();
@@ -76,7 +95,7 @@ export function buildTrackGraph(layoutId: LayoutId, edges: readonly BlockEdge[])
     throw new TopologyInvalidError(violations);
   }
 
-  return { layoutId, edges: edgeMap, outgoing, incoming };
+  return { layoutId, edges: edgeMap, outgoing, incoming, blockLengthsMm };
 }
 
 /** Edges leaving `blockId`, in the order they were provided to `buildTrackGraph`. */

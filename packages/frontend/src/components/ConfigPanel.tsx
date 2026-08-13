@@ -83,9 +83,24 @@ type SaveResult = { ok: boolean; message?: string };
 function EditableCell({
   value,
   onSave,
+  /**
+   * Shown in place of an empty value. Only meaningful with `allowEmpty` — a
+   * blank cell reads as an oversight, and for a block length the difference
+   * between "unmeasured" and "nobody filled this in" decides whether an
+   * automated braked run is permitted (docs/braking.md B4).
+   */
+  placeholder,
+  /**
+   * Whether clearing the field is a save rather than a cancel. Off by default:
+   * for a name, an empty string is a mistake and backing out is the kind
+   * reading. For an optional measurement it is how you retract one.
+   */
+  allowEmpty = false,
 }: {
   value: string;
   onSave: (v: string) => Promise<SaveResult>;
+  placeholder?: string;
+  allowEmpty?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -94,7 +109,7 @@ function EditableCell({
 
   const save = async () => {
     const trimmed = draft.trim();
-    if (!trimmed || trimmed === value) {
+    if ((!trimmed && !allowEmpty) || trimmed === value) {
       setEditing(false);
       return;
     }
@@ -135,7 +150,7 @@ function EditableCell({
   }
   return (
     <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-      {value}
+      {value === '' && placeholder ? <em style={s.placeholderText}>{placeholder}</em> : value}
       <button onClick={() => { setDraft(value); setEditing(true); setError(null); }} style={s.editBtn} title="Edit">✎</button>
     </span>
   );
@@ -145,12 +160,22 @@ function EditableCell({
 
 function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
   const [name, setName] = useState('');
+  const [length, setLength] = useState('');
   const [feedback, setFeedback] = useState<{ text: string; ok: boolean } | null>(null);
   const submit = async () => {
     if (!name.trim()) return;
-    const result = await ops.createBlock(name.trim());
+    // Blank stays blank: an unmeasured block refuses a braked run, and
+    // inventing a number here would be the one guess the braking model must
+    // never make (docs/braking.md B4).
+    const trimmed = length.trim();
+    const parsed = trimmed === '' ? undefined : Number(trimmed);
+    const result = await ops.createBlock(
+      name.trim(),
+      parsed === undefined || Number.isNaN(parsed) ? undefined : parsed,
+    );
     if (result.ok) {
       setName('');
+      setLength('');
       setFeedback(null);
     } else {
       // Leave the operator's input in place — a failed create must not look like it saved.
@@ -173,6 +198,11 @@ function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
         <input value={name} onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && submit()}
           placeholder="Block name" style={s.input} />
+        <input value={length} onChange={(e) => setLength(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
+          placeholder="Length (mm)" type="number" min={1}
+          aria-label="Block length in millimetres"
+          style={{ ...s.input, flex: '0 0 130px' }} />
         <button onClick={submit} style={s.addBtn}>Add</button>
       </div>
       {feedback && (
@@ -180,13 +210,33 @@ function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
       )}
       <table style={s.table}>
         <thead><tr>
-          <th style={s.th}>Name</th><th style={s.th}>ID</th><th style={s.th} />
+          <th style={s.th}>Name</th><th style={s.th}>Length (mm)</th><th style={s.th}>ID</th><th style={s.th} />
         </tr></thead>
         <tbody>
           {blocks.map((b) => (
             <tr key={b.id}>
               <td style={s.td}>
-                <EditableCell value={b.name} onSave={(v) => ops.updateBlock(b.id, v)} />
+                <EditableCell value={b.name} onSave={(v) => ops.updateBlock(b.id, { name: v })} />
+              </td>
+              <td style={s.td}>
+                {/*
+                  Rendered as the word "unmeasured", never a blank cell: blank
+                  reads as an oversight, and the distinction decides whether an
+                  automated braked run is allowed at all (docs/braking.md B4).
+                  An empty edit clears it back to unmeasured.
+                */}
+                <EditableCell
+                  value={b.lengthMm === null ? '' : String(b.lengthMm)}
+                  placeholder="unmeasured"
+                  allowEmpty
+                  onSave={(v) => {
+                    const trimmed = v.trim();
+                    const parsed = trimmed === '' ? null : Number(trimmed);
+                    return ops.updateBlock(b.id, {
+                      lengthMm: parsed !== null && Number.isNaN(parsed) ? null : parsed,
+                    });
+                  }}
+                />
               </td>
               <td style={s.tdMono}>{b.id.slice(0, 8)}…</td>
               <td style={s.td}><button onClick={() => handleDelete(b.id)} style={s.delBtn}>×</button></td>
@@ -520,5 +570,9 @@ const s = {
   delBtn:       { background: 'none', border: '1px solid #45475a', borderRadius: 3, color: '#f38ba8', cursor: 'pointer', padding: '1px 7px', fontSize: 13 } as React.CSSProperties,
   empty:        { color: '#6c7086', fontSize: 13, padding: 16 } as React.CSSProperties,
   error:        { color: '#f38ba8', fontSize: 12, marginLeft: 12 } as React.CSSProperties,
+  // Italic and dimmed, but still a **word** — the state is "unmeasured", and a
+  // greyed blank would read as a rendering gap rather than a fact (#81's rule
+  // that no state is carried by styling alone).
+  placeholderText: { color: '#7f849c', fontStyle: 'italic' } as React.CSSProperties,
 } as const;
 

@@ -7,12 +7,11 @@ interface EdgeBody {
   toBlockId: string;
   toEnd: string;
   pointConditions: Array<{ pointId: string; requiredPosition: string }>;
-  lengthMm: number | null;
 }
 
 const BLOCKS = [
-  { id: 'block-a', layoutId: 'layout-1', name: 'Block A' },
-  { id: 'block-b', layoutId: 'layout-1', name: 'Block B' },
+  { id: 'block-a', layoutId: 'layout-1', name: 'Block A', lengthMm: null },
+  { id: 'block-b', layoutId: 'layout-1', name: 'Block B', lengthMm: 1200 },
 ];
 
 const POINTS = [{ id: 'point-1', layoutId: 'layout-1', name: 'Point 1', dccAddress: 1, blockId: null }];
@@ -121,7 +120,6 @@ test('authors a two-block edge with one point condition end to end', async ({ pa
   await page.getByPlaceholder('From end').fill('North');
   await page.getByLabel('To block').selectOption('block-b');
   await page.getByPlaceholder('To end').fill('South');
-  await page.getByPlaceholder('Length (mm)').fill('250');
 
   await page.getByText('+ point condition').click();
   await page.getByLabel('Point').selectOption('point-1');
@@ -136,7 +134,6 @@ test('authors a two-block edge with one point condition end to end', async ({ pa
     toBlockId: 'block-b',
     toEnd: 'south',
     pointConditions: [{ pointId: 'point-1', requiredPosition: 'reverse' }],
-    lengthMm: 250,
   });
 
   await expect(page.getByText('Block A:north → Block B:south')).toBeVisible();
@@ -231,7 +228,6 @@ test('a stubbed invalid topology renders the violation banner', async ({ page })
         toBlockId: 'block-ghost',
         toEnd: 'west',
         pointConditions: [],
-        lengthMm: null,
       },
     ],
     topologyOverride: {

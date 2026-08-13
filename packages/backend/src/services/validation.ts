@@ -97,7 +97,6 @@ export const blockEdgeRowSchema = z.object({
   toBlockId: z.string().min(1),
   toEnd: blockEndLabelSchema,
   pointConditions: z.string(),
-  lengthMm: z.number().int().positive().nullable(),
 });
 
 /** Thrown by `parseBlockEdgeRow` when a `block_edges` row fails validation. */
@@ -149,7 +148,6 @@ export function parseBlockEdgeRow(row: unknown): BlockEdge {
     toBlockId: parsed.data.toBlockId,
     toEnd: parsed.data.toEnd,
     pointConditions,
-    lengthMm: parsed.data.lengthMm,
   };
 }
 
@@ -174,7 +172,6 @@ export const edgeCreateSchema = z
     toBlockId: z.string().min(1),
     toEnd: z.string().trim().toLowerCase().pipe(blockEndLabelSchema),
     pointConditions: pointConditionsSchema.default([]),
-    lengthMm: z.number().int().positive().nullable().default(null),
   })
   .strict();
 
@@ -197,6 +194,12 @@ export type EdgeUpdateInput = z.infer<typeof edgeUpdateSchema>;
 export const blockCreateSchema = z
   .object({
     name: z.string().min(1),
+    /**
+     * Measured length in mm, or `null` for unmeasured. Not defaulted to a
+     * number: unmeasured must refuse a braked run rather than brake on a figure
+     * nobody took a tape to (`docs/braking.md` B4).
+     */
+    lengthMm: z.number().int().positive().nullable().default(null),
   })
   .strict();
 

@@ -174,7 +174,6 @@ export interface EdgeWriteInput {
   toBlockId: string;
   toEnd: string;
   pointConditions?: PointCondition[];
-  lengthMm?: number | null;
 }
 
 /** Response of `DELETE /blocks/:id` — no longer a bare 204, see docs/mqtt-contract.md-adjacent PR A notes. */
@@ -245,21 +244,33 @@ export function useLayoutConfig(layoutId: string | null) {
   // issue #22. Only a successful mutation triggers `refresh()`; a failed one
   // must leave the form and the table exactly as they were.
 
-  const createBlock = async (name: string): Promise<MutationResult<BlockRecord>> => {
+  /**
+   * `lengthMm` is **omitted** when not supplied rather than sent as `null`, the
+   * same call `EdgeProposalsPanel` makes about a field geometry cannot fill:
+   * the schema defaults it to `null` anyway, and omitting it is the honest
+   * statement that nobody measured, not an assertion that it is unmeasured.
+   */
+  const createBlock = async (
+    name: string,
+    lengthMm?: number | null,
+  ): Promise<MutationResult<BlockRecord>> => {
     const result = await mutate<BlockRecord>(`/api/layouts/${layoutId}/blocks`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(lengthMm === undefined ? { name } : { name, lengthMm }),
     });
     if (result.ok) await refresh();
     return result;
   };
 
-  const updateBlock = async (id: string, name: string): Promise<MutationResult<BlockRecord>> => {
+  const updateBlock = async (
+    id: string,
+    patch: { name?: string; lengthMm?: number | null },
+  ): Promise<MutationResult<BlockRecord>> => {
     const result = await mutate<BlockRecord>(`/api/layouts/${layoutId}/blocks/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(patch),
     });
     if (result.ok) await refresh();
     return result;

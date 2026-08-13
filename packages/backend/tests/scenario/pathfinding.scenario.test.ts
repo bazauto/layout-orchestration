@@ -7,18 +7,22 @@
  * and a block going unknown mid-route — plus the regression guard for the
  * unlatched route Safe-Stop this PR fixes.
  *
- * Fixture layout — two roads from b1 to b3 through one point:
+ * Fixture layout — two roads from b1 to b3 through one point. Length is on the
+ * **block** (D4); an edge is a joint and carries none:
  *
- *              e1 (p1=normal, 100mm)        e2 (100mm)
- *   b1 ──────────────────────────────> b2 ─────────────> b3
- *    │                                                    ^
- *    │  e3 (p1=reverse, 500mm)              e4 (500mm)    │
- *    └───────────────────────────────> b4 ────────────────┘
+ *                 e1 (p1=normal)      e2
+ *   b1 ─────────────────────────> b2 ─────> b3
+ *  (100mm)                     (100mm)     (100mm)
+ *    │                                       ^
+ *    │  e3 (p1=reverse)            e4        │
+ *    └─────────────────────────> b4 ─────────┘
+ *                             (500mm)
  *
- * The short road is via b2, so an unobstructed search picks it and throws p1
- * to `normal`. Blocking b2 forces the long road and `reverse` — which is the
- * whole point of a pathfinder that does not care what position p1 is in when
- * it starts (P3).
+ * Both roads start in b1 and end in b3, so what discriminates them is b2
+ * against b4. The short road is via b2, so an unobstructed search picks it and
+ * throws p1 to `normal`. Blocking b2 forces the long road and `reverse` —
+ * which is the whole point of a pathfinder that does not care what position p1
+ * is in when it starts (P3).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -27,11 +31,14 @@ import { createScenarioHarness, LAYOUT_ID } from './harness';
 const LOCO_3 = { id: 'loco-3', layoutId: LAYOUT_ID, name: 'Loco 3', address: 3, type: 'diesel', maxSpeed: 126, brakingFactor: 0.5 };
 const LOCO_7 = { id: 'loco-7', layoutId: LAYOUT_ID, name: 'Loco 7', address: 7, type: 'diesel', maxSpeed: 126, brakingFactor: 0.5 };
 
+// b2 is the short road and b4 the long way round, so the search should prefer
+// b1 → b2 → b3. Length is on the block now (D4): both routes end in b3 and
+// start in b1, so it is b2 against b4 that discriminates them.
 const BLOCKS = [
-  { id: 'b1', layoutId: LAYOUT_ID, name: 'Block 1' },
-  { id: 'b2', layoutId: LAYOUT_ID, name: 'Block 2' },
-  { id: 'b3', layoutId: LAYOUT_ID, name: 'Block 3' },
-  { id: 'b4', layoutId: LAYOUT_ID, name: 'Block 4' },
+  { id: 'b1', layoutId: LAYOUT_ID, name: 'Block 1', lengthMm: 100 },
+  { id: 'b2', layoutId: LAYOUT_ID, name: 'Block 2', lengthMm: 100 },
+  { id: 'b3', layoutId: LAYOUT_ID, name: 'Block 3', lengthMm: 100 },
+  { id: 'b4', layoutId: LAYOUT_ID, name: 'Block 4', lengthMm: 500 },
 ];
 const POINTS = [{ id: 'p1', layoutId: LAYOUT_ID, name: 'Point 1', dccAddress: 10, blockId: 'b1' }];
 const SENSORS = ['b1', 'b2', 'b3', 'b4'].map((blockId, i) => ({
@@ -57,7 +64,6 @@ async function seedAndStart(h: ReturnType<typeof createScenarioHarness>) {
     toBlockId: 'b2',
     toEnd: 'west',
     pointConditions: [{ pointId: 'p1', requiredPosition: 'normal' }],
-    lengthMm: 100,
   });
   await h.repo.createBlockEdge({
     layoutId: LAYOUT_ID,
@@ -66,7 +72,6 @@ async function seedAndStart(h: ReturnType<typeof createScenarioHarness>) {
     toBlockId: 'b3',
     toEnd: 'west',
     pointConditions: [],
-    lengthMm: 100,
   });
   await h.repo.createBlockEdge({
     layoutId: LAYOUT_ID,
@@ -75,7 +80,6 @@ async function seedAndStart(h: ReturnType<typeof createScenarioHarness>) {
     toBlockId: 'b4',
     toEnd: 'north',
     pointConditions: [{ pointId: 'p1', requiredPosition: 'reverse' }],
-    lengthMm: 500,
   });
   await h.repo.createBlockEdge({
     layoutId: LAYOUT_ID,
@@ -84,7 +88,6 @@ async function seedAndStart(h: ReturnType<typeof createScenarioHarness>) {
     toBlockId: 'b3',
     toEnd: 'south',
     pointConditions: [],
-    lengthMm: 500,
   });
 
   await h.start();
@@ -122,8 +125,8 @@ describe('scenario: pathfinding and setting the road', () => {
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
 
-    // Shortest by length (200mm via b2, not 1000mm via b4) — not by hops,
-    // which are equal.
+    // Shortest by length (b2 at 100mm, not b4 at 500mm) — not by hops, which
+    // are equal.
     expect(await blockIdsOnPath(h, grant.reservation.id)).toEqual(['b1', 'b2', 'b3']);
 
     // Locks committed across the whole road.

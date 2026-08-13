@@ -52,7 +52,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 const EMPTY_TOPOLOGY: TopologyStatus = { valid: true, violations: [], edgeCount: 0 };
 
 function block(overrides: Partial<BlockRecord> = {}): BlockRecord {
-  return { id: 'block-1', layoutId: 'layout-1', name: 'Up Platform', ...overrides };
+  return { id: 'block-1', layoutId: 'layout-1', name: 'Up Platform', lengthMm: null, ...overrides };
 }
 
 function loco(overrides: Partial<LocoRecord> = {}): LocoRecord {
@@ -222,7 +222,7 @@ describe('useLayoutConfig', () => {
       queueRefreshResponses({ blocks: [renamed] });
 
       await act(async () => {
-        await result.current.updateBlock('block-1', 'Renamed');
+        await result.current.updateBlock('block-1', { name: 'Renamed' });
       });
 
       expect(fetchMock).toHaveBeenNthCalledWith(

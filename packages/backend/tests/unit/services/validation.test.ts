@@ -5,6 +5,8 @@ import {
   BlockEdgeRowInvalidError,
   edgeCreateSchema,
   edgeUpdateSchema,
+  blockCreateSchema,
+  blockUpdateSchema,
   parseUserRow,
   UserRowInvalidError,
   parseSessionRow,
@@ -62,7 +64,6 @@ const validRow = {
   toBlockId: 'b2',
   toEnd: 'south',
   pointConditions: '[]',
-  lengthMm: 100,
 };
 
 describe('parseBlockEdgeRow', () => {
@@ -75,12 +76,7 @@ describe('parseBlockEdgeRow', () => {
       toBlockId: 'b2',
       toEnd: 'south',
       pointConditions: [],
-      lengthMm: 100,
     });
-  });
-
-  it('parses a NULL length_mm to null', () => {
-    expect(parseBlockEdgeRow({ ...validRow, lengthMm: null }).lengthMm).toBeNull();
   });
 
   it('throws BlockEdgeRowInvalidError for an un-normalised from_end like "North"', () => {
@@ -110,10 +106,9 @@ describe('edgeCreateSchema', () => {
     toEnd: 'south',
   };
 
-  it('accepts a minimal valid input, defaulting pointConditions to [] and lengthMm to null', () => {
+  it('accepts a minimal valid input, defaulting pointConditions to []', () => {
     const result = edgeCreateSchema.parse(validInput);
     expect(result.pointConditions).toEqual([]);
-    expect(result.lengthMm).toBeNull();
   });
 
   it('trims and lower-cases fromEnd/toEnd', () => {
@@ -130,14 +125,42 @@ describe('edgeCreateSchema', () => {
     expect(() => edgeCreateSchema.parse({ ...validInput, id: 'sneaky' })).toThrow();
   });
 
-  it('rejects a non-positive lengthMm', () => {
-    expect(() => edgeCreateSchema.parse({ ...validInput, lengthMm: 0 })).toThrow();
+  it('rejects lengthMm, which now belongs to the block (D4)', () => {
+    // `.strict()` doing its job: a client still sending the old field gets a
+    // 400 naming it, rather than having a measurement silently dropped on the
+    // floor and believing the edge is measured.
+    expect(() => edgeCreateSchema.parse({ ...validInput, lengthMm: 500 })).toThrow();
+  });
+});
+
+describe('blockCreateSchema', () => {
+  it('defaults lengthMm to null, because unmeasured is not zero', () => {
+    // The distinction the braking model turns on: `null` refuses a braked run,
+    // a number is believed. A default of 0 would be a measurement nobody took.
+    expect(blockCreateSchema.parse({ name: 'Down Platform' })).toEqual({
+      name: 'Down Platform',
+      lengthMm: null,
+    });
+  });
+
+  it('accepts a measured length and rejects a non-positive one', () => {
+    expect(blockCreateSchema.parse({ name: 'b', lengthMm: 1200 }).lengthMm).toBe(1200);
+    expect(() => blockCreateSchema.parse({ name: 'b', lengthMm: 0 })).toThrow();
+    expect(() => blockCreateSchema.parse({ name: 'b', lengthMm: -5 })).toThrow();
+    expect(() => blockCreateSchema.parse({ name: 'b', lengthMm: 1.5 })).toThrow();
+  });
+});
+
+describe('blockUpdateSchema', () => {
+  it('can clear a length back to unmeasured, and can leave it alone', () => {
+    expect(blockUpdateSchema.parse({ lengthMm: null })).toEqual({ lengthMm: null });
+    expect(blockUpdateSchema.parse({ name: 'renamed' })).toEqual({ name: 'renamed' });
   });
 });
 
 describe('edgeUpdateSchema', () => {
   it('accepts a partial patch with a single field', () => {
-    expect(edgeUpdateSchema.parse({ lengthMm: 500 })).toEqual({ lengthMm: 500 });
+    expect(edgeUpdateSchema.parse({ toEnd: 'east' })).toEqual({ toEnd: 'east' });
   });
 
   it('accepts an empty patch', () => {

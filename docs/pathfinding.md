@@ -39,12 +39,23 @@ subject to P4.
 `domain/graph.ts` already carried `traversableEdgesFrom(..., { arrivedAtEnd })`
 for exactly this shape; this is that idea made into the search's key.
 
-## P2 — Cost is edge length, with a constant for unmeasured track
+## P2 — Cost is block length, with a constant for unmeasured track
 
-Dijkstra over `BlockEdge.lengthMm`. `lengthMm` is nullable and a lot of a
-layout gets authored without it, so a NULL costs `DEFAULT_EDGE_LENGTH_MM`
-(1,000mm) rather than being refused, treated as free, or treated as
-impassable.
+Dijkstra over `blocks.length_mm`. Taking an edge costs the block it lands in,
+charged once as the block is entered — a joint has no length (D5,
+`docs/track-graph-compilation.md`), and distance lives on the block rather than
+the edge because the edge convention did not decompose (#105,
+`docs/braking.md` B4).
+
+One consequence worth stating, because it changes what a route comparison
+means: every route to a given destination pays for that destination, so what
+discriminates two routes is the **intermediate** track. A detour therefore wins
+only when the blocks it crosses are shorter than the ones it avoids — which can
+mean taking *more* hops.
+
+`length_mm` is nullable and a lot of a layout gets authored without it, so an
+absent length costs `DEFAULT_BLOCK_LENGTH_MM` (1,000mm) rather than being
+refused, treated as free, or treated as impassable.
 
 The two rejected options are rejected for concrete reasons: **zero** makes
 unmeasured track free, so the search would systematically prefer the parts of
@@ -52,9 +63,14 @@ the layout nobody has measured — the worst possible bias. **Infinity** makes
 it impassable, so a layout with no lengths recorded has no routes at all.
 
 The constant has a useful degenerate case: on a layout where *nothing* is
-measured, every edge costs the same and the search becomes fewest-hops, which
+measured, every hop costs the same and the search becomes fewest-hops, which
 is the right answer when you have no distance information. As lengths get
 filled in, it degrades gracefully rather than flipping behaviour.
+
+**The braking model makes the opposite call on the same missing datum** and
+refuses (`unmeasured-track`, `docs/braking.md` B4). That is not an
+inconsistency: guessing a cost picks a worse route, guessing a stopping
+distance is a collision.
 
 Ties are broken deterministically — by node key in the frontier, and by
 incoming edge id when two equal-cost paths reach the same node. Without that,
@@ -283,7 +299,7 @@ first does not resolve the second.
 
 ## Deferred
 
-- `DEFAULT_EDGE_LENGTH_MM` is layout-wide. If a layout mixes measured and
+- `DEFAULT_BLOCK_LENGTH_MM` is layout-wide. If a layout mixes measured and
   unmeasured track heavily enough for the constant to distort choices, the
   answer is to record the lengths, not to tune the constant per layout.
 - The `no-path` blocker list is capped at `MAX_REPORTED_BLOCKERS` (20) and

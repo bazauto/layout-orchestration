@@ -202,8 +202,18 @@ describe('Edge routes', () => {
       toBlockId: 'b2',
       toEnd: 'west',
       pointConditions: [],
-      lengthMm: null,
     });
+    // Distance moved to the block (D4); an edge no longer carries one at all.
+    expect(body).not.toHaveProperty('lengthMm');
+  });
+
+  it('POST carrying the retired lengthMm is a 400, not a silently dropped field', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/layouts/${LAYOUT_ID}/edges`,
+      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west', lengthMm: 500 },
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it('POST with a fromBlockId belonging to another layout returns 422 with a violations[0].kind of unknown-block', async () => {
@@ -238,17 +248,17 @@ describe('Edge routes', () => {
     const res = await app.inject({
       method: 'PUT',
       url: `/api/layouts/${LAYOUT_ID}/edges/${created.id}`,
-      payload: { lengthMm: 500 },
+      payload: { toEnd: 'north' },
     });
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).lengthMm).toBe(500);
+    expect(JSON.parse(res.body).toEnd).toBe('north');
   });
 
   it('PUT on a nonexistent edge returns 404', async () => {
     const res = await app.inject({
       method: 'PUT',
       url: `/api/layouts/${LAYOUT_ID}/edges/does-not-exist`,
-      payload: { lengthMm: 500 },
+      payload: { toEnd: 'north' },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -309,7 +319,6 @@ describe('Edge routes', () => {
         toBlockId: 'b2',
         toEnd: `west-${i}`,
         pointConditions: [],
-        lengthMm: null,
       });
     }
 

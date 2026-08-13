@@ -14,8 +14,13 @@ A `BlockEdge` is a directed connection from one named end of one block to a
 named end of another block:
 
 ```
-{ id, layoutId, fromBlockId, fromEnd, toBlockId, toEnd, pointConditions, lengthMm }
+{ id, layoutId, fromBlockId, fromEnd, toBlockId, toEnd, pointConditions }
 ```
+
+**No length.** An edge is the joint between two detected sections, and a joint
+is treated as zero (D5, `docs/track-graph-compilation.md`). Distance lives on
+`blocks.length_mm`, because the edge convention did not decompose and overshot
+by the destination block — #105, and `docs/braking.md` B4 for the arithmetic.
 
 A bidirectional physical connection between two blocks is represented as two
 rows, one in each direction — edge direction is purely geometric and unrelated
@@ -50,7 +55,8 @@ free text, stay un-FK'd, and an end label with no other referent stays legal.
 > (accepted 2026-08-13, tracking issue **#103**), which deletes `block_ends`
 > entirely: the drawing compiles to `block_edges` under operator review, an end
 > label becomes disposable compiler output that nothing references and nobody
-> edits, and `lengthMm` moves to `blocks`.
+> edits. (D4/D5 of that document — moving length to `blocks` — has **shipped**;
+> the rest has not.)
 >
 > The root fault it fixes: **`block_ends.label` is simultaneously the join key
 > `block_edges` references and a geometry-derived description.** An identifier
@@ -331,19 +337,23 @@ Four things the panel does deliberately:
   of which rows were even attempted. Every row gets its own outcome and the
   summary counts both sides.
 
-`lengthMm` is **omitted** from every posted body rather than sent as `null`. The
-two mean the same thing to the schema, and omitting it is the honest statement:
-geometry never supplied one.
+A posted body carries no `lengthMm` at all, and `edgeCreateSchema` is
+`.strict()`, so one that did would be a 400 rather than a silently discarded
+field.
 
 ### Geometry can propose connectivity; it can never supply length
 
-`services/gridGeometry.ts` derives openings from drawn connectivity. It does not,
-and must not, derive distance. Tile count bears no relation to physical extent —
-the Westgate Hollow entry feeder is drawn long and is short in reality, and is
-not a block at all. `block_edges.lengthMm` stays authored, with
-nullable-means-unmeasured (`docs/braking.md` B4). This sharpens the deferred
-"derive edges from grid tiles" note below: #78 can propose complete rows
-*except* `lengthMm`, and the reason is now known rather than assumed.
+`services/gridGeometry.ts` derives openings from drawn connectivity. It does
+not, and must not, derive distance. Tile count bears no relation to physical
+extent — the Westgate Hollow entry feeder is drawn long, is short in reality,
+and is not a block at all.
+
+This is now stronger than it was: length is not on the edge for a proposal to
+leave blank, it is on `blocks.length_mm`, which the drawing never touches
+(D4/#105). Whatever the compiler ends up owning (#103), the one operator-owned
+measurement on the railway sits on an authored row no walk can overwrite.
+`NULL` still means unmeasured and still refuses a braked run
+(`docs/braking.md` B4).
 
 ## Why `(from_block_id, from_end)` is NOT unique
 
@@ -370,12 +380,11 @@ data duplication, not a fan-out. `migrations/0002_bitter_jane_foster.sql` and
 from the same `(from_block_id, from_end)` to two *different* blocks both
 succeed; the same tuple inserted twice fails.
 
-The other three `block_edges` CHECK constraints (also in that migration) are
-plainer data-integrity rules: `from_block_id <> to_block_id` (no self-loop),
-`length_mm IS NULL OR length_mm > 0` (a measured length must be positive;
-`NULL` means "unmeasured, treat as unsafe for automated braking" — see the
-column comment in `schema.ts`), and both ends must be non-blank after
-trimming.
+The other two `block_edges` CHECK constraints are plainer data-integrity rules:
+`from_block_id <> to_block_id` (no self-loop), and both ends must be non-blank
+after trimming. Both survived the `0008` table rebuild that dropped
+`length_mm`, and `tests/integration/migrations.test.ts` asserts they still bite
+— a rebuild that silently loses a CHECK looks identical to one that did not.
 
 ## Violations: fatal vs non-fatal
 

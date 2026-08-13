@@ -14,7 +14,7 @@ style preferences.
 | `docs/project-plan.md` | Phase roadmap (0–3) |
 | `docs/mqtt-contract.md` | **Binding** MQTT topics, payloads, QoS, retention |
 | `docs/topology.md` | Track graph (`block_edges`): validation, deferred items |
-| `docs/track-graph-compilation.md` | **Accepted design, not yet built (#103).** The drawing *compiles* to `block_edges` under operator review; `block_ends` is deleted; `lengthMm` moves to blocks (D1–D10). Read before extending #72 or #78. |
+| `docs/track-graph-compilation.md` | **Accepted design, part built (#103).** The drawing *compiles* to `block_edges` under operator review; `block_ends` is deleted (D1–D10). **D4/D5 have shipped** — length is on blocks, joints are zero. The rest has not. Read before extending #72 or #78. |
 | `docs/track-grid.md` | `grid_tiles` — the Track Editor's **drawing**, its validated write path, why a tile carries no authority, and what makes two tiles connected (D1–D12) |
 | `docs/route-locking.md` | Route reservation and locking (D1–D14) decision record |
 | `docs/pathfinding.md` | Pathfinding, setting the road, and route faults (P1–P8) |
@@ -177,9 +177,9 @@ row rather than appending the new story beneath the old one.**
 
 | Area | What exists | Read before touching |
 |---|---|---|
-| **Track topology** (#2, #21) | `block_edges` with a full backend path: edge CRUD on `ILayoutRepository`, full-row Zod (`parseBlockEdgeRow`) on every read, DB-level graph invariants, a `TopologyService` write path that validates against the rest of the layout, and `LayoutService.reloadTopology()` applying Safe-Stop on a fatal violation. Validation is O(n) in edge count; `MAX_EDGES_PER_LAYOUT` (2,000) is admission control in `TopologyService.createEdge` only, not a DB or load-path check. Edges are authored explicitly in the Configure screen's Edges tab — deriving them from grid tiles stays deferred. | `docs/topology.md` |
+| **Track topology** (#2, #21, #105) | `block_edges` with a full backend path: edge CRUD on `ILayoutRepository`, full-row Zod (`parseBlockEdgeRow`) on every read, DB-level graph invariants, a `TopologyService` write path that validates against the rest of the layout, and `LayoutService.reloadTopology()` applying Safe-Stop on a fatal violation. Validation is O(n) in edge count; `MAX_EDGES_PER_LAYOUT` (2,000) is admission control in `TopologyService.createEdge` only, not a DB or load-path check. Edges are authored explicitly in the Configure screen's Edges tab — deriving them from grid tiles stays deferred. **An edge carries no length**: a joint is treated as zero and distance is on `blocks.length_mm` (D4/D5, #105), which `TrackGraph.blockLengthsMm` carries to both consumers. | `docs/topology.md`, `docs/track-graph-compilation.md` |
 | **Route locking** (#3) | `ReservationService` is the sole owner of lock policy; `LayoutStateManager` stays storage. `domain/routeLocking.ts` is the pure planning/release logic; `route_reservations`/`route_holds` carry DB-level exclusivity via partial unique indexes. `TopologyService` refuses a topology write against anything an active or suspended route holds (409). | `docs/route-locking.md` |
-| **Pathfinding** (#4) | `domain/pathfinding.ts#findPath` — a pure, direction-aware Dijkstra whose search state is **(block, end entered by)**, which is what makes the no-reversal rule structural rather than a post-filter. The pathfinder proposes, `planReservation` disposes. `SystemHealth.routeFaults` latches route violations. | `docs/pathfinding.md` |
+| **Pathfinding** (#4, #105) | `domain/pathfinding.ts#findPath` — a pure, direction-aware Dijkstra whose search state is **(block, end entered by)**, which is what makes the no-reversal rule structural rather than a post-filter. A hop costs the **block it lands in** (`DEFAULT_BLOCK_LENGTH_MM` when unmeasured), so what discriminates two routes is the intermediate track, and a detour can win with more hops. The pathfinder proposes, `planReservation` disposes. `SystemHealth.routeFaults` latches route violations. | `docs/pathfinding.md` |
 | **Sensor-fault recovery** (#34, supersedes #27's scalar pair) | `SystemHealth.sensorFaults` is a keyed collection, one latched fault per sensor, with `acknowledgeSensorFault` and `sensors.in_service` for recovery. Block occupancy is **derived**, not last-write-wins: `domain/occupancy.ts#deriveBlockOccupancy` is the only thing that feeds `ReservationService.onOccupancyChange`. | `docs/sensor-fault-recovery.md` |
 | **Local auth** (#20) and **user/role management** (#53) | argon2id + session tokens pure in `domain/auth.ts`; one Fastify `onRequest` hook rejects unauthenticated requests before any route, including the `/ws` upgrade. `AuthService` owns all user policy; the repository stays storage. `requireAdmin` on every topology/config write and all of `/api/users`. `POST /api/emergency-stop` is the single deliberately unauthenticated path. | `docs/auth.md` |
 | **Operator-facing names** (#54) | `NameBook` (`domain/types.ts`) + pure helpers in `domain/naming.ts`; every `describe*` takes an optional trailing `book?: NameBook` and, without one, renders raw ids byte-for-byte as before. `NameBookCache` (`services/nameBook.ts`) behind the `INameBook` port is injected into the three services as an optional trailing constructor parameter. | `docs/naming.md` |
@@ -230,15 +230,23 @@ Things that look like bugs or oversights and are not. Each was a deliberate deci
 Recorded rather than closed — do not treat any of these as bugs to fix in passing:
 
 - **The drawing↔graph model is being replaced (#103, `docs/track-graph-compilation.md`).**
-  Accepted 2026-08-13, not built. `block_edges` will be *compiled* from the drawing under
-  operator review; `block_ends` is deleted; end labels become disposable compiler output;
-  `lengthMm` moves to `blocks`. The root fault: `block_ends.label` is both the join key
-  `block_edges` references and a geometry-derived description, and `pinned`, the rename
-  409, adoption and the collision refusal are all that conflict surfacing. **Do not build
-  further on #72's or #78's model** — including the anchor coordinate in #97, which is
-  rejected. #104 (a point tile tinted as a neighbouring block silently drops edges) is
-  **fixed** and its fix is in the code the compiler reuses; #105 (B4's edge-length
-  convention does not decompose and overshoots by a block) is still live.
+  Accepted 2026-08-13, **part built**: D4/D5 have shipped (#105 — length is on
+  `blocks.length_mm`, joints are zero), as has the #104 fix in the walk the compiler
+  reuses. Still to come: `block_edges` *compiled* from the drawing under operator review,
+  `block_ends` deleted, end labels as disposable compiler output. The root fault:
+  `block_ends.label` is both the join key `block_edges` references and a geometry-derived
+  description, and `pinned`, the rename 409, adoption and the collision refusal are all
+  that conflict surfacing. **Do not build further on #72's or #78's model** — including
+  the anchor coordinate in #97, which is rejected. Both bugs this design surfaced are now
+  fixed. The plan for the remaining PRs is `docs/plans/103-track-graph-compilation.md`,
+  and the manual edge write path (`POST`/`PUT`/`DELETE .../edges`) is **agreed to be
+  deleted** with it: the compiler becomes the only writer of `block_edges`.
+- **A braked run to the *immediately next* block is refused, not slowed** (`D-K`,
+  `docs/braking.md` B4). With length on blocks there is no intermediate block between the
+  confirmed one and the next, so available distance is zero and `insufficient-distance`
+  fires. Correct under block-level occupancy — the train may be hard against the exit —
+  and the fail-safe direction, but it is a behaviour change from the edge-length model.
+  Fixing it needs sub-block position (#77), not a fudged distance.
 - **A point lock is an authority guarantee, not a physical position guarantee.** There is
   still no point-position feedback channel (#25).
 - **Two routes fouling at a plain (non-switched) diamond crossing is not caught**, since

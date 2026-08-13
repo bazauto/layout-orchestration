@@ -211,7 +211,27 @@ describe('Block routes', () => {
       payload: { name: 'Platform 1' },
     });
     expect(res.statusCode).toBe(201);
-    expect(repo.createBlock).toHaveBeenCalledWith({ layoutId: 'layout-1', name: 'Platform 1' });
+    // `lengthMm` defaults to null — unmeasured, which refuses a braked run
+    // rather than asserting a measurement nobody took (D4).
+    expect(repo.createBlock).toHaveBeenCalledWith({
+      layoutId: 'layout-1',
+      name: 'Platform 1',
+      lengthMm: null,
+    });
+  });
+
+  it('POST /api/layouts/:layoutId/blocks carries a measured length through', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts/layout-1/blocks',
+      payload: { name: 'Platform 2', lengthMm: 1200 },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(repo.createBlock).toHaveBeenCalledWith({
+      layoutId: 'layout-1',
+      name: 'Platform 2',
+      lengthMm: 1200,
+    });
   });
 
   it('PUT /api/layouts/:layoutId/blocks/:id updates block', async () => {

@@ -269,7 +269,6 @@ export class DrizzleRepository implements ILayoutRepository {
         toBlockId: data.toBlockId,
         toEnd: data.toEnd,
         pointConditions: JSON.stringify(data.pointConditions),
-        lengthMm: data.lengthMm,
       })
       .run();
     const created = await this.getBlockEdge(id);

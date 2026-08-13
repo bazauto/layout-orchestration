@@ -60,7 +60,6 @@ describe('DrizzleRepository — block edges', () => {
       toBlockId: blockBId,
       toEnd: 'west',
       pointConditions: [],
-      lengthMm: 500,
     });
 
     expect(created.id).toBeTruthy();
@@ -71,7 +70,6 @@ describe('DrizzleRepository — block edges', () => {
       toBlockId: blockBId,
       toEnd: 'west',
       pointConditions: [],
-      lengthMm: 500,
     });
 
     const listed = await repo.listBlockEdges(layoutId);
@@ -80,8 +78,8 @@ describe('DrizzleRepository — block edges', () => {
     const fetched = await repo.getBlockEdge(created.id);
     expect(fetched).toEqual(created);
 
-    const updated = await repo.updateBlockEdge(created.id, { lengthMm: 750 });
-    expect(updated.lengthMm).toBe(750);
+    const updated = await repo.updateBlockEdge(created.id, { toEnd: 'north' });
+    expect(updated.toEnd).toBe('north');
     // Untouched fields survive a partial update.
     expect(updated.fromEnd).toBe('east');
 
@@ -98,7 +96,6 @@ describe('DrizzleRepository — block edges', () => {
       toBlockId: blockCId,
       toEnd: 'south',
       pointConditions: [{ pointId: 'p1', requiredPosition: 'reverse' }],
-      lengthMm: null,
     });
 
     expect(created.pointConditions).toEqual([{ pointId: 'p1', requiredPosition: 'reverse' }]);
@@ -122,10 +119,10 @@ describe('DrizzleRepository — block edges', () => {
     const badId = randomUUID();
     sqlite
       .prepare(
-        `INSERT INTO block_edges (id, layout_id, from_block_id, from_end, to_block_id, to_end, point_conditions, length_mm)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO block_edges (id, layout_id, from_block_id, from_end, to_block_id, to_end, point_conditions)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(badId, layoutId, blockAId, 'North', blockBId, 'south', '[]', null);
+      .run(badId, layoutId, blockAId, 'North', blockBId, 'south', '[]');
 
     await expect(repo.listBlockEdges(layoutId)).rejects.toThrow();
     await expect(repo.getBlockEdge(badId)).rejects.toThrow();
@@ -149,7 +146,6 @@ describe('DrizzleRepository — block edges', () => {
       toBlockId: spoke.id,
       toEnd: 'west',
       pointConditions: [],
-      lengthMm: null,
     });
     const incoming = await repo.createBlockEdge({
       layoutId,
@@ -158,7 +154,6 @@ describe('DrizzleRepository — block edges', () => {
       toBlockId: hub.id,
       toEnd: 'east',
       pointConditions: [],
-      lengthMm: null,
     });
 
     await repo.deleteBlock(layoutId, hub.id);
