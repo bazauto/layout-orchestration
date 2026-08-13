@@ -254,17 +254,39 @@ sidings on the layout.
 **Point conditions come from the drawn `pointRoads`, at both ends of the walk.**
 A throat tile is tagged to the block it serves, so a block's opening frequently
 sits *on* a point — and crossing it costs whatever the road using that leg
-requires. A road only counts if it joins the boundary to a leg leading **into
-that block**: without that test a point reads as "any leg reaches any other", and
-Westgate Hollow proposed `Fiddle Yard 1 ↔ Fiddle Yard 2`, a connection P1 cannot
-make since both yards hang off its diverging legs and meet only at the toe.
+requires. In every case a road only counts if it **uses the leg the walk is
+crossing by**: without that test a point reads as "any leg reaches any other",
+and Westgate Hollow proposed `Fiddle Yard 1 ↔ Fiddle Yard 2`, a connection P1
+cannot make since both yards hang off its diverging legs and meet only at the
+toe.
 
-**It under-proposes, audibly.** An unclassified tile, a point with no leg
-mapping, and a boundary with no road leading into the block each stop the walk
-and leave a note naming the cell. A missing candidate costs a minute of typing;
-a wrong one is a route granted over track that is not there. Silence and refusal
-are indistinguishable from outside, so the notes are the whole difference between
-a to-do list and a mystery.
+**Leaving a block and arriving at one are not the same question (#104).** Beyond
+using the leg, a *departure* additionally requires the road's other leg to lead
+back **into the block**, because a train reaching that boundary came from the
+block's interior. An *arrival* requires nothing further: a tile tinted
+`Fiddle Yard 1` is part of Fiddle Yard 1, so a train that has reached it has
+arrived, whatever the road's other leg does.
+
+Treating the two as one test is what made a point tinted as a neighbouring block
+delete edges — the live layout lost Fiddle Yard 2, Engine Shed 1 and Siding 3
+entirely, with only cell-level notes to show for it.
+
+**Neither direction is mirrored into the other.** Both come out of the walk, from
+each block's own opening. Ordinary track is symmetric and yields the pair for
+free; where it does not, the asymmetry is real and synthesising the missing half
+authors an edge the drawing refuses. Mirroring the Fiddle Yard 2 → Fiddle Yard 1
+arrival above produces a `Fiddle Yard 1 → Fiddle Yard 2` departure that trails
+through P1's blades set against it. **A one-way proposal is therefore a
+statement, not a gap in the search**, and the note beside it says which
+direction is missing and why.
+
+**It under-proposes, audibly.** An unclassified tile, a point with no leg mapping
+at all (`blocked-by-unmapped-point`), a drawn leg the mapping does not cover
+(`leg-not-covered-by-road`), and a block with no road out through a boundary
+(`no-road-out-of-block`) each stop the walk and leave a note naming the cell. A
+missing candidate costs a minute of typing; a wrong one is a route granted over
+track that is not there. Silence and refusal are indistinguishable from outside,
+so the notes are the whole difference between a to-do list and a mystery.
 
 **What it cannot check.** A point's leg mapping is unverifiable authored data
 (`docs/track-grid.md` D9), and a proposal inherits that uncertainty exactly. This
@@ -294,7 +316,9 @@ Four things the panel does deliberately:
 
 - **Both directions are separate rows.** A connection is bidirectional track and
   `block_edges` is directional, so each pairing is offered twice and either may
-  be declined. Collapsing them would make "accept one way only" unsayable.
+  be declined. Collapsing them would make "accept one way only" unsayable — and
+  since #104 the walk itself sometimes offers only one, which the panel must be
+  able to render as the answer rather than as a missing row.
 - **`existing` is shown, not filtered out.** On a part-authored layout, "the
   graph already agrees with the drawing" is the most valuable thing this surface
   can say, and silence is indistinguishable from "not found".

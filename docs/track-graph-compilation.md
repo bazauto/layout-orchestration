@@ -195,6 +195,8 @@ necessary and not sufficient. A walk can stop somewhere harmless, and a walk can
 succeed everywhere while a block still ends up isolated. When P1's tile was
 tinted `Fiddle Yard 1`, the walk emitted three cell-level notes and *no*
 statement that Fiddle Yard 2, Engine Shed 1 and Siding 3 had become unreachable.
+(That particular cause is fixed — #104 — but the *shape* of the failure is what
+this clause is against, and fixing one cause does not retire it.)
 "No road into block at (11,3), south side" reads as wave-2 authoring noise;
 "Fiddle Yard 2 has no connections" does not.
 
@@ -344,12 +346,18 @@ separate question.
 
 ## Bugs this design surfaced, fixable independently
 
-- **#104** — `pointTransitConditions` treats arrival and departure as the same
-  question. They are not: departing block X through a point tile of X requires
-  the other leg to lead into X, but *arriving* at X's point tile means you are
-  in X the moment you are on the tile. Tinting a point tile as a neighbouring
-  block silently deletes edges.
+- **#104 — fixed.** `pointTransitConditions` treated arrival and departure as the
+  same question. They are not: departing block X through a point tile of X
+  requires the other leg to lead into X, but *arriving* at X's point tile means
+  you are in X the moment you are on the tile. Tinting a point tile as a
+  neighbouring block silently deleted edges. The fix splits the two tests and
+  **stops `assemble` synthesising the reverse of a connection** — mirroring an
+  arrival into a departure manufactures exactly the edge the departure test
+  refuses. The compiler inherits both: it walks the same ports, and D3's
+  whole-graph replace makes a mirrored false edge more dangerous, not less,
+  since no per-row operator judgement stands between it and `block_edges`.
 - **#105** — `docs/braking.md` B4's edge-length convention does not decompose,
-  and the natural reading overshoots by the destination block's length.
+  and the natural reading overshoots by the destination block's length. Still
+  live; D4 is the fix.
 
-Neither depends on this design landing, and both are live today.
+Neither depended on this design landing.

@@ -371,8 +371,9 @@ export type ProposalNote =
   | { kind: 'blocked-by-unclassified'; at: { x: number; y: number } }
   | { kind: 'blocked-by-unmapped-point'; at: { x: number; y: number }; pointId: string }
   | { kind: 'stopped-in-own-block'; blockId: string; at: { x: number; y: number } }
+  | { kind: 'leg-not-covered-by-road'; at: { x: number; y: number }; edge: TileEdge }
   | {
-      kind: 'no-road-into-block';
+      kind: 'no-road-out-of-block';
       at: { x: number; y: number };
       blockId: string;
       edge: TileEdge;
