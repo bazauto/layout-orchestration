@@ -264,11 +264,14 @@ Recorded rather than closed — do not treat any of these as bugs to fix in pass
   and a 16-point bearing, which separates these two angles by coincidence and breaks the
   correspondence with `TileEdge`. #103 dissolves it instead: a disposable label may be
   disambiguated freely, so the refusal has no reason to exist.
-- **Westgate Hollow's classification pass is done** (90 tiles: 79 block, 11 decorative, 0
-  unclassified) and every block has in-service sensors, so `unclassified-tile` and
-  `block-without-detection` are both silent on the live layout — that is a finished
-  authoring pass, not a broken check. `block_edges`, by contrast, is still **empty**:
-  nothing is connected to anything yet.
+- **Do not quote tile counts for the live layout here — they go stale as the operator
+  draws.** This bullet used to claim "90 tiles: 79 block, 11 decorative, 0 unclassified";
+  when the compiler was first run against the drawing it was 76/12/2, and the two
+  unclassified cells at (19,3) and (19,7) were exactly what cut Engine Shed 1 and Siding 1
+  out of the graph. Ask the layout instead: `GET .../grid/diagnostics` for the drawing, and
+  the compile gaps for the graph. `block_edges` is still **empty** — nothing is connected
+  to anything yet — and that one is a design state rather than a measurement, because
+  #103's compiler is what will fill it.
 - **Two hand-maintained duplicates across the wire**, both for #75 to unify: `findBlockRuns`
   in `services/gridGeometry.ts` (backend, end generation) and `diagram/blockRuns.ts`
   (frontend, tints and labels); and `TILE_LEGS` in `services/tileGeometry.ts`, of which
