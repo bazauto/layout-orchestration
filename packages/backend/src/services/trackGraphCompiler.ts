@@ -223,7 +223,16 @@ export class CompileLimitExceededError extends Error {
  */
 const SEP = '^@';
 
-const conditionKey = (conditions: readonly PointCondition[]): string =>
+/**
+ * A canonical string for a set of point conditions, order-independent.
+ *
+ * Exported because the compile diff keys on it too (D-J): what makes two rows
+ * the same physical connection is the pair of blocks and what the blades must
+ * be doing, never the disposable end label. One spelling of that key, so a
+ * reordered `pointConditions` array cannot read as a changed edge in one place
+ * and an identical one in another.
+ */
+export const conditionKey = (conditions: readonly PointCondition[]): string =>
   conditions
     .map((c) => `${c.pointId}:${c.requiredPosition}`)
     .sort()

@@ -14,7 +14,7 @@ style preferences.
 | `docs/project-plan.md` | Phase roadmap (0–3) |
 | `docs/mqtt-contract.md` | **Binding** MQTT topics, payloads, QoS, retention |
 | `docs/topology.md` | Track graph (`block_edges`): validation, deferred items |
-| `docs/track-graph-compilation.md` | **Accepted design, part built (#103).** The drawing *compiles* to `block_edges` under operator review; `block_ends` is deleted (D1–D10). **D4/D5 have shipped** — length is on blocks, joints are zero. The rest has not. Read before extending #72 or #78. |
+| `docs/track-graph-compilation.md` | **Accepted design, part built (#103).** The drawing *compiles* to `block_edges` under operator review; `block_ends` is deleted (D1–D10). **Shipped: D4/D5** (length on blocks, joints zero) **and the compiler with both read surfaces.** The apply, the `auto` gate, the review UI and the deletions have not. Status table at the head of the file. Read before extending #72 or #78. |
 | `docs/track-grid.md` | `grid_tiles` — the Track Editor's **drawing**, its validated write path, why a tile carries no authority, and what makes two tiles connected (D1–D12) |
 | `docs/route-locking.md` | Route reservation and locking (D1–D14) decision record |
 | `docs/pathfinding.md` | Pathfinding, setting the road, and route faults (P1–P8) |
@@ -189,6 +189,7 @@ row rather than appending the new story beneath the old one.**
 | **Block ends** (#72, #91) | `block_ends` (`(blockId, label)` unique) names a block's openings — the referent of `block_edges.fromEnd`/`toEnd`. An opening is where the block's **drawn track leaves the run**, from tile type + rotation (`services/tileGeometry.ts`), never from cell adjacency — two yard roads drawn side by side touch everywhere and connect nowhere. Connectivity is mutual; track butted against a tile that draws nothing back is an end, reported as `track-not-joined`. An end is a dead end only if **every** opening in it is terminated. Labels are still 8-point cardinals bearing from the run centroid, **pinned** when authored or edge-referenced, regenerated on demand only, and a rename or delete of an edge-referenced label is a **409, never a cascade**. Deliberately **no FK** from `block_edges`. | `docs/topology.md`, `docs/track-grid.md` D12 |
 | **Grid diagnostics** (#84, #83, #71, #91, #92) | `GET .../grid/diagnostics` — read-only, advisory, never a gate. `warning` = two representations disagree or a hazard is drawn (buffer contradicted by an edge, dangling reference, duplicate annotation, drawn plain diamond per #26, track drawn into a tile that draws nothing back per #91); `info` = authoring unfinished (unclassified tile, end with no edges and no buffer, unmapped point tile, pinned end with no opening). A finding must be one the operator can act on: `point-tile-unmapped` gates on `depictsPoint(tileType)`, because a point is drawn as two tiles and only one of them has legs to map. Nothing in `domain/` reads a tile, and `TopologyService` never refuses an edge write because of one. | `docs/track-grid.md` D11 |
 | **Edge proposals** (#78, #104) | `GET .../grid/edge-proposals` — candidate `block_edges` the drawing implies, read-only. `services/edgeProposals.ts` walks tile **ports** (`tileGeometry.ts`), so touching is not connecting; point conditions come from `pointRoads` at **both** ends, and a road only counts if it uses the leg being crossed. **Departing a block and arriving at one differ** (#104): a departure also needs the road's other leg to lead *into* the block, an arrival needs nothing more, because a tile tinted as a block *is* that block. **Neither direction is mirrored** — both come from the walk, so a one-way proposal is a statement about the drawing, and mirroring one would author a departure that trails through blades set against it. `lengthMm` is typed as the literal `null` — geometry can never supply distance. Under-proposes and says why: an unclassified tile, an unmapped point, a leg no road covers or a block with no road out each leave a note naming the cell. **There is no accept endpoint** — accepting is an ordinary `POST .../edges` through `TopologyService`, which is what makes a bypass structurally impossible, and `EdgeProposalsPanel` (Configure → Edges) keeps that property client-side by having no write of its own. The panel walks only when opened; a proposal with a `null` end has no Accept button (`isAcceptable` is a *type guard*, so posting one does not compile); accept-all does not stop at the first refusal. Over `MAX_EDGE_PROPOSALS` is a **409** mirroring `EdgeLimitExceededError`, not the bare 500 it used to be. | `docs/topology.md` |
+| **Track graph compilation** (#103, part built) | `services/trackGraphCompiler.ts` compiles the drawing to a **whole candidate graph plus its gaps** — pure, both directions from the walk, **never mirrored** (#104). It asserts over its own output, not the walk: a block in no edge, a block with no in-service detection, an unresolved opening (D7). Components are **reported, never gated** — two separate railways are legal. Two reads, split by cost: `GET .../grid/openings` (geometry only, per stroke) and `GET .../topology/compile` (full search, on review) — neither admin-gated, neither able to Safe-Stop, 404 on a bad layout and **409** over `MAX_COMPILED_EDGES`. `compiled_graphs` stores one fingerprint row per layout; a **missing row** is "never compiled"; `annotations` are excluded from the hash so moving a sensor marker cannot stale a review. The diff matches in **two passes** — exact ends first (`unchanged`/`changed`), then the physical connection (`relabelled`) — because labels are disposable and a label-keyed diff reads a rename as a full replacement. **Nothing writes `block_edges` from a compile yet**; the apply, the `auto` gate and the review UI are still to come. | `docs/topology.md`, `docs/track-graph-compilation.md` |
 | **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) bench tool: `SensorSimulationService` publishes a fabricated reading to the sensor's own `mqttTopic` and the broker echoes it back through the ordinary ingestion path — byte-identical to hardware, no marker field. `GET /api/capabilities` gates the Operate-pane panel and fails closed. | `docs/sensor-simulation.md` |
 
 ### Traps
@@ -232,8 +233,11 @@ Recorded rather than closed — do not treat any of these as bugs to fix in pass
 - **The drawing↔graph model is being replaced (#103, `docs/track-graph-compilation.md`).**
   Accepted 2026-08-13, **part built**: D4/D5 have shipped (#105 — length is on
   `blocks.length_mm`, joints are zero), as has the #104 fix in the walk the compiler
-  reuses. Still to come: `block_edges` *compiled* from the drawing under operator review,
-  `block_ends` deleted, end labels as disposable compiler output. The root fault:
+  reuses, and so has the compiler itself with both its read surfaces (row above). Still
+  to come: the **apply** that writes `block_edges`, the `auto` gate on gaps, the
+  review UI, and `block_ends` deleted. Until the apply lands the two models sit side by
+  side — the compile is a read that changes nothing, and `block_edges` stays
+  hand-authored. The root fault:
   `block_ends.label` is both the join key `block_edges` references and a geometry-derived
   description, and `pinned`, the rename 409, adoption and the collision refusal are all
   that conflict surfacing. **Do not build further on #72's or #78's model** — including
@@ -267,9 +271,11 @@ Recorded rather than closed — do not treat any of these as bugs to fix in pass
 - **Westgate Hollow's classification pass is done** — 0 unclassified tiles, every block
   with in-service sensors — so `unclassified-tile` and `block-without-detection` are both
   silent on the live layout. That is a finished authoring pass, not a broken check. The
-  drawing now compiles to a **single connected component with no gaps** (#103's compiler,
-  run against it), so the geometry is complete; `block_edges` is nevertheless still
-  **empty**, because nothing has applied that compile yet.
+  drawing now compiles to a **single connected component with no gaps** — 90 tiles and 9
+  blocks to 22 edges and 19 openings, measured through the wired
+  `GET .../topology/compile` against a copy of the live DB taken with its `-wal`. The
+  geometry is complete; `block_edges` is nevertheless still **empty**, because nothing
+  has applied that compile yet.
 - **Read the live DB with its `-wal`, or you will read a stale layout.** `data/layout.db`
   is in WAL mode and the log runs to megabytes, so copying the `.db` alone silently drops
   recent drawing edits. It cost a round of wrong conclusions here: tiles the operator had

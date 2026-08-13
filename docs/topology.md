@@ -241,6 +241,11 @@ fix that.
 
 ### Proposing candidate edges from the drawing (#78)
 
+> **Superseded by "Compiling the graph from the drawing (#103)" below, and still
+> live.** The proposal surface and the compile surface both ship today and both
+> walk the same ports. The compiler is the one being built on; this one is
+> deleted with the manual edge form (#103 PR 5). Do not extend it.
+
 `GET /api/layouts/:layoutId/grid/edge-proposals` walks the drawing and returns
 the connections it implies, as candidate `block_edges` rows for an operator to
 accept or reject. It **writes nothing**, and there is deliberately no accept
@@ -354,6 +359,104 @@ leave blank, it is on `blocks.length_mm`, which the drawing never touches
 measurement on the railway sits on an authored row no walk can overwrite.
 `NULL` still means unmeasured and still refuses a braked run
 (`docs/braking.md` B4).
+
+## Compiling the graph from the drawing (#103)
+
+**Part built.** The design record is `docs/track-graph-compilation.md` (D1–D10)
+and nothing here re-litigates it. What follows is what exists in the code.
+
+Shipped so far: the compiler and its completeness assertions
+(`services/trackGraphCompiler.ts`), the openings generator
+(`gridGeometry.ts#compileOpenings`), the `compiled_graphs` provenance row, and
+the two read surfaces below. **Nothing writes `block_edges` from a compile yet**
+— the apply, the `auto` gate and the review UI are still to come, and
+`block_ends` and the manual edge write path are both still live.
+
+### The two read surfaces
+
+| Route | Answers | Cost |
+|---|---|---|
+| `GET /api/layouts/:layoutId/grid/openings` | where each block opens, named | geometry only, no walk |
+| `GET /api/layouts/:layoutId/topology/compile` | the whole candidate graph, its gaps, and a diff against the live one | full branch search |
+
+Two routes rather than one because they answer different questions at different
+prices (D-H). "Where does this block open" is a question about the drawing and
+the Track Editor asks it on every stroke, the way it already asks for grid
+diagnostics; "what edges does that imply" is a review action taken when the
+panel is opened. Neither is admin-gated, matching `grid/diagnostics` and
+`grid/edge-proposals`: the **write** is what is gated, and an operator being
+able to see why the layout will not go into `auto` is the point of the surface.
+
+A layout that does not exist is a 404 on both. A drawing that compiles to more
+edges than the review surface will render is a 409 carrying `{ limit, found }`,
+mirroring `EdgeLimitExceededError` on `POST .../edges` — never a bare 500,
+because "no connections found" and "I gave up" must not look the same from
+outside. **Neither route can Safe-Stop**, however many gaps it reports (D9).
+
+### What the compiler asserts, and why over its own output
+
+The walk emits per-cell notes saying where it stopped. Those are supporting
+evidence and were never sufficient: a walk can stop somewhere harmless, and a
+walk can succeed everywhere while a block still ends up isolated. So the
+compiler asserts over the graph it emitted — every drawn block appears in at
+least one edge; every opening is edged, terminated by a buffer, or a named gap;
+every block in the graph has in-service detection — and those assertions are the
+primary findings (D7).
+
+`block-without-detection` is load-bearing rather than tidy. The reason a
+mis-mapped point mapping is acceptable unverified data is that the first
+movement over it puts a train in the wrong block, which `unexpected-occupancy`
+catches. That argument collapses if the wrong block is undetected (D9).
+
+Connected components are **reported and never gated** (D-B): two genuinely
+separate railways in one layout are legal, and a gap has no acknowledge
+mechanism, so gating on component count would refuse `auto` forever with nothing
+for the operator to acknowledge.
+
+### The fingerprint
+
+`compiled_graphs` holds one row per layout — `layout_id`, `drawing_fingerprint`,
+`compiled_at` — and a **missing row is the honest spelling of "never compiled"**,
+not a NULL every reader must remember to check. No `edge_count`, no `gap_count`:
+both are recomputable, and a stored copy is a second source of truth about
+exactly the thing #103 exists to stop having two of.
+
+`drawingFingerprint()` hashes exactly what the walk reads and nothing else:
+coordinates, tile type, rotation, `blockId`, `trackRole`, `pointId` and
+`pointRoads`. Coordinates are in although D10's prose omits them — the walk is
+structured entirely by position (D-G). `annotations` are **out**: moving a
+sensor marker must not invalidate a review someone is part-way through. An
+unreadable tile contributes its raw blob, so repairing corruption moves the
+fingerprint like any other edit and two different corruptions do not hash alike.
+
+Staleness — a stored fingerprint that differs from the drawing's, or no stored
+row at all — is a **warning, never a gate**. Gating on it would stop an operator
+moving a platform tile.
+
+### The diff is matched in two passes
+
+End labels are disposable compiler output regenerated on every compile (D8), so
+a diff keyed on them reports a redraw that renames `east` to `east-1` as "every
+edge removed, every edge added". That is useless for review, and review is the
+whole of D1's safety argument. So (D-J, refined in the build):
+
+1. **exact ends** — same `(fromBlockId, fromEnd, toBlockId, toEnd)`. Equal
+   conditions is `unchanged`; different conditions is `changed`.
+2. **the physical connection** — whatever is left, keyed on
+   `(fromBlockId, toBlockId, conditionKey)` and paired in sorted-by-end order.
+   A pair is `relabelled`.
+3. anything unpaired is `added` or `removed`.
+
+The plan originally described one pass on key (2) alone, which leaves `changed`
+unreachable: point conditions are equal inside every such bucket by
+construction. Pass 1 exists so the safety-relevant case — the same two openings,
+now requiring different blades — is reported precisely instead of drowning in an
+add and a remove. A row whose label *and* conditions both moved is genuinely
+unlinked and falls to `added`/`removed`, which is honest: nothing connects them.
+
+`conditionKey` is order-independent and shared with the compiler, so a reordered
+`pointConditions` array cannot read as a changed edge in one place and an
+identical one in another.
 
 ## Why `(from_block_id, from_end)` is NOT unique
 
