@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import {
   GeometryTile,
   bearingLabel,
+  compileOpenings,
   findBlockRuns,
   findUnjoinedEdges,
   generateBlockEnds,
@@ -427,5 +428,130 @@ describe('generateBlockEnds', () => {
       tile(2, 0, inBlock('b2')),
     ];
     expect(generateBlockEnds(tiles)).toEqual(generateBlockEnds([...tiles].reverse()));
+  });
+});
+
+/**
+ * `compileOpenings` — D-I's disambiguation, the disposable-output twin of
+ * `generateBlockEnds`. Never refuses, never drops: every raw opening this
+ * walk finds gets a name, because nothing between compiles references one by
+ * string (D8).
+ */
+describe('compileOpenings', () => {
+  /**
+   * `aedae611-…` is Westgate Hollow's real `Engine / Goods Transfer` block, as
+   * drawn (`grid_tiles`, verified against `packages/backend/data/layout.db`).
+   * Under #72's model these two openings — 118.5° and 134.7° from the run's
+   * centroid, both rounding to `southeast` — could not be named at all
+   * (`end-label-collision`), which is the specific failure #103 exists to
+   * end. This is that fixture, not a stand-in for it.
+   */
+  const engineGoodsTransfer = (): GeometryTile[] => {
+    const blockId = 'aedae611-310e-4f43-96e9-b07f3a6d9e87';
+    const rows: Array<[number, number, GridTileMetadata['rotation']]> = [
+      [13, 4, 90],
+      [14, 4, 270],
+      [14, 5, 90],
+      [19, 10, 90],
+      [19, 9, 270],
+      [18, 9, 90],
+      [17, 8, 90],
+      [16, 7, 90],
+      [15, 6, 90],
+      [15, 5, 270],
+      [16, 6, 270],
+      [17, 7, 270],
+    ];
+    return [
+      ...rows.map(([x, y, rotation]) =>
+        tile(x, y, { blockId, rotation }, 'straight-45'),
+      ),
+      {
+        x: 18,
+        y: 8,
+        tileType: 'point-right',
+        metadata: {
+          blockId,
+          rotation: 0,
+          pointId: '720bde49-5e2e-47f9-b691-1391e0195240',
+          pointRoads: [
+            {
+              when: [{ pointId: '720bde49-5e2e-47f9-b691-1391e0195240', position: 'normal' }],
+              legs: ['w', 'e'],
+            },
+            {
+              when: [{ pointId: '720bde49-5e2e-47f9-b691-1391e0195240', position: 'reverse' }],
+              legs: ['w', 's'],
+            },
+          ],
+        },
+      },
+    ];
+  };
+
+  it('names Westgate Hollow’s colliding pair southeast-1 / southeast-2, ordered by (y, x)', () => {
+    // Under generateBlockEnds this pair is a collision and neither is named
+    // at all — the whole reason #103 exists. Confirm the old refusal is still
+    // there (this is the fixture #72's own test suite would raise it on)
+    // before confirming the new function resolves it.
+    const { collisions } = generateBlockEnds(engineGoodsTransfer());
+    expect(collisions).toContainEqual(
+      expect.objectContaining({ label: 'southeast' }),
+    );
+
+    const openings = compileOpenings(engineGoodsTransfer());
+    const blockId = 'aedae611-310e-4f43-96e9-b07f3a6d9e87';
+    const southeast = openings.filter((o) => o.blockId === blockId && o.label.startsWith('southeast'));
+
+    expect(southeast.map((o) => ({ label: o.label, at: o.at }))).toEqual([
+      { label: 'southeast-1', at: { x: 18, y: 8 } },
+      { label: 'southeast-2', at: { x: 19, y: 10 } },
+    ]);
+  });
+
+  it('keeps the bare cardinal for an opening with no collision', () => {
+    const openings = compileOpenings([
+      tile(0, 0, inBlock('b1')),
+      tile(1, 0, inBlock('b1')),
+      tile(2, 0, inBlock('b1')),
+    ]);
+
+    expect(openings.map((o) => o.label).sort()).toEqual(['east', 'west']);
+  });
+
+  it('failure path: a zero-bearing opening gets a port-derived label, never dropped', () => {
+    // A pair of vertical tiles sit atop a pair of horizontal ones. `straight-v`
+    // draws n/s, `straight-h` draws w/e, so the top row's south face is never
+    // met — and because the pair sits astride the run's own centroid (the
+    // shape is a symmetric 2x2 square), `bearingLabel` returns null for it.
+    // Under `generateBlockEnds` this opening simply never existed.
+    const tiles: GeometryTile[] = [
+      tile(0, 0, inBlock('b1'), 'straight-v'),
+      tile(1, 0, inBlock('b1'), 'straight-v'),
+      tile(0, 1, inBlock('b1')),
+      tile(1, 1, inBlock('b1')),
+    ];
+
+    // Confirm the premise: generateBlockEnds' bearingLabel path really does
+    // return null here, i.e. this fixture is not accidentally testing
+    // something else. bearingLabel(0, 0) === null is covered above; here the
+    // whole opening — the one whose cluster mean lands exactly on centroid —
+    // must survive compileOpenings when it would not survive the old walk.
+    const openings = compileOpenings(tiles);
+    expect(openings).toHaveLength(4); // one per raw directional cluster — none merged away
+
+    const fromZeroBearing = openings.find(
+      (o) => o.ports.length === 2 && o.ports.every((p) => p.edge === 's'),
+    );
+    expect(fromZeroBearing).toMatchObject({ label: 'south', at: { x: 0, y: 0 } });
+  });
+
+  it('is stable across input permutation, like generateBlockEnds', () => {
+    const tiles = engineGoodsTransfer();
+    expect(compileOpenings(tiles)).toEqual(compileOpenings([...tiles].reverse()));
+  });
+
+  it('produces nothing for a layout with no block-tagged tiles', () => {
+    expect(compileOpenings([tile(0, 0, {}), tile(1, 0, { trackRole: 'decorative' })])).toEqual([]);
   });
 });
