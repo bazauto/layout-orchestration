@@ -243,6 +243,33 @@ export function EdgesTab({ layoutId, edges, topology, blocks, points, ops }: Pro
       */}
       <EdgeProposalsPanel layoutId={layoutId} blocks={blocks} points={points} ops={ops} />
 
+      {/*
+        Where the live graph stands against the drawing (#103, D10). Advisory,
+        never a gate — an operator moving a platform tile makes the graph stale
+        and must not be stopped from doing it. Two separate facts, deliberately
+        worded apart: `stale` says the graph is behind the picture, `gapCount`
+        says the picture has holes the compiler would not guess at, and only the
+        second one refuses `auto`.
+      */}
+      {topology.compiled && (topology.compiled.stale || topology.compiled.gapCount > 0) && (
+        <div style={s.compileNotice}>
+          {topology.compiled.stale && (
+            <p style={s.compileLine}>
+              {topology.compiled.compiledAt === null
+                ? 'This graph has never been compiled from the drawing.'
+                : 'The drawing has changed since this graph was compiled.'}
+            </p>
+          )}
+          {topology.compiled.gapCount > 0 && (
+            <p style={s.compileLine}>
+              The drawing compiles with {topology.compiled.gapCount} gap
+              {topology.compiled.gapCount === 1 ? '' : 's'} — automatic mode is refused
+              until they are resolved.
+            </p>
+          )}
+        </div>
+      )}
+
       {!topology.valid && (
         <div style={s.violationBanner}>
           {topology.violations.map((v, i) => (
@@ -436,4 +463,8 @@ const s = {
   chip:               { display: 'inline-block', background: '#313244', borderRadius: 8, padding: '1px 8px', fontSize: 11, marginRight: 4 } as React.CSSProperties,
   violationBanner:    { background: '#3a2130', border: '1px solid #f38ba8', borderRadius: 4, padding: '8px 12px', marginBottom: 12 } as React.CSSProperties,
   violationLine:      { margin: '2px 0', fontSize: 12, color: '#f38ba8' } as React.CSSProperties,
+  // Amber, not the violation banner's red: a stale graph is a to-do, and a
+  // to-do styled as an error trains the operator to ignore both.
+  compileNotice:      { background: '#3a3324', border: '1px solid #f9e2af', borderRadius: 4, padding: '8px 12px', marginBottom: 12 } as React.CSSProperties,
+  compileLine:        { margin: '2px 0', fontSize: 12, color: '#f9e2af' } as React.CSSProperties,
 } as const;

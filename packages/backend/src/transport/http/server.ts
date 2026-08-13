@@ -56,6 +56,10 @@ export async function buildServer(
   // false` — the capability is literally "the service exists in this
   // process".
   sensorSimulation?: SensorSimulationService,
+  // #103: supplied by `index.ts` so the process has exactly one compiler — the
+  // same instance `LayoutService` reads its gap count through. Constructed here
+  // when absent, which is every test that does not care.
+  compileService: CompileService = new CompileService(repo, topologyService),
 ) {
   const fastify = Fastify({ logger: { level: logLevel } });
 
@@ -100,10 +104,6 @@ export async function buildServer(
   // reason `layoutRoutes` still takes `repo` directly. It exists so the
   // referential checks a Zod schema cannot express live in a service rather
   // than in the route callback.
-  // #103: repository-only and stateless, like `GridService` beside it — the
-  // compile is a read, and the *write* it feeds lives on `TopologyService`,
-  // which stays the only writer of `block_edges`.
-  const compileService = new CompileService(repo, topologyService);
   await gridRoutes(fastify, new GridService(repo), compileService);
   // Same reasoning as `GridService`: stateless, repository-only. `block_ends`
   // is topology-adjacent but is not the graph — it names openings, and

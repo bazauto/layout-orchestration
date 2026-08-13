@@ -955,3 +955,146 @@ describe('LayoutService — safe-stop on connection loss', () => {
     await service.stop();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Gaps in the compiled graph gate automatic modes (#103, D6/D-C).
+ *
+ * The property is narrow and worth stating plainly: a gappy graph refuses
+ * *new* automatic authority, and withdraws authority the graph can no longer
+ * support — and does **neither** by halting the layout. A refused mode change
+ * is an ordinary rejection. A Safe-Stop is what happens when a train's position
+ * is in doubt, and an unfinished drawing is not that.
+ */
+describe('LayoutService — the compiled graph gates automatic modes (#103)', () => {
+  /** A started service whose compiled graph reports `gaps` holes. */
+  async function withGaps(gaps: number) {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    const stateManager = new LayoutStateManager('test');
+    const reservations = new ReservationService(repo, stateManager, silentLogger);
+    const gapCount = vi.fn().mockResolvedValue(gaps);
+    const service = new LayoutService(
+      dcc,
+      mqtt,
+      repo,
+      stateManager,
+      reservations,
+      silentLogger,
+      undefined,
+      undefined,
+      { gapCount },
+    );
+    await service.start('test');
+    return { service, stateManager, gapCount };
+  }
+
+  it('permits auto when the graph has no gaps', async () => {
+    const { service, stateManager } = await withGaps(0);
+
+    await service.handleSetMode({ mode: 'auto' });
+
+    expect(stateManager.getState().systemMode).toBe('auto');
+    await service.stop();
+  });
+
+  it('refuses auto when the graph has gaps, naming the count', async () => {
+    const { service, stateManager } = await withGaps(3);
+
+    await expect(service.handleSetMode({ mode: 'auto' })).rejects.toThrow(/3 gaps/);
+
+    expect(stateManager.getState().systemMode).toBe('manual');
+    // Not a Safe-Stop. Nothing about the railway has gone wrong; the operator
+    // asked for an authority the graph cannot support and was told no.
+    expect(service.getSystemStatus().status).toBe('online');
+    await service.stop();
+  });
+
+  it('refuses hybrid too, because it can issue automated commands', async () => {
+    // D6 names only `auto`, but `canIssueAutoCommand` returns true for `hybrid`,
+    // so gating `auto` alone would leave the automated path open through the
+    // side door.
+    const { service, stateManager } = await withGaps(1);
+
+    await expect(service.handleSetMode({ mode: 'hybrid' })).rejects.toThrow(/1 gap\b/);
+
+    expect(stateManager.getState().systemMode).toBe('manual');
+    await service.stop();
+  });
+
+  it('never gates manual, whatever the graph looks like', async () => {
+    // Manual is the mode an operator drops into in order to *fix* things.
+    // Gating it would be a trap with no way out.
+    const { service, stateManager } = await withGaps(99);
+
+    await service.handleSetMode({ mode: 'manual' });
+
+    expect(stateManager.getState().systemMode).toBe('manual');
+    await service.stop();
+  });
+
+  it('does not consult the compiler for a manual mode change', async () => {
+    const { service, gapCount } = await withGaps(0);
+    gapCount.mockClear();
+
+    await service.handleSetMode({ mode: 'manual' });
+
+    expect(gapCount).not.toHaveBeenCalled();
+    await service.stop();
+  });
+
+  it('drops an auto mode to manual when a reload leaves the graph gappy', async () => {
+    // The gate covers *entering* an automatic mode; this covers the graph
+    // changing underneath one. Applying a compile that leaves holes, or
+    // deleting a block, does exactly that while the layout is already in auto.
+    const { service, stateManager, gapCount } = await withGaps(0);
+    await service.handleSetMode({ mode: 'auto' });
+    expect(stateManager.getState().systemMode).toBe('auto');
+
+    gapCount.mockResolvedValue(2);
+    await service.reloadTopology();
+
+    expect(stateManager.getState().systemMode).toBe('manual');
+    // Authority removed, layout still running — not a Safe-Stop and not a fault
+    // latch. D9 forbids a compile from being able to halt a railway.
+    expect(service.getSystemStatus().status).toBe('online');
+    await service.stop();
+  });
+
+  it('leaves an auto mode alone when a reload finds no gaps', async () => {
+    const { service, stateManager } = await withGaps(0);
+    await service.handleSetMode({ mode: 'auto' });
+
+    await service.reloadTopology();
+
+    expect(stateManager.getState().systemMode).toBe('auto');
+    await service.stop();
+  });
+
+  it('leaves a manual mode alone on a gappy reload, and does not ask', async () => {
+    const { service, stateManager, gapCount } = await withGaps(4);
+    gapCount.mockClear();
+
+    await service.reloadTopology();
+
+    expect(stateManager.getState().systemMode).toBe('manual');
+    // Already manual: there is no authority to withdraw, so there is nothing
+    // worth asking about.
+    expect(gapCount).not.toHaveBeenCalled();
+    await service.stop();
+  });
+
+  it('gates nothing when no compiler is wired', async () => {
+    // The inert default. An unwired service has been told nothing about
+    // completeness, and refusing on that basis would be reporting a limitation
+    // nobody stated.
+    const { service, stateManager } = await buildStartedService();
+
+    await service.handleSetMode({ mode: 'auto' });
+
+    expect(stateManager.getState().systemMode).toBe('auto');
+    await service.stop();
+  });
+});
