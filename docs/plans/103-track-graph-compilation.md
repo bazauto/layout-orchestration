@@ -1063,6 +1063,24 @@ protection. Do not add a merge mode.
 
 ### PR 4 — Gaps gate `SystemMode: auto`; staleness warns
 
+> **Shipped**, with two notes:
+>
+> 1. **Step 4.1's WebSocket integration test was not added.** The `SET_MODE`
+>    throw → `ERROR` frame path is generic in `transport/websocket/index.ts` and
+>    already covered; reproducing it would have meant duplicating the whole
+>    three-way `completeness`/`CompileService`/`TopologyService` wiring into
+>    `wsBroadcast.test.ts`. The gate is covered at unit level (9 cases) and at
+>    integration level against a real drawing in `compile.test.ts`.
+> 2. **A gappy reload suspends auto-authority routes**, which step 4.2 does not
+>    mention. Dropping the mode to `manual` without it would leave an
+>    `auto`-authority route running under an authority the system has just
+>    withdrawn. It is the same D7 consequence a manual mode change already has —
+>    suspend, not cancel, so the locks stay held and the operator decides.
+>
+> Step 4.3's frontend half landed on `EdgesTab` rather than a Configure header:
+> that is where the graph is already displayed, and the notice sits directly
+> above the violation banner it is deliberately styled apart from.
+
 #### Step 4.1 — The port and the gate
 
 **Files:** create `packages/backend/src/ports/IGraphCompletenessView.ts`;

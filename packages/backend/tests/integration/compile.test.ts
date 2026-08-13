@@ -28,6 +28,8 @@ import {
   GridTileRecord,
   ILayoutRepository,
 } from '../../src/ports/ILayoutRepository';
+import { CompileService } from '../../src/services/CompileService';
+import { IGraphCompletenessView } from '../../src/ports/IGraphCompletenessView';
 import { IRouteLockView } from '../../src/ports/IRouteLockView';
 import { BlockEdge } from '../../src/domain/types';
 import {
@@ -186,6 +188,14 @@ async function buildTestServer() {
   const state = new LayoutStateManager(LAYOUT_ID);
   const nameBook = new NameBookCache(repo, LAYOUT_ID);
   const reservations = new ReservationService(repo, state, silentLogger, nameBook);
+  // The same three-way cycle `index.ts` breaks, broken the same way: the
+  // service needs a gap count, the compiler needs `TopologyService`, and
+  // `TopologyService` needs the service's reload. Wired for real here rather
+  // than stubbed, so the `auto` gate is exercised against an actual drawing.
+  let compileService: CompileService | undefined;
+  const completeness: IGraphCompletenessView = {
+    gapCount: async (id) => (compileService ? compileService.gapCount(id) : 0),
+  };
   const service = new LayoutService(
     dcc,
     mqtt,
@@ -195,6 +205,7 @@ async function buildTestServer() {
     silentLogger,
     undefined,
     nameBook,
+    completeness,
   );
   await service.start(LAYOUT_ID);
   const lockView: IRouteLockView = {
@@ -210,6 +221,7 @@ async function buildTestServer() {
     lockView,
     nameBook,
   );
+  compileService = new CompileService(repo, topologyService);
   const authService = await makeTestAuthService();
   const app = await buildServer(
     service,
@@ -219,6 +231,8 @@ async function buildTestServer() {
     authService,
     TEST_AUTH_CONFIG,
     nameBook,
+    undefined,
+    compileService,
   );
   return { app, service };
 }
@@ -669,6 +683,93 @@ describe('POST .../topology/compile/apply', () => {
 
     heldRouteId = 'route-1';
     expect((await apply(status.drawingFingerprint)).statusCode).toBe(409);
+    expect(service.getSystemStatus().status).toBe('online');
+  });
+});
+
+// ─── GET .../topology, and the auto gate ─────────────────────────────────────
+
+describe('GET .../topology — where the graph stands against the drawing', () => {
+  const topologyStatus = async () => {
+    const res = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/topology` });
+    expect(res.statusCode).toBe(200);
+    return JSON.parse(res.body);
+  };
+
+  it('reports the graph as stale before any apply, and fresh after one', async () => {
+    await drawTwoBlocks();
+
+    const before = await topologyStatus();
+    expect(before.compiled.stale).toBe(true);
+    expect(before.compiled.compiledAt).toBeNull();
+    expect(before.compiled.gapCount).toBe(0);
+
+    const { status } = await compileView();
+    expect((await apply(status.drawingFingerprint)).statusCode).toBe(200);
+
+    const after = await topologyStatus();
+    expect(after.compiled.stale).toBe(false);
+    expect(after.edgeCount).toBe(2);
+    expect(after.valid).toBe(true);
+  });
+
+  it('goes stale again on the next tile edit — a warning, never a gate', async () => {
+    await drawTwoBlocks();
+    const { status } = await compileView();
+    await apply(status.drawingFingerprint);
+
+    await putTile({ x: 9, y: 9, tileType: 'straight-h', metadata: { trackRole: 'decorative' } });
+
+    const after = await topologyStatus();
+    expect(after.compiled.stale).toBe(true);
+    // Still a perfectly valid graph. Staleness says the graph is behind the
+    // picture, not that anything is wrong with it — gating on this would stop
+    // an operator moving a platform tile.
+    expect(after.valid).toBe(true);
+  });
+
+  it('keeps answering 200 without the block for an unknown layout, rather than becoming a 404', async () => {
+    // `compiled` is an addition to an endpoint that already had a contract.
+    // `getStatus` has never checked that the layout exists — it reports on an
+    // edge set, and an empty one is a truthful answer — so adding a UI hint
+    // must not turn that into a 404 as a side effect.
+    const res = await app.inject({ method: 'GET', url: '/api/layouts/nope/topology' });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).compiled).toBeUndefined();
+  });
+
+  it('keeps the existing shape, so an older client reading it still works', async () => {
+    await drawTwoBlocks();
+
+    const status = await topologyStatus();
+
+    expect(status).toMatchObject({ valid: expect.any(Boolean), edgeCount: expect.any(Number) });
+    expect(Array.isArray(status.violations)).toBe(true);
+  });
+});
+
+describe('SystemMode gating on compile gaps (#103, D6)', () => {
+  it('refuses auto while the drawing compiles with gaps, and does not Safe-Stop', async () => {
+    // A single block drawn with an opening at each end and no buffer: two
+    // unresolved openings, and nothing for the block to connect to.
+    await putTile({ x: 0, y: 0, tileType: 'straight-h', metadata: { blockId: BLOCK_A } });
+    await putTile({ x: 1, y: 0, tileType: 'straight-h', metadata: { blockId: BLOCK_A } });
+
+    const { report } = await compileView();
+    expect(report.gaps.length).toBeGreaterThan(0);
+
+    await expect(service.handleSetMode({ mode: 'auto' })).rejects.toThrow(/gap/i);
+    expect(service.getSystemStatus().status).toBe('online');
+  });
+
+  it('permits auto once the drawing compiles clean', async () => {
+    await drawTwoBlocks();
+    const { report } = await compileView();
+    expect(report.gaps).toEqual([]);
+
+    await service.handleSetMode({ mode: 'auto' });
+
     expect(service.getSystemStatus().status).toBe('online');
   });
 });

@@ -5,7 +5,7 @@
 | Decision | State |
 |---|---|
 | D4, D5 — length on blocks, joints zero | **shipped** (#105) |
-| D6, D7 — partial graph, completeness contract | **shipped** as compiler output; nothing gates on it yet |
+| D6, D7 — partial graph, completeness contract | **shipped**, and now gating: a gap refuses `auto` **and `hybrid`**, and drops an automatic mode to `manual` when the graph changes underneath it. Staleness warns and never gates |
 | D8 — disposable end labels | **shipped** in `compileOpenings`; `block_ends` still exists alongside |
 | D9 — a compile cannot Safe-Stop | **shipped**: refuse-then-write in `replaceGraph`, asserted at unit, integration and scenario level |
 | D10 — fingerprint | **shipped**: `compiled_graphs`, `GET .../topology/compile`, and the apply's mismatch 409 |

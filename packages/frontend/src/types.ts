@@ -207,6 +207,27 @@ export interface TopologyStatus {
   valid: boolean;
   violations: TopologyViolation[];
   edgeCount: number;
+  /**
+   * Where the live graph stands against the drawing it was compiled from
+   * (#103). Optional because the field is newer than this type and a cached
+   * response may not carry it — never because it is unimportant.
+   */
+  compiled?: CompiledGraphStatus;
+}
+
+/**
+ * Mirrors `CompiledGraphStatus` in the backend's `services/CompileService.ts`.
+ *
+ * `stale` is a **warning, never a gate** — gating on it would stop an operator
+ * moving a platform tile. `gapCount` is the one that gates, and it gates
+ * `SystemMode: auto`, not any authoring action.
+ */
+export interface CompiledGraphStatus {
+  compiledAt: string | null;
+  compiledFingerprint: string | null;
+  drawingFingerprint: string;
+  stale: boolean;
+  gapCount: number;
 }
 
 // ─── Grid ─────────────────────────────────────────────────────────────────────

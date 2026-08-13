@@ -65,6 +65,10 @@ import { IDccController } from '../ports/IDccController';
 import { IMqttAdapter } from '../ports/IMqttAdapter';
 import { ILayoutRepository, PointRecord, SensorRecord } from '../ports/ILayoutRepository';
 import { INameBook } from '../ports/INameBook';
+import {
+  IGraphCompletenessView,
+  INERT_GRAPH_COMPLETENESS,
+} from '../ports/IGraphCompletenessView';
 import { SensorCreateInput, sensorReadingSchema, SensorUpdateInput } from './validation';
 import { INERT_NAME_BOOK } from './nameBook';
 import { loadTopology, TopologyLoadResult } from './topologyLoader';
@@ -193,6 +197,12 @@ export class LayoutService extends EventEmitter {
     private readonly log: LayoutServiceLogger,
     options?: Partial<LayoutServiceOptions>,
     private readonly names: INameBook = INERT_NAME_BOOK,
+    /**
+     * How complete the compiled graph is (#103, D6). Optional and inert by
+     * default, matching `INameBook`: an unwired service gates nothing, because
+     * nothing has told it anything about completeness.
+     */
+    private readonly completeness: IGraphCompletenessView = INERT_GRAPH_COMPLETENESS,
   ) {
     super();
     this.options = { ...DEFAULT_LAYOUT_SERVICE_OPTIONS, ...options };
@@ -398,7 +408,44 @@ export class LayoutService extends EventEmitter {
     }
   }
 
+  /**
+   * Changes the system mode, refusing an automated one while the compiled graph
+   * has gaps (#103, D6/D-C).
+   *
+   * **Gated here, at the transition, rather than inside `canIssueAutoCommand`.**
+   * That predicate is pure over two enums and is called on every automated
+   * command; threading a third argument through it would ripple into every
+   * caller and turn a per-layout async read into a hot path. A mode change is
+   * rare and human-initiated, so this is where the question is cheap to ask and
+   * where the answer is useful — the operator finds out when they ask for
+   * `auto`, not when a train has already started moving.
+   *
+   * **`hybrid` is gated as well as `auto`.** D6 names only `auto`, but
+   * `canIssueAutoCommand` returns true for `hybrid` too, so gating `auto` alone
+   * would leave the automated-command path open through the side door.
+   *
+   * A refusal is a **throw, not a Safe-Stop**. The transport turns it into an
+   * `ERROR` frame and the layout keeps running in whatever mode it was already
+   * in: refusing to grant new authority is not the same as taking existing
+   * authority away, and halting a railway because someone clicked the wrong
+   * button would be its own bug.
+   */
   async handleSetMode(cmd: SetModeCommand): Promise<void> {
+    if (this.layoutId && (cmd.mode === 'auto' || cmd.mode === 'hybrid')) {
+      const gaps = await this.completeness.gapCount(this.layoutId);
+      if (gaps > 0) {
+        this.log.warn('[LayoutService] Refused mode change — compiled graph has gaps', {
+          layoutId: this.layoutId,
+          layoutName: this.names.get().layouts.get(this.layoutId),
+          mode: cmd.mode,
+          gapCount: gaps,
+        });
+        throw new Error(
+          `Cannot enter ${cmd.mode} mode: the compiled track graph has ${pluralise(gaps, 'gap')}. Compile the drawing and resolve them first.`,
+        );
+      }
+    }
+
     this.stateManager.setMode(cmd.mode);
 
     // D7: flipping systemMode to 'manual' suspends every auto-authority
@@ -650,8 +697,58 @@ export class LayoutService extends EventEmitter {
     }
 
     await this.evaluateAndApplySafeStop();
+    await this.demoteAutoModeIfGraphIncomplete(layoutId);
 
     return result;
+  }
+
+  /**
+   * Drops an automated mode to `manual` when the graph the layout is now
+   * running on has gaps (#103, D-C).
+   *
+   * The gate in `handleSetMode` covers entering an automated mode; this covers
+   * the graph changing *underneath* one. Applying a compile that leaves holes,
+   * or deleting a block, can turn a complete graph into an incomplete one while
+   * the layout is already in `auto`, and an authority granted against a
+   * complete graph should not survive the graph becoming incomplete.
+   *
+   * **Not a Safe-Stop, and not a fault latch.** Nothing has gone wrong with the
+   * railway and no train's position is in doubt; the system simply no longer
+   * has the information to drive one automatically. Removing the authority is
+   * proportionate. Halting the layout because an operator erased a siding is
+   * not, and D9 forbids a compile from being able to cause one.
+   *
+   * Runs after `evaluateAndApplySafeStop` so a genuine Safe-Stop is applied
+   * first and this cannot mask it.
+   */
+  private async demoteAutoModeIfGraphIncomplete(layoutId: LayoutId): Promise<void> {
+    const mode = this.stateManager.getState().systemMode;
+    if (mode !== 'auto' && mode !== 'hybrid') return;
+
+    const gaps = await this.completeness.gapCount(layoutId);
+    if (gaps === 0) return;
+
+    this.stateManager.setMode('manual');
+
+    // The same D7 consequence a manual mode change has: an auto-authority route
+    // is suspended, not cancelled, so its locks stay held and the operator
+    // decides what happens to the train.
+    const outcomes = await this.reservations.suspendAuto(
+      layoutId,
+      'compiled track graph has gaps',
+    );
+    for (const outcome of outcomes) {
+      this.publishReservationOutcome(outcome);
+    }
+
+    this.log.warn('[LayoutService] Mode dropped to manual — compiled graph has gaps', {
+      layoutId,
+      layoutName: this.names.get().layouts.get(layoutId),
+      previousMode: mode,
+      gapCount: gaps,
+    });
+
+    this.publishSystemStatus();
   }
 
   // ─── Private: Initialisation ──────────────────────────────────────────────────

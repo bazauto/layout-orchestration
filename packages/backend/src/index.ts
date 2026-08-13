@@ -15,6 +15,8 @@ import { DrizzleRepository } from './adapters/db/repository';
 import { DrizzleAuthRepository } from './adapters/db/authRepository';
 import { LayoutService } from './services/LayoutService';
 import { TopologyService } from './services/TopologyService';
+import { CompileService } from './services/CompileService';
+import { IGraphCompletenessView } from './ports/IGraphCompletenessView';
 import { ReservationService } from './services/ReservationService';
 import { SensorSimulationService } from './services/SensorSimulationService';
 import { NameBookCache } from './services/nameBook';
@@ -128,6 +130,17 @@ async function main() {
   // services (and the transport layer below) — see docs/naming.md D4.
   const nameBook = new NameBookCache(repo, activeLayoutId);
   const reservationService = new ReservationService(repo, stateManager, adapterLogger, nameBook);
+  // #103: `LayoutService` needs the gap count to gate `auto`, `CompileService`
+  // needs `TopologyService` to apply, and `TopologyService` needs
+  // `layoutService.reloadTopology` — a three-way cycle broken here, at the one
+  // edge that is genuinely late: the gap count is only ever read when an
+  // operator changes mode or a reload finishes, both long after construction.
+  // The port stays honest about it — before the compiler exists there is
+  // nothing to say about completeness, so it says nothing and gates nothing.
+  let compileService: CompileService | undefined;
+  const completeness: IGraphCompletenessView = {
+    gapCount: async (layoutId) => (compileService ? compileService.gapCount(layoutId) : 0),
+  };
   const layoutService = new LayoutService(
     dcc,
     mqtt,
@@ -140,6 +153,7 @@ async function main() {
     // through, which is misleading: LayoutService has no use for the flag.
     { clearAfterValidReadings: config.sensors.clearAfterValidReadings },
     nameBook,
+    completeness,
   );
   const topologyService = new TopologyService(
     repo,
@@ -148,6 +162,7 @@ async function main() {
     reservationService,
     nameBook,
   );
+  compileService = new CompileService(repo, topologyService);
   const authService = new AuthService(authRepo, adapterLogger);
 
   // #65 D2: the flag gates constructing the service at all, not a runtime
@@ -178,6 +193,9 @@ async function main() {
     },
     nameBook,
     sensorSimulation,
+    // The same instance the `auto` gate reads through, so there is exactly one
+    // compiler in the process.
+    compileService,
   );
   await server.listen({ port: config.http.port, host: config.http.host });
 

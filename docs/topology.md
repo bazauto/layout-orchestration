@@ -504,6 +504,56 @@ SQLite half way through a batch. Westgate Hollow does not draw this shape today,
 but the design permits it (a point genuinely can sit inside a block), so it is
 covered by a test rather than left to chance.
 
+### Gaps gate automatic modes; staleness only warns
+
+Two facts about the same graph, deliberately doing different jobs.
+
+**A gap gates `SystemMode: auto` — and `hybrid`.** D6 names only `auto`, but
+`canIssueAutoCommand` returns true for `hybrid` as well, so gating `auto` alone
+would leave the automated-command path open through the side door.
+
+The gate lives in `LayoutService.handleSetMode`, at the transition, **not** in
+`canIssueAutoCommand`. That predicate is pure over two enums and runs on every
+automated command; threading a gap count through it would ripple into every
+caller and turn a per-layout async read into a hot path. A mode change is rare
+and human-initiated, which is where the question is cheap to ask and where the
+answer is useful — the operator learns when they ask for `auto`, not once a
+train is moving.
+
+The count is read live through `IGraphCompletenessView`, a one-method port
+implemented by `CompileService` and injected the way `INameBook` is. **One
+number crosses that boundary**, and that is the point: `LayoutService` has no
+business reading a tile, and a cached count would be a second source of truth
+about the very thing #103 exists to stop having two of.
+
+`reloadTopology` applies the same rule in the other direction: if the layout is
+already in an automatic mode and the graph it is now running on has gaps, the
+mode drops to `manual` and auto-authority routes are **suspended, not
+cancelled** — the same D7 consequence a manual mode change has, so the locks
+stay held and the operator decides. This is not a Safe-Stop and not a fault
+latch: nothing has gone wrong with the railway, the system simply no longer has
+what it needs to drive it automatically, and D9 forbids a compile from being
+able to halt anything.
+
+The inert default gates nothing. An unwired `LayoutService` has been told
+nothing about completeness, and refusing `auto` on that basis would be reporting
+a limitation nobody stated. The real fail-safe is stronger and elsewhere: a
+graph with holes cannot route a train through them, because the edges are not
+there.
+
+**Staleness only warns.** `GET .../topology` carries a `compiled` block
+(`CompiledGraphStatus`), composed in the route rather than in `TopologyService`
+— that service validates and writes `block_edges` and has no business reading a
+tile, while staleness is a fact about two artefacts at once. The Edges tab
+renders it in amber rather than the violation banner's red: a stale graph is a
+to-do, and a to-do styled as an error teaches the operator to ignore both.
+
+**Deliberately not on the MQTT `system/status` payload, nor the WebSocket
+`SYSTEM_STATUS` event that mirrors it.** That payload is binding
+(`docs/mqtt-contract.md`) and the ESP firmware is built against it. Staleness is
+an authoring concern with no bearing on anything the firmware does; adding a
+field there for a UI hint would be a contract change.
+
 ### The diff is matched in two passes
 
 End labels are disposable compiler output regenerated on every compile (D8), so

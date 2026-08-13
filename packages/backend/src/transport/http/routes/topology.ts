@@ -21,10 +21,34 @@ export async function topologyRoutes(
   topologyService: TopologyService,
   compileService: CompileService,
 ): Promise<void> {
+  // The live graph's health, plus where it stands against the drawing (#103).
+  //
+  // `compiled` is composed here rather than inside `TopologyService` on purpose:
+  // that service validates and writes `block_edges` and has no business reading
+  // a tile. Staleness is a fact about two artefacts, so the place that knows
+  // about both is the route.
+  //
+  // **Deliberately not added to the MQTT `system/status` payload or the
+  // WebSocket `SYSTEM_STATUS` event that mirrors it.** That payload is binding
+  // (`docs/mqtt-contract.md`) and the ESP firmware is built against it;
+  // staleness is an authoring concern with no bearing on anything the firmware
+  // does. A `compiled` field there would be a contract change for a UI hint.
   fastify.get<{ Params: { layoutId: string } }>(
     '/api/layouts/:layoutId/topology',
-    async (req) => {
-      return topologyService.getStatus(req.params.layoutId);
+    async (req, reply) => {
+      const status = await topologyService.getStatus(req.params.layoutId);
+      try {
+        return { ...status, compiled: await compileService.status(req.params.layoutId) };
+      } catch (err) {
+        // `compiled` is an addition to an endpoint that already had a contract,
+        // and it must not change one. `getStatus` has never checked that the
+        // layout exists — it reports on an edge set, and an empty one is a
+        // truthful answer — so an unknown layout keeps answering 200 without
+        // the block, rather than becoming a 404 as a side effect of adding a UI
+        // hint. Anything else (the compile cap) still surfaces.
+        if (err instanceof LayoutNotFoundError) return status;
+        return mapCompileError(err, reply);
+      }
     },
   );
 
