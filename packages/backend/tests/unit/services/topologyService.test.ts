@@ -26,6 +26,7 @@ const noLocks: IRouteLockView = {
   findRouteHoldingBlock: () => null,
   findRouteHoldingPoint: () => null,
   findRouteHoldingEdge: () => null,
+  findAnyHeldRoute: () => null,
 };
 
 const LAYOUT = 'layout-1';
@@ -81,6 +82,16 @@ function makeRepo(overrides: Partial<ILayoutRepository> = {}): ILayoutRepository
     createBlockEdge: vi.fn().mockImplementation(async (data) => ({ id: 'new-edge', ...data })),
     updateBlockEdge: vi.fn().mockImplementation(async (id, data) => ({ ...edge(), id, ...data })),
     deleteBlockEdge: vi.fn().mockResolvedValue(undefined),
+    getCompiledGraph: vi.fn().mockResolvedValue(null),
+    replaceBlockEdges: vi
+      .fn()
+      .mockImplementation(async (layoutId, edges) =>
+        edges.map((e: Omit<BlockEdge, 'id' | 'layoutId'>, i: number) => ({
+          id: `compiled-${i}`,
+          layoutId,
+          ...e,
+        })),
+      ),
     ...overrides,
   };
 }
@@ -531,12 +542,139 @@ describe('TopologyService — updatePoint', () => {
 
 // ─── D10: the topology write-guard ─────────────────────────────────────────
 
+/**
+ * The compiled-graph write (#103, D1/D3/D9).
+ *
+ * Every test here is about the same property: **refuse first, write second.**
+ * `reloadTopology()` Safe-Stops the layout when it loads a graph with a fatal
+ * violation, so an apply that could write rows and then have them rejected on
+ * reload would turn an authoring action into a halted railway. That is why the
+ * failure cases assert the *absence* of the repository call, not merely that
+ * something threw.
+ */
+describe('TopologyService — replaceGraph (#103)', () => {
+  const CANDIDATES = [
+    { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west', pointConditions: [] },
+    { fromBlockId: 'b2', fromEnd: 'west', toBlockId: 'b1', toEnd: 'east', pointConditions: [] },
+  ];
+
+  it('replaces the whole set and notifies exactly once', async () => {
+    const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue([edge({ id: 'old' })]) });
+    const onChanged = vi.fn().mockResolvedValue(undefined);
+    const service = new TopologyService(repo, onChanged, silentLogger, noLocks);
+
+    const written = await service.replaceGraph(LAYOUT, CANDIDATES, 'fp-1');
+
+    expect(written).toHaveLength(2);
+    expect(repo.replaceBlockEdges).toHaveBeenCalledWith(LAYOUT, CANDIDATES, 'fp-1', expect.any(Date));
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies an empty graph, because a drawing with no connections is a legitimate answer', async () => {
+    // Not an error and not a no-op: erasing the drawing and applying is how a
+    // layout is legitimately torn down. Refusing it would leave the graph
+    // describing a railway that is no longer drawn.
+    const repo = makeRepo();
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
+
+    await service.replaceGraph(LAYOUT, [], 'fp-empty');
+
+    expect(repo.replaceBlockEdges).toHaveBeenCalledWith(LAYOUT, [], 'fp-empty', expect.any(Date));
+  });
+
+  it('refuses when any route holds anything in the layout, and writes nothing', async () => {
+    // Not a per-edge guard (D-E). Every row is about to be deleted and rewritten
+    // with regenerated labels, so "is this edge held" has no answer worth acting
+    // on — the row may not survive and the label a live route recorded may not
+    // exist afterwards.
+    const repo = makeRepo();
+    const held: IRouteLockView = { ...noLocks, findAnyHeldRoute: () => 'route-77' };
+    const service = new TopologyService(repo, vi.fn(), silentLogger, held);
+
+    await expect(service.replaceGraph(LAYOUT, CANDIDATES, 'fp-1')).rejects.toThrow(
+      LockedByRouteError,
+    );
+    expect(repo.replaceBlockEdges).not.toHaveBeenCalled();
+  });
+
+  it('names the holding route on the refusal', async () => {
+    const held: IRouteLockView = { ...noLocks, findAnyHeldRoute: () => 'route-77' };
+    const service = new TopologyService(makeRepo(), vi.fn(), silentLogger, held);
+
+    await expect(service.replaceGraph(LAYOUT, CANDIDATES, 'fp-1')).rejects.toMatchObject({
+      kind: 'graph',
+      routeId: 'route-77',
+    });
+  });
+
+  it('refuses a candidate naming a block that does not exist, and writes nothing', async () => {
+    // The never-write-then-discover assertion. A `unknown-block` violation is
+    // fatal on reload, so writing this set and finding out afterwards would
+    // Safe-Stop the layout as a result of an authoring action (D9).
+    const repo = makeRepo();
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
+
+    await expect(
+      service.replaceGraph(
+        LAYOUT,
+        [{ fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'ghost', toEnd: 'west', pointConditions: [] }],
+        'fp-1',
+      ),
+    ).rejects.toThrow(TopologyRejectedError);
+    expect(repo.replaceBlockEdges).not.toHaveBeenCalled();
+  });
+
+  it('validates the candidate set against itself, not against the live graph', async () => {
+    // Two identical connections are a duplicate within the *proposal*. Checking
+    // each row against what is stored would miss it, because what is stored is
+    // about to be deleted.
+    const repo = makeRepo({ listBlockEdges: vi.fn().mockResolvedValue([]) });
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
+
+    await expect(
+      service.replaceGraph(LAYOUT, [CANDIDATES[0], { ...CANDIDATES[0] }], 'fp-1'),
+    ).rejects.toThrow(TopologyRejectedError);
+    expect(repo.replaceBlockEdges).not.toHaveBeenCalled();
+  });
+
+  it('refuses over the edge cap before validating anything', async () => {
+    const repo = makeRepo();
+    const service = new TopologyService(repo, vi.fn(), silentLogger, noLocks);
+    const tooMany = Array.from({ length: MAX_EDGES_PER_LAYOUT + 1 }, (_, i) => ({
+      fromBlockId: 'b1',
+      fromEnd: `east-${i}`,
+      toBlockId: 'b2',
+      toEnd: `west-${i}`,
+      pointConditions: [],
+    }));
+
+    await expect(service.replaceGraph(LAYOUT, tooMany, 'fp-1')).rejects.toThrow(
+      EdgeLimitExceededError,
+    );
+    expect(repo.replaceBlockEdges).not.toHaveBeenCalled();
+    // Admission control on the whole candidate set — which is where it always
+    // belonged. A cap on how much graph exists is a statement about the graph,
+    // not about whichever row happened to arrive last.
+    expect(repo.listBlocks).not.toHaveBeenCalled();
+  });
+
+  it('does not notify when it refuses', async () => {
+    const onChanged = vi.fn();
+    const held: IRouteLockView = { ...noLocks, findAnyHeldRoute: () => 'route-77' };
+    const service = new TopologyService(makeRepo(), onChanged, silentLogger, held);
+
+    await expect(service.replaceGraph(LAYOUT, CANDIDATES, 'fp-1')).rejects.toThrow();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+});
+
 describe('TopologyService — route-lock write-guard (D10)', () => {
   function lockViewHolding(kind: 'block' | 'point' | 'edge', targetId: string, routeId = 'route-99'): IRouteLockView {
     return {
       findRouteHoldingBlock: (_layoutId, blockId) => (kind === 'block' && blockId === targetId ? routeId : null),
       findRouteHoldingPoint: (_layoutId, pointId) => (kind === 'point' && pointId === targetId ? routeId : null),
       findRouteHoldingEdge: (_layoutId, edgeId) => (kind === 'edge' && edgeId === targetId ? routeId : null),
+      findAnyHeldRoute: () => null,
     };
   }
 

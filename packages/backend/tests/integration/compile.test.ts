@@ -28,6 +28,7 @@ import {
   GridTileRecord,
   ILayoutRepository,
 } from '../../src/ports/ILayoutRepository';
+import { IRouteLockView } from '../../src/ports/IRouteLockView';
 import { BlockEdge } from '../../src/domain/types';
 import {
   authenticateAsAdmin,
@@ -41,6 +42,7 @@ const silentLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const LAYOUT_ID = 'layout-1';
 const BLOCK_A = 'block-a';
 const BLOCK_B = 'block-b';
+const POINT_ID = 'point-1';
 
 const GRID_URL = `/api/layouts/${LAYOUT_ID}/grid`;
 const COMPILE_URL = `/api/layouts/${LAYOUT_ID}/topology/compile`;
@@ -52,12 +54,22 @@ let edges: BlockEdge[];
 let compiled: CompiledGraphRecord | null;
 /** Which blocks have an in-service sensor, so `block-without-detection` can be exercised. */
 let detectedBlocks: string[];
+/**
+ * Forces the route-lock view to report a hold, so the apply's 409 can be
+ * exercised without granting a real route.
+ *
+ * The genuine article — a granted reservation actually blocking an apply — is
+ * `tests/scenario/compile-apply.scenario.test.ts`. This one is about the HTTP
+ * mapping.
+ */
+let heldRouteId: string | null;
 
 function makeRepo(): ILayoutRepository {
   tiles = [];
   edges = [];
   compiled = null;
   detectedBlocks = [BLOCK_A, BLOCK_B];
+  heldRouteId = null;
   let nextId = 1;
 
   return {
@@ -83,7 +95,11 @@ function makeRepo(): ILayoutRepository {
     createBlock: vi.fn(),
     updateBlock: vi.fn(),
     deleteBlock: vi.fn(),
-    listPoints: vi.fn().mockResolvedValue([]),
+    listPoints: vi.fn(async (layoutId: string) =>
+      layoutId === LAYOUT_ID
+        ? [{ id: POINT_ID, layoutId: LAYOUT_ID, name: 'Yard Throat', dccAddress: 7, blockId: null }]
+        : [],
+    ),
     createPoint: vi.fn(),
     updatePoint: vi.fn(),
     deletePoint: vi.fn(),
@@ -139,6 +155,22 @@ function makeRepo(): ILayoutRepository {
     deleteBlockEnd: vi.fn(),
     replaceGeneratedBlockEnds: vi.fn(),
     getCompiledGraph: vi.fn(async () => compiled),
+    // Functional, so the apply path can be exercised end to end and the
+    // idempotence claim (re-compile after apply shows an empty diff) is a real
+    // assertion rather than a restatement of the mock.
+    replaceBlockEdges: vi.fn(
+      async (
+        layoutId: string,
+        candidates: readonly Omit<BlockEdge, 'id' | 'layoutId'>[],
+        fingerprint: string,
+        compiledAt: Date,
+      ) => {
+        edges = edges.filter((e) => e.layoutId !== layoutId);
+        for (const c of candidates) edges.push({ id: `edge-${nextId++}`, layoutId, ...c });
+        compiled = { layoutId, drawingFingerprint: fingerprint, compiledAt };
+        return edges.filter((e) => e.layoutId === layoutId);
+      },
+    ),
     listReservations: vi.fn().mockResolvedValue([]),
     getReservation: vi.fn().mockResolvedValue(null),
     createReservation: vi.fn(),
@@ -165,11 +197,17 @@ async function buildTestServer() {
     nameBook,
   );
   await service.start(LAYOUT_ID);
+  const lockView: IRouteLockView = {
+    findRouteHoldingBlock: (l, b) => reservations.findRouteHoldingBlock(l, b),
+    findRouteHoldingPoint: (l, p) => reservations.findRouteHoldingPoint(l, p),
+    findRouteHoldingEdge: (l, e) => reservations.findRouteHoldingEdge(l, e),
+    findAnyHeldRoute: (l) => heldRouteId ?? reservations.findAnyHeldRoute(l),
+  };
   const topologyService = new TopologyService(
     repo,
     () => Promise.resolve(),
     silentLogger,
-    reservations,
+    lockView,
     nameBook,
   );
   const authService = await makeTestAuthService();
@@ -428,6 +466,209 @@ describe('GET .../topology/compile', () => {
       expect(edge.fromBlockId).not.toBe('deleted-block');
       expect(edge.toBlockId).not.toBe('deleted-block');
     }
+    expect(service.getSystemStatus().status).toBe('online');
+  });
+});
+
+// ─── POST .../topology/compile/apply ─────────────────────────────────────────
+
+const APPLY_URL = `${COMPILE_URL}/apply`;
+
+const apply = (fingerprint: unknown) =>
+  app.inject({ method: 'POST', url: APPLY_URL, payload: { fingerprint } });
+
+describe('POST .../topology/compile/apply', () => {
+  it('writes the compiled graph, and the next compile is provably a no-op', async () => {
+    // D10's idempotence, asserted rather than argued: same drawing, same
+    // output, so re-compiling after an apply must show nothing to do.
+    await drawTwoBlocks();
+    const before = await compileView();
+
+    const res = await apply(before.status.drawingFingerprint);
+    expect(res.statusCode).toBe(200);
+
+    const after = JSON.parse(res.body);
+    expect(after.diff.added).toEqual([]);
+    expect(after.diff.removed).toEqual([]);
+    expect(after.diff.unchanged).toHaveLength(2);
+    expect(after.status.stale).toBe(false);
+    expect(after.status.compiledAt).not.toBeNull();
+
+    const stored = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
+    expect(JSON.parse(stored.body)).toHaveLength(2);
+  });
+
+  it('is a no-op 200 when applied twice, not an error', async () => {
+    await drawTwoBlocks();
+    const { status } = await compileView();
+
+    expect((await apply(status.drawingFingerprint)).statusCode).toBe(200);
+    const second = await apply(status.drawingFingerprint);
+
+    expect(second.statusCode).toBe(200);
+    expect(JSON.parse(second.body).diff.added).toEqual([]);
+    expect(edges).toHaveLength(2);
+  });
+
+  it('replaces a hand-authored edge the compile does not reproduce', async () => {
+    // A recompile is a replace, not a merge (D3). A mixed graph would
+    // reintroduce the two-representations problem at a new seam — an authored
+    // edge nothing ever checks against the picture, forever.
+    await drawTwoBlocks();
+    edges.push({
+      id: 'edge-by-hand',
+      layoutId: LAYOUT_ID,
+      fromBlockId: BLOCK_A,
+      fromEnd: 'invented',
+      toBlockId: BLOCK_B,
+      toEnd: 'fictional',
+      pointConditions: [],
+    });
+
+    const { status } = await compileView();
+    expect((await apply(status.drawingFingerprint)).statusCode).toBe(200);
+
+    expect(edges.map((e) => e.id)).not.toContain('edge-by-hand');
+    expect(edges).toHaveLength(2);
+  });
+
+  it('refuses with 409 when the drawing moved between the review and the apply, writing nothing', async () => {
+    // The time-of-check/time-of-use guard, and the reason no draft table is
+    // needed: you cannot review one graph and apply another.
+    await drawTwoBlocks();
+    const { status } = await compileView();
+
+    await putTile({ x: 7, y: 7, tileType: 'straight-h', metadata: { trackRole: 'decorative' } });
+
+    const res = await apply(status.drawingFingerprint);
+
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.expected).toBe(status.drawingFingerprint);
+    expect(body.actual).not.toBe(status.drawingFingerprint);
+    expect(edges).toEqual([]);
+  });
+
+  it('refuses with 409 while a route holds the layout, writing nothing', async () => {
+    // Not a per-edge guard (D-E): every row is about to be rewritten with
+    // regenerated labels, so nothing may be holding a stale one.
+    await drawTwoBlocks();
+    const { status } = await compileView();
+    heldRouteId = 'route-42';
+
+    const res = await apply(status.drawingFingerprint);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).routeId).toBe('route-42');
+    expect(edges).toEqual([]);
+  });
+
+  it('refuses with 422 and names the violations when the drawing compiles to a graph the validator rejects', async () => {
+    // OQ7's latent case, drawn: a point tile tinted as the block it serves and
+    // reached through its toe. Every road covers the toe, so the arrival rule
+    // correctly emits one edge per road — two rows differing only in point
+    // conditions, which collide on `block_edges_connection_unq` because that
+    // index excludes them.
+    //
+    // The point of this test is that it is a **named 422 before any write**,
+    // not an opaque 500 from SQLite half way through a batch. That falls out of
+    // validating the whole candidate set first; no special case was needed.
+    await putTile({ x: 0, y: 0, tileType: 'straight-h', metadata: { blockId: BLOCK_A } });
+    await putTile({
+      x: 1,
+      y: 0,
+      tileType: 'point-left',
+      metadata: {
+        blockId: BLOCK_B,
+        pointId: POINT_ID,
+        pointRoads: [
+          { when: [{ pointId: POINT_ID, position: 'normal' }], legs: ['w', 'e'] },
+          { when: [{ pointId: POINT_ID, position: 'reverse' }], legs: ['w', 'n'] },
+        ],
+      },
+    });
+
+    const { report, status } = await compileView();
+    const tuples = report.edges.map(
+      (e: { fromBlockId: string; fromEnd: string; toBlockId: string; toEnd: string }) =>
+        `${e.fromBlockId}|${e.fromEnd}|${e.toBlockId}|${e.toEnd}`,
+    );
+    // Guard the fixture itself: if the drawing stops producing the collision,
+    // this test would pass for the wrong reason.
+    expect(new Set(tuples).size).toBeLessThan(tuples.length);
+
+    const res = await apply(status.drawingFingerprint);
+
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body).violations.map((v: { kind: string }) => v.kind)).toContain(
+      'duplicate-connection',
+    );
+    expect(edges).toEqual([]);
+  });
+
+  it('refuses a body carrying edges, rather than silently ignoring them', async () => {
+    // `.strict()`, and it matters more here than anywhere else in the codebase:
+    // a body that could carry rows would be a second authoring path wearing the
+    // compiler's name.
+    await drawTwoBlocks();
+    const { status } = await compileView();
+
+    const res = await app.inject({
+      method: 'POST',
+      url: APPLY_URL,
+      payload: {
+        fingerprint: status.drawingFingerprint,
+        edges: [{ fromBlockId: BLOCK_A, fromEnd: 'east', toBlockId: BLOCK_B, toEnd: 'west' }],
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(edges).toEqual([]);
+  });
+
+  it('refuses an empty or missing fingerprint', async () => {
+    await drawTwoBlocks();
+
+    expect((await apply('')).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: APPLY_URL, payload: {} })).statusCode).toBe(400);
+  });
+
+  it('is admin-only: an operator gets 403 and nothing is written', async () => {
+    await drawTwoBlocks();
+    const { status } = await compileView();
+    await authenticateAsOperator(app);
+
+    const res = await apply(status.drawingFingerprint);
+
+    expect(res.statusCode).toBe(403);
+    expect(edges).toEqual([]);
+  });
+
+  it('returns 404 for a layout that does not exist', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/layouts/nope/topology/compile/apply',
+      payload: { fingerprint: 'anything' },
+    });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('never Safe-Stops — not on success, not on a 409, not on a 422', async () => {
+    // The point of D9. An apply is an authoring action, and an authoring action
+    // that can halt a running railway is a worse bug than anything it prevents.
+    await drawTwoBlocks();
+    const { status } = await compileView();
+    expect(service.getSystemStatus().status).toBe('online');
+
+    expect((await apply(status.drawingFingerprint)).statusCode).toBe(200);
+    expect(service.getSystemStatus().status).toBe('online');
+
+    expect((await apply('a-fingerprint-from-some-other-drawing')).statusCode).toBe(409);
+    expect(service.getSystemStatus().status).toBe('online');
+
+    heldRouteId = 'route-1';
+    expect((await apply(status.drawingFingerprint)).statusCode).toBe(409);
     expect(service.getSystemStatus().status).toBe('online');
   });
 });

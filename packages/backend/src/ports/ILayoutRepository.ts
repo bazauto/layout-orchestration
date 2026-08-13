@@ -178,6 +178,28 @@ export interface ILayoutRepository {
    * warning, never a gate (D10).
    */
   getCompiledGraph(layoutId: string): Promise<CompiledGraphRecord | null>;
+  /**
+   * Replaces this layout's **entire** `block_edges` set and records the drawing
+   * it was compiled from, in ONE transaction (#103, D9/D10).
+   *
+   * A partially applied graph is precisely the write-then-discover failure the
+   * apply path exists to prevent: implementations MUST NOT leave the old edges
+   * deleted and the new ones uninserted, and MUST NOT record the fingerprint of
+   * a graph that did not store. If any insert fails — the unique index on
+   * `(layout_id, from_block_id, from_end, to_block_id, to_end)` is the likely
+   * one — the layout must be left exactly as it was found, still describing the
+   * railway the pathfinder has been planning on.
+   *
+   * Same atomicity contract `createReservation` documents, and load-bearing for
+   * the same reason: the alternative is a graph that half-describes a railway
+   * and a Safe-Stop on the next reload caused by an authoring action.
+   */
+  replaceBlockEdges(
+    layoutId: string,
+    edges: readonly Omit<BlockEdge, 'id' | 'layoutId'>[],
+    fingerprint: string,
+    compiledAt: Date,
+  ): Promise<BlockEdge[]>;
 
   // Route Reservations (see docs/route-locking.md)
   listReservations(layoutId: string, statuses?: RouteStatus[]): Promise<RouteReservation[]>;

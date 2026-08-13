@@ -171,4 +171,137 @@ describe('DrizzleRepository — block edges', () => {
     const blocks = await repo.listBlocks(layoutId);
     expect(blocks.map((b) => b.id)).toContain(block.id);
   });
+
+  // ── replaceBlockEdges: the compiled-graph write (#103, D9/D10) ──────────────
+  //
+  // `TopologyService` has already validated the candidate graph in full by the
+  // time this runs, so what these tests are about is the one class of failure
+  // validation cannot see: a DB constraint refusing an insert half way through.
+  // A non-transactional version would leave the layout describing *part* of a
+  // railway — a graph nobody authored, nobody reviewed, and that Safe-Stops on
+  // the next reload.
+
+  describe('replaceBlockEdges', () => {
+    /** Its own layout per test, so a rollback assertion cannot be confused by a sibling's rows. */
+    async function freshLayout() {
+      const layout = await repo.createLayout({ name: 'Replace Layout', description: null });
+      const a = await repo.createBlock({ layoutId: layout.id, name: 'A' });
+      const b = await repo.createBlock({ layoutId: layout.id, name: 'B' });
+      return { layoutId: layout.id, a: a.id, b: b.id };
+    }
+
+    it('swaps the whole set and stamps the fingerprint, in one call', async () => {
+      const { layoutId: lid, a, b } = await freshLayout();
+      await repo.createBlockEdge({
+        layoutId: lid,
+        fromBlockId: a,
+        fromEnd: 'old',
+        toBlockId: b,
+        toEnd: 'stale',
+        pointConditions: [],
+      });
+
+      const compiledAt = new Date('2026-08-13T12:00:00.000Z');
+      const written = await repo.replaceBlockEdges(
+        lid,
+        [
+          { fromBlockId: a, fromEnd: 'east', toBlockId: b, toEnd: 'west', pointConditions: [] },
+          { fromBlockId: b, fromEnd: 'west', toBlockId: a, toEnd: 'east', pointConditions: [] },
+        ],
+        'fingerprint-1',
+        compiledAt,
+      );
+
+      expect(written).toHaveLength(2);
+      // The hand-authored row is gone: a recompile is a replace, not a merge (D3).
+      const stored = await repo.listBlockEdges(lid);
+      expect(stored.map((e) => e.fromEnd).sort()).toEqual(['east', 'west']);
+
+      const record = await repo.getCompiledGraph(lid);
+      expect(record?.drawingFingerprint).toBe('fingerprint-1');
+      expect(record?.compiledAt.toISOString()).toBe(compiledAt.toISOString());
+    });
+
+    it('round-trips point conditions through the JSON column', async () => {
+      const { layoutId: lid, a, b } = await freshLayout();
+
+      await repo.replaceBlockEdges(
+        lid,
+        [
+          {
+            fromBlockId: a,
+            fromEnd: 'east',
+            toBlockId: b,
+            toEnd: 'west',
+            pointConditions: [{ pointId: 'p1', requiredPosition: 'reverse' }],
+          },
+        ],
+        'fingerprint-2',
+        new Date(),
+      );
+
+      const [stored] = await repo.listBlockEdges(lid);
+      expect(stored.pointConditions).toEqual([{ pointId: 'p1', requiredPosition: 'reverse' }]);
+    });
+
+    it('replaces the fingerprint on a second apply rather than colliding on the primary key', async () => {
+      const { layoutId: lid, a, b } = await freshLayout();
+      const edges = [
+        { fromBlockId: a, fromEnd: 'east', toBlockId: b, toEnd: 'west', pointConditions: [] },
+      ];
+
+      await repo.replaceBlockEdges(lid, edges, 'fingerprint-first', new Date());
+      await repo.replaceBlockEdges(lid, edges, 'fingerprint-second', new Date());
+
+      expect((await repo.getCompiledGraph(lid))?.drawingFingerprint).toBe('fingerprint-second');
+      expect(await repo.listBlockEdges(lid)).toHaveLength(1);
+    });
+
+    it('leaves the original edges intact and writes no fingerprint when an insert violates a constraint', async () => {
+      // Two rows differing only in point conditions collide on
+      // `block_edges_connection_unq`, which excludes `point_conditions` — the
+      // latent case recorded as OQ7. Whatever the eventual answer to that, an
+      // apply that hits it must leave the layout exactly as it was found.
+      const { layoutId: lid, a, b } = await freshLayout();
+      const original = await repo.createBlockEdge({
+        layoutId: lid,
+        fromBlockId: a,
+        fromEnd: 'original',
+        toBlockId: b,
+        toEnd: 'row',
+        pointConditions: [],
+      });
+
+      await expect(
+        repo.replaceBlockEdges(
+          lid,
+          [
+            {
+              fromBlockId: a,
+              fromEnd: 'east',
+              toBlockId: b,
+              toEnd: 'west',
+              pointConditions: [{ pointId: 'p1', requiredPosition: 'normal' }],
+            },
+            {
+              fromBlockId: a,
+              fromEnd: 'east',
+              toBlockId: b,
+              toEnd: 'west',
+              pointConditions: [{ pointId: 'p1', requiredPosition: 'reverse' }],
+            },
+          ],
+          'fingerprint-doomed',
+          new Date(),
+        ),
+      ).rejects.toThrow();
+
+      // The railway the pathfinder was planning on is still there, unchanged.
+      const stored = await repo.listBlockEdges(lid);
+      expect(stored.map((e) => e.id)).toEqual([original.id]);
+      // And no fingerprint claims a graph that never stored — the next apply
+      // must not read this layout as up to date.
+      await expect(repo.getCompiledGraph(lid)).resolves.toBeNull();
+    });
+  });
 });

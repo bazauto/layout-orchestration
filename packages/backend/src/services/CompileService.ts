@@ -39,6 +39,7 @@ import { BlockEdge, LayoutId, PointCondition } from '../domain/types';
 import { parseTileMetadata } from './validation';
 import { Coordinate, CompiledOpening, GeometryTile, compileOpenings } from './gridGeometry';
 import { LayoutNotFoundError } from './GridService';
+import { TopologyService } from './TopologyService';
 import {
   CompileInput,
   CompileReport,
@@ -100,16 +101,38 @@ export interface CompileView {
   diff: CompileDiff;
 }
 
+/**
+ * Thrown when the drawing has moved since the compile the caller reviewed
+ * (D10). Mapped to 409.
+ *
+ * This is the time-of-check/time-of-use guard, and it is the reason the design
+ * needs no draft table: you cannot review one graph and apply another. Without
+ * it, "review then apply" is exactly the shape #103 exists to eliminate —
+ * an operator approves a picture and a *different* graph reaches the
+ * pathfinder.
+ */
+export class CompileFingerprintMismatchError extends Error {
+  constructor(
+    readonly expected: string,
+    readonly actual: string,
+  ) {
+    super('The drawing has changed since this compile was produced; review it again');
+    this.name = 'CompileFingerprintMismatchError';
+  }
+}
+
 export class CompileService {
   /**
-   * The repository alone, deliberately.
-   *
-   * `TopologyService` arrives with the apply, because that is the only thing
-   * that needs it — the compile is a read, and a dependency held for a method
-   * that does not exist yet is a dependency nobody can test. Same reasoning
-   * that leaves `GridService` and `BlockEndService` repository-only.
+   * `TopologyService` is here for the apply and nothing else: it owns edge
+   * validation, the route-lock guard and `onTopologyChanged`, and it stays the
+   * **only** writer of `block_edges`. This service compiles and diffs; it has
+   * no write of its own, which is what makes a bypass structurally impossible
+   * rather than merely absent (D-D).
    */
-  constructor(private readonly repo: ILayoutRepository) {}
+  constructor(
+    private readonly repo: ILayoutRepository,
+    private readonly topology: TopologyService,
+  ) {}
 
   /** The candidate graph, where it stands against the live one, and the diff between them. */
   async compile(layoutId: LayoutId): Promise<CompileView> {
@@ -119,6 +142,52 @@ export class CompileService {
       status: await this.statusOf(layoutId, report),
       diff: diffGraph(live, report.edges),
     };
+  }
+
+  /**
+   * Applies the compiled graph, if the drawing still matches the one reviewed.
+   *
+   * **Recompiles rather than trusting the caller's edges.** The request carries
+   * a fingerprint, never a graph: an apply that took its rows from the body
+   * would be a second authoring path wearing a compiler's name, and the whole
+   * safety argument for compiling is that no human hand is between the drawing
+   * and the graph. What the operator approves is *that drawing*, and the
+   * fingerprint is how they say so.
+   *
+   * So the sequence is: compile the drawing as it stands now, refuse if that
+   * differs from what was reviewed, hand the result to `TopologyService`. Every
+   * refusal precedes the write (D9).
+   *
+   * Gaps do **not** refuse the apply (D6). A partial graph is legitimate — it
+   * is how a layout is actually built up, one corner at a time — and it is
+   * `SystemMode: auto` that a gap gates, not the compile. Refusing here would
+   * leave an operator with an empty graph and no way to make it less empty.
+   *
+   * Returns the post-apply view, whose `diff` is empty and whose `status.stale`
+   * is false. That is D10's idempotence, observable rather than asserted.
+   */
+  async apply(layoutId: LayoutId, fingerprint: string): Promise<CompileView> {
+    const { report } = await this.run(layoutId);
+
+    if (report.fingerprint !== fingerprint) {
+      throw new CompileFingerprintMismatchError(fingerprint, report.fingerprint);
+    }
+
+    await this.topology.replaceGraph(
+      layoutId,
+      report.edges.map((e) => ({
+        fromBlockId: e.fromBlockId,
+        fromEnd: e.fromEnd,
+        toBlockId: e.toBlockId,
+        toEnd: e.toEnd,
+        pointConditions: e.pointConditions,
+      })),
+      report.fingerprint,
+    );
+
+    // Re-read rather than construct: the returned view must describe what is
+    // actually stored, not what this method believes it just stored.
+    return this.compile(layoutId);
   }
 
   /**

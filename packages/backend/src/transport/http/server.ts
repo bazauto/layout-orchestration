@@ -103,7 +103,7 @@ export async function buildServer(
   // #103: repository-only and stateless, like `GridService` beside it — the
   // compile is a read, and the *write* it feeds lives on `TopologyService`,
   // which stays the only writer of `block_edges`.
-  const compileService = new CompileService(repo);
+  const compileService = new CompileService(repo, topologyService);
   await gridRoutes(fastify, new GridService(repo), compileService);
   // Same reasoning as `GridService`: stateless, repository-only. `block_ends`
   // is topology-adjacent but is not the graph — it names openings, and
