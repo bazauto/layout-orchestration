@@ -4,9 +4,10 @@ Decision record for #81, landed with #68. A standing constraint on every layer
 of the track diagram — the Track Editor now, the mimic and monitor view when
 #75, #82 and #63 land, and signal aspects when #79 does.
 
-Implementation: `packages/frontend/src/diagram/encoding.ts` (the encodings) and
+Implementation: `packages/frontend/src/diagram/encoding.ts` (the encodings),
 `packages/frontend/src/diagram/blockRuns.ts` (run detection and tint
-assignment).
+assignment), and `packages/frontend/src/diagram/openings.ts` (the port→tick
+geometry behind D7's opening mark).
 
 ---
 
@@ -154,6 +155,38 @@ because the Track Editor is the authoring screen.
 
 `off` hides text only. It never hides tiles, and it is not a way to make an
 unreadable diagram look tidy.
+
+---
+
+## D7 — An opening mark is a position, plus a label; never a colour alone
+
+**Decision (#103 step 6.1).** `OPENING` in `diagram/encoding.ts` is a
+`StateEncoding` like the others, but it is neither identity nor live state: it
+marks where a compiled opening's ports sit on the tile grid. The Track Editor
+draws it as a short tick, in `OPENING.colour`, crossing the tile boundary the
+port names, plus the block's existing `⊣` stop glyph on a terminated
+opening's closed side, plus the opening's label once, at the tile the compiler
+chose to carry it.
+
+**Why this replaces a word at a nearby cell.** `docs/track-editor.md` D12
+(superseded by #103) drew an end's label at whichever tile the geometry
+happened to pick — a *plausible* cell near the opening, not the boundary it
+actually is. #91's fused-siding bug is the argument against that model: two
+yard roads drawn side by side produced a perfectly reasonable-looking label
+while being wrongly connected, and nothing about the rendering made that
+visible. A mark drawn at the *wrong* boundary, by contrast, is not
+plausible — it is visibly wrong, which is checkable by looking at the
+drawing rather than by trusting the label.
+
+**Why the position itself is the non-colour carrier, and #81 still holds.**
+The tick's location — which boundary, on which tile — is what distinguishes
+one opening from another; `OPENING.colour` only makes it findable against the
+track colour. That is the same posture the cursor crosshair takes ("A
+position, not a colour: #81 forbids colour as the sole carrier of a
+distinction, and this carries none"). `OPENING.glyph`/`label` exist so the
+module stays the single source of every track-diagram glyph, not only the
+ones with a colour to reinforce, and are available to a consumer such as a
+tooltip without inventing a second encoding elsewhere.
 
 ---
 
