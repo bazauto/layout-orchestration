@@ -40,6 +40,12 @@ export interface BlockRecord {
   id: string;
   layoutId: string;
   name: string;
+  /**
+   * Physical length in millimetres. `null` means unmeasured, which **refuses** a
+   * braked run rather than guessing (`docs/braking.md` B4). Length is on the
+   * block, not the edge (D4, `docs/track-graph-compilation.md`).
+   */
+  lengthMm: number | null;
 }
 
 export interface PointRecord {

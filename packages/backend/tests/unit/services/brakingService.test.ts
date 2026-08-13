@@ -87,17 +87,27 @@ function edge(overrides: Partial<BlockEdge> & Pick<BlockEdge, 'id'>): BlockEdge 
     toBlockId: 'b2',
     toEnd: 'west',
     pointConditions: [],
-    lengthMm: 500,
     ...overrides,
   };
 }
 
-/** b1 -[e1]-> b2 -[e2]-> b3, 500mm each unless overridden. */
-function threeBlockEdges(overrides: Partial<Record<'e1' | 'e2', Partial<BlockEdge>>> = {}): BlockEdge[] {
+/** b1 -[e1]-> b2 -[e2]-> b3. Edges carry no length; blocks do (D4). */
+function threeBlockEdges(): BlockEdge[] {
   return [
-    edge({ id: 'e1', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west', ...overrides.e1 }),
-    edge({ id: 'e2', fromBlockId: 'b2', fromEnd: 'east', toBlockId: 'b3', toEnd: 'west', ...overrides.e2 }),
+    edge({ id: 'e1', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' }),
+    edge({ id: 'e2', fromBlockId: 'b2', fromEnd: 'east', toBlockId: 'b3', toEnd: 'west' }),
   ];
+}
+
+/**
+ * b2 is the only block between the confirmed b1 and the b3 destination, so it
+ * is the only one the remaining distance sums. 1000mm unless overridden;
+ * `null` leaves it unmeasured.
+ */
+function threeBlockGraph(b2LengthMm: number | null = 1000) {
+  const measured = new Map<string, number>([['b1', 500], ['b3', 500]]);
+  if (b2LengthMm !== null) measured.set('b2', b2LengthMm);
+  return buildTrackGraph(LAYOUT, threeBlockEdges(), measured);
 }
 
 function pathStep(overrides: Partial<RoutePathStep> & Pick<RoutePathStep, 'blockId'>): RoutePathStep {
@@ -166,18 +176,18 @@ describe('BrakingService.planStop', () => {
 // ─── planStopAtRouteBoundary ─────────────────────────────────────────────────
 
 describe('BrakingService.planStopAtRouteBoundary', () => {
-  it('plans a stop whose requiredDistanceMm fits within the summed edge lengths', async () => {
+  it('plans a stop whose requiredDistanceMm fits within the summed block lengths', async () => {
     const repo = makeRepo([loco()]);
     const stateManager = new LayoutStateManager(LAYOUT);
     stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'auto' });
-    const graph = buildTrackGraph(LAYOUT, threeBlockEdges());
+    const graph = threeBlockGraph();
 
     const service = new BrakingService(repo, stateManager, silentLogger);
     const result = await service.planStopAtRouteBoundary(LAYOUT, reservation(), graph);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // e1 + e2 = 1000mm of measured track between the confirmed block and the destination.
+    // b2 = 1000mm, the only block between the confirmed b1 and the b3 target.
     expect(result.schedule.requiredDistanceMm).toBeLessThanOrEqual(1000);
     expectRepoUntouched(repo);
   });
@@ -188,7 +198,7 @@ describe('BrakingService.planStopAtRouteBoundary', () => {
     const repo = makeRepo([]);
     const stateManager = new LayoutStateManager(LAYOUT);
     stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'auto' });
-    const graph = buildTrackGraph(LAYOUT, threeBlockEdges());
+    const graph = threeBlockGraph();
 
     const service = new BrakingService(repo, stateManager, silentLogger);
     const result = await service.planStopAtRouteBoundary(LAYOUT, reservation(), graph);
@@ -201,7 +211,7 @@ describe('BrakingService.planStopAtRouteBoundary', () => {
     const repo = makeRepo([loco({ id: 'a' }), loco({ id: 'b' })]);
     const stateManager = new LayoutStateManager(LAYOUT);
     stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'auto' });
-    const graph = buildTrackGraph(LAYOUT, threeBlockEdges());
+    const graph = threeBlockGraph();
 
     const service = new BrakingService(repo, stateManager, silentLogger);
     const result = await service.planStopAtRouteBoundary(LAYOUT, reservation(), graph);
@@ -214,7 +224,7 @@ describe('BrakingService.planStopAtRouteBoundary', () => {
     const repo = makeRepo([loco()]);
     const stateManager = new LayoutStateManager(LAYOUT);
     // Deliberately never calling stateManager.updateLoco(3, ...).
-    const graph = buildTrackGraph(LAYOUT, threeBlockEdges());
+    const graph = threeBlockGraph();
 
     const service = new BrakingService(repo, stateManager, silentLogger);
     const result = await service.planStopAtRouteBoundary(LAYOUT, reservation(), graph);
@@ -227,7 +237,7 @@ describe('BrakingService.planStopAtRouteBoundary', () => {
     const repo = makeRepo([loco()]);
     const stateManager = new LayoutStateManager(LAYOUT);
     stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'auto' });
-    const graph = buildTrackGraph(LAYOUT, threeBlockEdges());
+    const graph = threeBlockGraph();
 
     const service = new BrakingService(repo, stateManager, silentLogger);
     const result = await service.planStopAtRouteBoundary(LAYOUT, reservation({ status: 'suspended' }), graph);
@@ -243,7 +253,7 @@ describe('BrakingService.planStopAtRouteBoundary', () => {
     const repo = makeRepo([loco()]);
     const stateManager = new LayoutStateManager(LAYOUT);
     stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'manual' });
-    const graph = buildTrackGraph(LAYOUT, threeBlockEdges());
+    const graph = threeBlockGraph();
 
     const service = new BrakingService(repo, stateManager, silentLogger);
     const result = await service.planStopAtRouteBoundary(LAYOUT, reservation({ authority: 'manual' }), graph);
@@ -252,17 +262,17 @@ describe('BrakingService.planStopAtRouteBoundary', () => {
     expectRepoUntouched(repo);
   });
 
-  it('refuses an unmeasured edge on the remaining stretch, without mutating state', async () => {
+  it('refuses an unmeasured block on the remaining stretch, without mutating state', async () => {
     const repo = makeRepo([loco()]);
     const stateManager = new LayoutStateManager(LAYOUT);
     stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'auto' });
-    const graph = buildTrackGraph(LAYOUT, threeBlockEdges({ e2: { lengthMm: null } }));
+    const graph = threeBlockGraph(null);
 
     const service = new BrakingService(repo, stateManager, silentLogger);
     const before = stateManager.getLoco(3);
     const result = await service.planStopAtRouteBoundary(LAYOUT, reservation(), graph);
 
-    expect(result).toEqual({ ok: false, reason: { kind: 'unmeasured-track', edgeId: 'e2' } });
+    expect(result).toEqual({ ok: false, reason: { kind: 'unmeasured-track', blockId: 'b2' } });
     expectRepoUntouched(repo);
     expect(stateManager.getLoco(3)).toEqual(before);
   });

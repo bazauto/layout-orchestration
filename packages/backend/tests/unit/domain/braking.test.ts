@@ -219,18 +219,28 @@ function edge(overrides: Partial<BlockEdge> & Pick<BlockEdge, 'id'>): BlockEdge 
     toBlockId: 'b2',
     toEnd: 'west',
     pointConditions: [],
-    lengthMm: null,
     ...overrides,
   };
 }
 
-/** b1 -[e1]-> b2 -[e2]-> b3 -[e3]-> b4, each edge 500mm unless overridden. */
-function fourBlockEdges(overrides: Partial<Record<'e1' | 'e2' | 'e3', Partial<BlockEdge>>> = {}): BlockEdge[] {
+/** b1 -[e1]-> b2 -[e2]-> b3 -[e3]-> b4. Edges carry no length; blocks do (D4). */
+function fourBlockEdges(): BlockEdge[] {
   return [
-    edge({ id: 'e1', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west', lengthMm: 500, ...overrides.e1 }),
-    edge({ id: 'e2', fromBlockId: 'b2', fromEnd: 'east', toBlockId: 'b3', toEnd: 'west', lengthMm: 500, ...overrides.e2 }),
-    edge({ id: 'e3', fromBlockId: 'b3', fromEnd: 'east', toBlockId: 'b4', toEnd: 'west', lengthMm: 500, ...overrides.e3 }),
+    edge({ id: 'e1', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' }),
+    edge({ id: 'e2', fromBlockId: 'b2', fromEnd: 'east', toBlockId: 'b3', toEnd: 'west' }),
+    edge({ id: 'e3', fromBlockId: 'b3', fromEnd: 'east', toBlockId: 'b4', toEnd: 'west' }),
   ];
+}
+
+/**
+ * Every block 500mm unless overridden. `null` leaves the block out of the map
+ * entirely, which is how the graph spells "unmeasured".
+ */
+function fourBlockGraph(lengths: Partial<Record<'b1' | 'b2' | 'b3' | 'b4', number | null>> = {}) {
+  const base: Record<string, number | null> = { b1: 500, b2: 500, b3: 500, b4: 500, ...lengths };
+  const measured = new Map<string, number>();
+  for (const [id, mm] of Object.entries(base)) if (mm !== null) measured.set(id, mm);
+  return buildTrackGraph(LAYOUT, fourBlockEdges(), measured);
 }
 
 function pathStep(overrides: Partial<RoutePathStep> & Pick<RoutePathStep, 'blockId'>): RoutePathStep {
@@ -264,29 +274,46 @@ function reservation(overrides: Partial<RouteReservation> = {}): RouteReservatio
 }
 
 describe('remainingRouteDistanceMm', () => {
-  it('sums only the edges from confirmedIndex + 1 through targetIndex', () => {
-    const graph = buildTrackGraph(LAYOUT, fourBlockEdges());
-    const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), graph, 3);
-    expect(result).toEqual({ ok: true, distanceMm: 1500 });
+  it('sums the intermediate blocks, and never the target block itself', () => {
+    // Confirmed in b1, targeting b4 (index 3): b2 + b3 = 1000mm. b4's own
+    // length is excluded because B4's target is its *entry* boundary; b1's
+    // because the train may be anywhere inside it.
+    const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), fourBlockGraph(), 3);
+    expect(result).toEqual({ ok: true, distanceMm: 1000 });
   });
 
-  it('excludes edges behind the confirmed index', () => {
-    const graph = buildTrackGraph(LAYOUT, fourBlockEdges());
-    // Train confirmed in b2 (index 1); only e2 (into b3) and e3 (into b4) count.
-    const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 1 }), graph, 3);
-    expect(result).toEqual({ ok: true, distanceMm: 1000 });
+  it('excludes blocks behind the confirmed index', () => {
+    // Train confirmed in b2 (index 1), targeting b4: only b3 counts.
+    const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 1 }), fourBlockGraph(), 3);
+    expect(result).toEqual({ ok: true, distanceMm: 500 });
+  });
+
+  it('gives zero distance for the immediately next block, so the run is refused (D-K)', () => {
+    // The behaviour change #105's fix brings, and the reason it gets a named
+    // test of its own: there is no track between the exit boundary of the
+    // confirmed block and the entry boundary of the next one, so there is
+    // nothing to brake over. Correct under block-level occupancy — the train
+    // may already be hard against the exit — and the fail-safe direction.
+    const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), fourBlockGraph(), 1);
+    expect(result).toEqual({ ok: true, distanceMm: 0 });
   });
 
   // ── Failure paths ──────────────────────────────────────────────────────────
 
-  it('refuses on an unmeasured edge, naming it, without substituting a default length', () => {
-    const graph = buildTrackGraph(LAYOUT, fourBlockEdges({ e2: { lengthMm: null } }));
-    const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), graph, 3);
-    expect(result).toEqual({ ok: false, reason: { kind: 'unmeasured-track', edgeId: 'e2' } });
+  it('refuses on an unmeasured block, naming it, without substituting a default length', () => {
+    // The pathfinder guesses `DEFAULT_BLOCK_LENGTH_MM` for this same missing
+    // datum. Guessing a cost only picks a worse route; guessing a stopping
+    // distance is a collision, so this side refuses.
+    const result = remainingRouteDistanceMm(
+      reservation({ confirmedIndex: 0 }),
+      fourBlockGraph({ b2: null }),
+      3,
+    );
+    expect(result).toEqual({ ok: false, reason: { kind: 'unmeasured-track', blockId: 'b2' } });
   });
 
   it('refuses a targetIndex at or behind the confirmed index', () => {
-    const graph = buildTrackGraph(LAYOUT, fourBlockEdges());
+    const graph = fourBlockGraph();
     const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 2 }), graph, 2);
     expect(result).toEqual({
       ok: false,
@@ -324,8 +351,8 @@ describe('buildStopExpectation / isBrakingOverrun', () => {
 
 describe('describeBrakingRefusal', () => {
   it('degrades to raw ids, byte-for-byte, with no book (D8)', () => {
-    expect(describeBrakingRefusal({ kind: 'unmeasured-track', edgeId: 'e1' })).toBe(
-      'edge e1 has no measured length — unsafe for automated braking',
+    expect(describeBrakingRefusal({ kind: 'unmeasured-track', blockId: 'b1' })).toBe(
+      'block b1 has no measured length — unsafe for automated braking',
     );
     expect(describeBrakingRefusal({ kind: 'unknown-edge', edgeId: 'e1' })).toBe(
       'edge e1 does not exist in the current track graph',
@@ -348,10 +375,11 @@ describe('describeBrakingRefusal', () => {
     const book: NameBook = {
       ...EMPTY_NAME_BOOK,
       edges: new Map([['e1', 'Down Platform:north → Up Loop:south']]),
+      blocks: new Map([['b1', 'Down Platform']]),
       locos: new Map([[3, 'Jinty']]),
     };
-    expect(describeBrakingRefusal({ kind: 'unmeasured-track', edgeId: 'e1' }, book)).toBe(
-      'edge "Down Platform:north → Up Loop:south" (e1) has no measured length — unsafe for automated braking',
+    expect(describeBrakingRefusal({ kind: 'unmeasured-track', blockId: 'b1' }, book)).toBe(
+      'block "Down Platform" (b1) has no measured length — unsafe for automated braking',
     );
     expect(describeBrakingRefusal({ kind: 'already-stopped', locoAddress: 3 }, book)).toBe(
       'loco "Jinty" (3) is already stopped',

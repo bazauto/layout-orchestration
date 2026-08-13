@@ -88,13 +88,15 @@ describe('migrations', () => {
     expect(row).toBeDefined();
   });
 
-  it('has exactly the eight expected columns, with correct nullability and defaults', () => {
+  it('has exactly the seven expected columns, with correct nullability and defaults', () => {
     const columns = sqlite.prepare('PRAGMA table_info(block_edges)').all() as Array<{
       name: string;
       notnull: number;
       dflt_value: string | null;
     }>;
 
+    // No `length_mm`: distance is on the block now (D4). An edge is joint-only
+    // and joints are treated as zero (D5).
     expect(columns.map((c) => c.name)).toEqual([
       'id',
       'layout_id',
@@ -103,15 +105,26 @@ describe('migrations', () => {
       'to_block_id',
       'to_end',
       'point_conditions',
-      'length_mm',
     ]);
-
-    const lengthMm = columns.find((c) => c.name === 'length_mm');
-    expect(lengthMm?.notnull).toBe(0);
 
     const pointConditions = columns.find((c) => c.name === 'point_conditions');
     expect(pointConditions?.notnull).toBe(1);
     expect(pointConditions?.dflt_value).toBe("'[]'");
+  });
+
+  it('carries length_mm on blocks, nullable and undefaulted', () => {
+    const columns = sqlite.prepare('PRAGMA table_info(blocks)').all() as Array<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+
+    const lengthMm = columns.find((c) => c.name === 'length_mm');
+    expect(lengthMm).toBeDefined();
+    // Nullable and undefaulted: NULL is "unmeasured", which refuses a braked
+    // run. A default would assert a measurement nobody took.
+    expect(lengthMm?.notnull).toBe(0);
+    expect(lengthMm?.dflt_value).toBeNull();
   });
 
   it('cascades on delete from blocks for both from_block_id and to_block_id', () => {
@@ -253,7 +266,6 @@ describe('migrations', () => {
       fromEnd?: string;
       toBlockId?: string;
       toEnd?: string;
-      lengthMm?: number | null;
     }): void {
       edgeCounter += 1;
       const row = {
@@ -263,24 +275,23 @@ describe('migrations', () => {
         fromEnd: overrides.fromEnd ?? 'east',
         toBlockId: overrides.toBlockId ?? 'block-b',
         toEnd: overrides.toEnd ?? 'west',
-        lengthMm: overrides.lengthMm === undefined ? null : overrides.lengthMm,
       };
       sqlite
         .prepare(
-          `INSERT INTO block_edges (id, layout_id, from_block_id, from_end, to_block_id, to_end, length_mm)
-           VALUES (@id, @layoutId, @fromBlockId, @fromEnd, @toBlockId, @toEnd, @lengthMm)`,
+          `INSERT INTO block_edges (id, layout_id, from_block_id, from_end, to_block_id, to_end)
+           VALUES (@id, @layoutId, @fromBlockId, @fromEnd, @toBlockId, @toEnd)`,
         )
         .run(row);
     }
 
+    // These four run against the table as **rebuilt** by 0008. Dropping
+    // `length_mm` meant recreating `block_edges` from scratch, and a rebuild
+    // that silently loses a CHECK or the unique index looks identical to a
+    // successful one from the outside — so each surviving invariant is asserted
+    // to still bite rather than assumed to have come across.
+
     it('rejects a self-loop', () => {
       expect(() => insertEdge({ fromBlockId: 'same-block', toBlockId: 'same-block' })).toThrow();
-    });
-
-    it('rejects length_mm of 0 and -5, but allows NULL', () => {
-      expect(() => insertEdge({ lengthMm: 0 })).toThrow();
-      expect(() => insertEdge({ lengthMm: -5 })).toThrow();
-      expect(() => insertEdge({ lengthMm: null })).not.toThrow();
     });
 
     it('rejects a blank from_end', () => {

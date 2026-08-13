@@ -115,38 +115,44 @@ what B4/B5 are about. This is also what makes calibration (B8) meaningful at
 all: the ramp is a fixed, reproducible stimulus, so a measured distance means
 the same thing run to run.
 
-## B4 — Worst-case distance; unmeasured track refuses outright
-
-> **This decision is wrong and is being replaced — see #105.** "Edges carry all
-> distance" does not decompose. A train going from block *c* to block *t* covers
-> `J(c,c+1) + L(c+1) + J(c+1,c+2) + … + L(t-1) + J(t-1,t)`: `t-c` joints but only
-> `t-c-1` block lengths, summed over `t-c` edges. For that to close, every edge
-> would have to be *joint + destination block* **except the last**, which must be
-> joint only, because the target below is the *entry boundary* of step `t`. An
-> edge cannot know whether it is the last one, and under the natural reading the
-> sum overshoots by the destination block's own length — the direction that
-> causes an overrun.
->
-> `lengthMm` moves to `blocks`, where it describes a fixed physical object
-> instead of a relationship, and joints are treated as zero (safe: it
-> underestimates available distance). See `docs/track-graph-compilation.md` D4.
-> The rest of B4 — worst-case measurement, and NULL refusing outright — is
-> unaffected and stands.
+## B4 — Worst-case distance from block lengths; unmeasured track refuses outright
 
 Occupancy is block-level, not sub-block: a train confirmed in block *c* may be
-anywhere within it. So available distance is measured conservatively, from
-the **exit end of the confirmed block** — the sum of `lengthMm` over the
-route's edges from `confirmedIndex + 1` up to `targetIndex`. Blocks
-themselves carry no length; edges carry all distance, so there is no
-double-counting, and the train is credited with none of the confirmed block's
-own length even though part of it is very likely still ahead.
+anywhere within it. So available distance is measured conservatively, from the
+**exit boundary of the confirmed block** to the **entry boundary of the
+target** — the sum of `blocks.length_mm` over the route's *intermediate* steps,
+`confirmedIndex + 1` through `targetIndex - 1`.
 
-**Any edge in that stretch with `lengthMm === null` refuses outright**
-(`unmeasured-track`), naming the edge. `schema.ts` and `docs/topology.md`
-already describe a NULL `lengthMm` as "unsafe for automated braking"; this is
-what keeps that promise rather than merely repeating it in a comment.
+Neither endpoint contributes. Not the confirmed block, because the train may be
+hard against its exit; not the target block, because the target is its entry
+boundary, not its far end.
 
-**`DEFAULT_EDGE_LENGTH_MM` (the pathfinder's 1000 mm guess, P2 in
+**Length is on the block, not the edge** (#105, and D4 in
+`docs/track-graph-compilation.md`). The edge convention this replaced did not
+decompose. A run from *c* to *t* covers
+`J(c,c+1) + L(c+1) + J(c+1,c+2) + … + L(t-1) + J(t-1,t)`: `t-c` joints but only
+`t-c-1` block lengths, summed over `t-c` edges. For that to close, every edge
+would have to be *joint + destination block* **except the last**, which must be
+joint only. An edge cannot know whether it is the last one, and the natural
+reading overshoots by the destination block's own length — the direction that
+causes an overrun.
+
+**Accepted consequence: an adjacent target yields zero distance and the run is
+refused.** When `targetIndex === confirmedIndex + 1` there are no intermediate
+blocks, the sum is `0`, and `planBrakingSchedule` refuses
+`insufficient-distance`. This is correct under block-level occupancy — there is
+genuinely no track between the two boundaries that the model can promise — and
+it is the fail-safe direction. It is nonetheless a real behaviour change from
+the edge-length model, and it is recorded as a limit rather than worked around.
+Stopping at the next block along needs the sub-block position #7 and #77 will
+supply, not a fudged distance here.
+
+**Any block in that stretch with `length_mm IS NULL` refuses outright**
+(`unmeasured-track`), naming the block. `schema.ts` and `docs/topology.md`
+already describe a NULL length as "unsafe for automated braking"; this is what
+keeps that promise rather than merely repeating it in a comment.
+
+**`DEFAULT_BLOCK_LENGTH_MM` (the pathfinder's 1000 mm guess, P2 in
 `docs/pathfinding.md`) must NOT be reused here.** Guessing a *cost* to steer a
 search toward a reasonable answer is fine — the worst outcome is a
 sub-optimal route. Guessing a *stopping distance* is not a sub-optimal
@@ -278,20 +284,40 @@ distances (the worst case, matching B4's posture throughout this model), then
 round the resulting `brakingFactor` **down** — under-crediting a loco's
 braking ability is the fail-safe direction, over-crediting it is not.
 
-## B9 — No MQTT contract change, no schema change
+## B9 — No MQTT contract change; the only schema change is where length lives
 
 The braking ramp publishes exactly the existing
 `layout/{id}/loco/{address}/state` topic per step — already retained, already
 published by `publishLocoState`. No new topic, no new payload field (mirrors
 D12 in `docs/route-locking.md`).
 
-`schema.ts` is untouched: `locos.braking_factor` already exists as
-`real notNull default 0.5` and this PR only gives that column a defined
-meaning (B1), not a new shape. No schema edit means **no migration** — per
-CLAUDE.md's rule, a migration only follows an edit to `schema.ts`, and there
-is none here. If a measured per-speed-step curve is ever built (B2's second
+`locos.braking_factor` is untouched: it already existed as
+`real notNull default 0.5` and B1 only gives that column a defined meaning, not
+a new shape. If a measured per-speed-step curve is ever built (B2's second
 `StoppingDistanceModel`), that is a new `loco_braking_samples` table when it
 lands, not a change to this column.
+
+What #105 *did* change is where distance is stored: `blocks.length_mm` added,
+`block_edges.length_mm` removed (migration `0008`). Deliberately **no CHECK
+constraint** on the new column, following DD9's call on `sensors.in_service` — a
+CHECK on an existing SQLite table forces a table rebuild, and `blocks` is the
+most-referenced table in the schema, with three `ON DELETE CASCADE` foreign keys
+pointing at it. `blockCreateSchema` enforces `.int().positive()` on every write
+path, and the failure direction of a bad value is safe anyway: a zero or
+negative length shortens the computed distance, so the model refuses or brakes
+early rather than overrunning.
+
+## B11 — Joints carry no length
+
+The undetected trackwork between two detected sections contributes zero (D5,
+`docs/track-graph-compilation.md`). Not because the physics says zero, but
+because on this railway the error is small and always in the safe direction —
+it underestimates available distance, so it brakes early — and it buys the
+invariant that nothing an operator owns lives on a compiled object.
+
+Recorded honestly: this is "conservative until the real layout says otherwise",
+not "correct". A nullable `joint_length_mm` defaulting to zero is additive and
+can be introduced later without redesigning anything.
 
 ## B10 — Braking faults are keyed per loco in `SystemHealth`
 
@@ -342,7 +368,7 @@ through `SystemHealth`.** No braking code path calls `enterSafeStop` directly.
   exactly that reason. The correct response to it turning out to be wrong is
   to re-measure each loco's `brakingFactor` (which absorbs the error, per
   B1's formula), **not** to tune the constant per layout — the same posture
-  `docs/pathfinding.md` records for `DEFAULT_EDGE_LENGTH_MM`.
+  `docs/pathfinding.md` records for `DEFAULT_BLOCK_LENGTH_MM`.
 - **A route cancelled mid-ramp leaves the train at whatever speed the ramp
   had reached**, not necessarily stopped. Accepted for this PR:
   `cancelRoute` already stops the loco outright for auto-authority routes

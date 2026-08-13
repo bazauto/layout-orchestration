@@ -1,6 +1,6 @@
 # Compiling the track graph from the drawing
 
-**Status: accepted 2026-08-13. Not yet implemented.**
+**Status: accepted 2026-08-13. D4 and D5 have shipped (#105); the rest has not.**
 
 This document records a design decision, not shipped behaviour. Everything it
 describes supersedes parts of #72 (block ends) and #78 (edge proposals), both of
@@ -108,7 +108,7 @@ fiddle yards are off-*scene* rather than off-diagram.
 If the drawing cannot express a connection you need, that is a gap in what the
 drawing can express, and the fix belongs there.
 
-## D4 — Length belongs to blocks, not edges
+## D4 — Length belongs to blocks, not edges — **shipped**
 
 `docs/braking.md` B4 currently states: *"Blocks themselves carry no length; edges
 carry all distance, so there is no double-counting."* That was forced by there
@@ -142,7 +142,17 @@ brakes early — the safe direction.
 Measurement cost drops from ~40 edges to 10 blocks on Westgate Hollow, with no
 redundancy and no way for two edges to disagree about the same block.
 
-## D5 — Joints carry no length
+**As shipped.** `blocks.length_mm` added and `block_edges.length_mm` dropped in
+migration `0008`. `TrackGraph.blockLengthsMm` carries the measured blocks to
+both consumers, and an absent key is the only spelling of "unmeasured" — the
+pathfinder costs it `DEFAULT_BLOCK_LENGTH_MM`, the braking model refuses
+`unmeasured-track` naming the block. Two things went differently from the plan
+and are recorded where they bite: the new column has **no CHECK constraint**
+(DD9's reasoning — `blocks` is the most-FK-referenced table and a CHECK forces a
+rebuild; `docs/braking.md` B9), and a braked run to the immediately next block
+now yields zero distance and is refused (`docs/braking.md` B4).
+
+## D5 — Joints carry no length — **shipped**
 
 The undetected trackwork between two detected sections is treated as zero.
 Nothing an operator owns lives on an edge.
@@ -346,6 +356,8 @@ separate question.
 
 ## Bugs this design surfaced, fixable independently
 
+Both are now fixed, and neither depended on this design landing.
+
 - **#104 — fixed.** `pointTransitConditions` treated arrival and departure as the
   same question. They are not: departing block X through a point tile of X
   requires the other leg to lead into X, but *arriving* at X's point tile means
@@ -356,8 +368,6 @@ separate question.
   refuses. The compiler inherits both: it walks the same ports, and D3's
   whole-graph replace makes a mirrored false edge more dangerous, not less,
   since no per-row operator judgement stands between it and `block_edges`.
-- **#105** — `docs/braking.md` B4's edge-length convention does not decompose,
-  and the natural reading overshoots by the destination block's length. Still
-  live; D4 is the fix.
-
-Neither depended on this design landing.
+- **#105 — fixed.** `docs/braking.md` B4's edge-length convention did not
+  decompose, and the natural reading overshot by the destination block's
+  length. D4/D5 above are the fix, and shipped with it.

@@ -51,7 +51,14 @@ export async function loadTopology(
     const fatalViolations = violations.filter(isFatalViolation);
     const fatal = fatalViolations.length > 0;
 
-    const graph = fatal ? null : buildTrackGraph(layoutId, edges);
+    // Only measured blocks go in. An absent key is "unmeasured", which the
+    // pathfinder costs as average and the braking model refuses on (D4) — a
+    // zero would silently claim the block has no extent.
+    const blockLengthsMm = new Map(
+      blocks.filter((b) => b.lengthMm !== null).map((b) => [b.id, b.lengthMm as number]),
+    );
+
+    const graph = fatal ? null : buildTrackGraph(layoutId, edges, blockLengthsMm);
 
     return {
       edges,

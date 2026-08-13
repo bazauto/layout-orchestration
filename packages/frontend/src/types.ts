@@ -31,6 +31,12 @@ export interface BlockRecord {
   id: string;
   layoutId: string;
   name: string;
+  /**
+   * Measured length in mm, or `null` for unmeasured — which **refuses** an
+   * automated braked run rather than guessing (`docs/braking.md` B4). Distance
+   * is on the block, not the edge (D4, `docs/track-graph-compilation.md`).
+   */
+  lengthMm: number | null;
 }
 
 export interface PointRecord {
@@ -181,7 +187,6 @@ export interface BlockEdgeRecord {
   toBlockId: string;
   toEnd: string;
   pointConditions: PointCondition[];
-  lengthMm: number | null;
 }
 
 /** Mirrors the `TopologyViolation` union in `domain/topology.ts` exactly. */

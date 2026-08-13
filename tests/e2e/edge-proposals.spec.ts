@@ -40,7 +40,6 @@ const REPORT = {
       toBlockId: 'b-s1',
       toEnd: 'west',
       pointConditions: [{ pointId: 'p1', requiredPosition: 'normal' }],
-      lengthMm: null,
       via: [
         { x: 12, y: 3 },
         { x: 13, y: 3 },
@@ -55,7 +54,6 @@ const REPORT = {
       toBlockId: 'b-fy1',
       toEnd: 'east',
       pointConditions: [{ pointId: 'p1', requiredPosition: 'normal' }],
-      lengthMm: null,
       via: [
         { x: 13, y: 3 },
         { x: 12, y: 3 },
@@ -70,7 +68,6 @@ const REPORT = {
       toBlockId: 'b-s2',
       toEnd: null,
       pointConditions: [],
-      lengthMm: null,
       via: [],
       crossesDiamond: true,
       status: 'needs-end-label',
@@ -85,6 +82,7 @@ type EdgeBody = {
   toBlockId: string;
   toEnd: string;
   pointConditions: Array<{ pointId: string; requiredPosition: string }>;
+  /** Never sent. Kept on the type so the assertion below has something to deny. */
   lengthMm?: number | null;
 };
 
@@ -178,8 +176,8 @@ test('accepting a proposal posts it as an ordinary edge, with no length', async 
     toEnd: 'west',
     pointConditions: [{ pointId: 'p1', requiredPosition: 'normal' }],
   });
-  // Geometry can never supply a distance (`docs/braking.md` B4), so the field
-  // is omitted rather than sent as an explicit null.
+  // An edge carries no distance at all now — length is on the block (D4), and
+  // `edgeCreateSchema` is `.strict()`, so sending one would be a 400.
   expect('lengthMm' in posted[0]).toBe(false);
 
   // The edge lands in the table below, which is the same list a hand-authored

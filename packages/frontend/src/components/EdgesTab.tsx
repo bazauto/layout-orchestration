@@ -35,7 +35,6 @@ export interface EdgeFormState {
   fromEnd: string;
   toBlockId: string;
   toEnd: string;
-  lengthMm: string;
   pointConditions: EdgeFormPointCondition[];
 }
 
@@ -45,7 +44,6 @@ export interface EdgeDraft {
   toBlockId: string;
   toEnd: string;
   pointConditions: EdgeFormPointCondition[];
-  lengthMm: number | null;
 }
 
 const EMPTY_FORM: EdgeFormState = {
@@ -53,7 +51,6 @@ const EMPTY_FORM: EdgeFormState = {
   fromEnd: '',
   toBlockId: '',
   toEnd: '',
-  lengthMm: '',
   pointConditions: [],
 };
 
@@ -66,15 +63,12 @@ const EMPTY_FORM: EdgeFormState = {
  * with no point selected yet are dropped rather than sent as `pointId: ''`.
  */
 export function buildEdgeDraft(form: EdgeFormState): EdgeDraft {
-  const lengthTrimmed = form.lengthMm.trim();
-  const length = lengthTrimmed === '' ? NaN : Number(lengthTrimmed);
   return {
     fromBlockId: form.fromBlockId,
     fromEnd: form.fromEnd.trim().toLowerCase(),
     toBlockId: form.toBlockId,
     toEnd: form.toEnd.trim().toLowerCase(),
     pointConditions: form.pointConditions.filter((c) => c.pointId.length > 0),
-    lengthMm: Number.isNaN(length) ? null : length,
   };
 }
 
@@ -86,7 +80,6 @@ function reverseOf(draft: EdgeDraft): EdgeDraft {
     toBlockId: draft.fromBlockId,
     toEnd: draft.fromEnd,
     pointConditions: draft.pointConditions,
-    lengthMm: draft.lengthMm,
   };
 }
 
@@ -245,7 +238,8 @@ export function EdgesTab({ layoutId, edges, topology, blocks, points, ops }: Pro
         #78's review surface, above the manual form rather than beside it: on a
         drawn layout it is the primary way edges get authored, and the form
         below is what you fall back to for a connection the drawing cannot
-        imply (or to add the `lengthMm` geometry can never supply).
+        imply. Nothing about length any more — that lives on the block
+        (D4, docs/track-graph-compilation.md), edited in Configure → Blocks.
       */}
       <EdgeProposalsPanel layoutId={layoutId} blocks={blocks} points={points} ops={ops} />
 
@@ -326,14 +320,6 @@ export function EdgesTab({ layoutId, edges, topology, blocks, points, ops }: Pro
           ))}
         </datalist>
 
-        <input
-          value={form.lengthMm}
-          onChange={(e) => setForm((f) => ({ ...f, lengthMm: e.target.value }))}
-          placeholder="Length (mm)"
-          type="number"
-          min={1}
-          style={{ ...s.input, flex: '0 0 110px' }}
-        />
       </div>
 
       <div style={s.pointConditionsBlock}>
@@ -390,7 +376,7 @@ export function EdgesTab({ layoutId, edges, topology, blocks, points, ops }: Pro
       <table style={s.table}>
         <thead>
           <tr>
-            {['Connection', 'Point Conditions', 'Length (mm)', ''].map((h) => (
+            {['Connection', 'Point Conditions', ''].map((h) => (
               <th key={h} style={s.th}>
                 {h}
               </th>
@@ -414,7 +400,6 @@ export function EdgesTab({ layoutId, edges, topology, blocks, points, ops }: Pro
                         </span>
                       ))}
                 </td>
-                <td style={s.td}>{e.lengthMm ?? '—'}</td>
                 <td style={s.td}>
                   <button onClick={() => ops.deleteEdge(e.id)} style={s.delBtn}>
                     ×

@@ -82,6 +82,12 @@ export interface PointCondition {
  * A directed connection from one block to another.
  * A bidirectional physical connection is represented as two edges.
  * Edge direction is geometric and unrelated to loco `Direction`.
+ *
+ * **No length.** The joint between two detected sections is treated as zero and
+ * distance lives on `BlockRecord.lengthMm` (D4/D5,
+ * `docs/track-graph-compilation.md`) — the edge convention did not decompose and
+ * overshot by the destination block (#105). Nothing an operator owns is on an
+ * edge, which is what lets a compiler own the whole edge set.
  */
 export interface BlockEdge {
   id: BlockEdgeId;
@@ -97,8 +103,6 @@ export interface BlockEdge {
    * Empty means plain track with no point gating.
    */
   pointConditions: PointCondition[];
-  /** Physical length in millimetres. `null` means unmeasured — treat as unsafe for automated braking. */
-  lengthMm: number | null;
 }
 
 /**
@@ -718,7 +722,8 @@ export type BrakingRefusal =
   | { kind: 'model-unavailable'; fault: BrakingModelFault }
   | { kind: 'already-stopped'; locoAddress: LocoAddress }
   | { kind: 'insufficient-distance'; requiredMm: number; availableMm: number }
-  | { kind: 'unmeasured-track'; edgeId: BlockEdgeId }
+  /** A block on the route between the train and its target has no measured length (D4). */
+  | { kind: 'unmeasured-track'; blockId: BlockId }
   | { kind: 'unknown-edge'; edgeId: BlockEdgeId }
   | { kind: 'target-behind-train'; targetIndex: number; confirmedIndex: number }
   | { kind: 'unknown-loco'; locoAddress: LocoAddress }

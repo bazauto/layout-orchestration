@@ -335,8 +335,9 @@ no longer entirely unchecked against each other: block ends are generated from t
 as 8-point cardinal labels with a sticky manual override (#72), buffer stops assert that an
 end has no onward connection, and `GET .../grid/diagnostics` reports where the drawing and
 the graph disagree (#84). The Edges tab will also *propose* the edges the drawing implies
-and accept them through the ordinary write path (#78) — proposing is not deriving, and
-`lengthMm` is never among what it proposes. One case the manual override still cannot
+and accept them through the ordinary write path (#78) — proposing is not deriving, and an
+edge carries no distance for it to propose: length lives on the block now (#105), edited in
+Configure → Blocks and left blank where nobody has run a tape over it. One case the manual override still cannot
 fully resolve: where the generator refused to name two openings facing the same bearing
 (`end-label-collision`), a hand-created end authors edges but never attaches to a cell on
 the drawing — see `docs/topology.md`. A block's openings come from where its **drawn track leaves the

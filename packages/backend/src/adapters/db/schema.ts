@@ -36,12 +36,48 @@ export const locos = sqliteTable('locos', {
 
 // ─── Blocks ───────────────────────────────────────────────────────────────────
 
+/**
+ * A detected section of track.
+ *
+ * **Blocks carry the distance, not edges** (D4, docs/track-graph-compilation.md).
+ * The edge convention this replaced did not decompose: a run from block c to
+ * block t covers `t-c` joints and `t-c-1` block lengths over `t-c` edges, so
+ * every edge would have to mean "joint + destination block" *except the last*,
+ * which must be joint only because the braking target is the entry boundary of
+ * the final step. An edge cannot know whether it is the last one, and the
+ * natural reading overshoots by the destination block's own length — the
+ * direction that causes an overrun (#105).
+ *
+ * A block is also an authored row the compiler never touches, so nothing
+ * operator-owned lives on a compiled object and there is no measurement to
+ * carry across a recompile.
+ */
 export const blocks = sqliteTable('blocks', {
   id: text('id').primaryKey(),
   layoutId: text('layout_id')
     .notNull()
     .references(() => layouts.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
+  /**
+   * Physical length in mm. NULL = unmeasured, which **refuses** an automated
+   * braked run (`unmeasured-track`, docs/braking.md B4). Deliberately not
+   * defaulted: a default would assert a measurement nobody took.
+   *
+   * **Deliberately no CHECK constraint**, following DD9's call on
+   * `sensors.in_service`. A CHECK on an existing SQLite table forces a table
+   * rebuild, and `blocks` is the most-referenced table here — five foreign keys
+   * point at it, three of them `ON DELETE CASCADE`. A rebuild means
+   * `DROP TABLE blocks`, and drizzle-kit's generated rebuild re-enables
+   * `foreign_keys` before that statement, which on the live layout would
+   * cascade away every grid tile, block end and edge.
+   *
+   * The payoff would be small. `blockCreateSchema` already enforces
+   * `.int().positive()` on every write path, and the failure direction of a bad
+   * value here is safe: a zero or negative length shortens the computed
+   * distance, so the braking model refuses or brakes early rather than
+   * overrunning.
+   */
+  lengthMm: integer('length_mm'),
 });
 
 // ─── Points ───────────────────────────────────────────────────────────────────
@@ -95,6 +131,15 @@ export const sensors = sqliteTable('sensors', {
  * point setting, discriminated at runtime by `point_conditions`. What IS
  * unique is the full connection tuple below — two edges may not describe the
  * exact same physical connection twice.
+ *
+ * **An edge carries no length.** The joint of undetected trackwork between two
+ * detected sections is treated as zero (D5, docs/track-graph-compilation.md) —
+ * not because the physics says zero, but because on this railway the error is
+ * small and always in the safe direction (it underestimates available distance,
+ * so it brakes early), and it buys the invariant that nothing an operator owns
+ * lives on an edge. Distance is on `blocks.length_mm`; see #105 for why the
+ * edge convention could not decompose. A nullable `joint_length_mm` defaulting
+ * to zero is additive and can be introduced later without redesigning anything.
  */
 export const blockEdges = sqliteTable(
   'block_edges',
@@ -113,8 +158,6 @@ export const blockEdges = sqliteTable(
      * pointId makes the edge permanently non-traversable, which fails closed.
      */
     pointConditions: text('point_conditions').notNull().default('[]'),
-    /** Physical length in mm. NULL = unmeasured; unsafe for automated braking. */
-    lengthMm: integer('length_mm'),
   },
   (table) => [
     index('block_edges_layout_idx').on(table.layoutId),
@@ -128,10 +171,6 @@ export const blockEdges = sqliteTable(
       table.toEnd,
     ),
     check('block_edges_not_self_loop', sql`${table.fromBlockId} <> ${table.toBlockId}`),
-    check(
-      'block_edges_length_positive',
-      sql`${table.lengthMm} IS NULL OR ${table.lengthMm} > 0`,
-    ),
     check(
       'block_edges_ends_non_empty',
       sql`length(trim(${table.fromEnd})) > 0 AND length(trim(${table.toEnd})) > 0`,

@@ -37,16 +37,20 @@ import { blockLabel, pointLabel } from './naming';
 import { isBlockEffectivelyOccupied } from './safety';
 
 /**
- * Cost assigned to an edge whose `lengthMm` is NULL (P2). `lengthMm` is
- * optional on `block_edges` and much of a layout is authored without it, so
- * the search must not simply refuse to cost those edges. A single constant
- * makes an unmeasured stretch of track behave like an average one: on a
- * layout with no lengths recorded at all, every edge costs the same and
- * Dijkstra degenerates to a fewest-hops search, which is the sensible
- * fallback. Deliberately NOT zero (which would make unmeasured track free
- * and always preferred) and not Infinity (which would make it impassable).
+ * Cost assigned to a block with no measured length (P2). `blocks.length_mm` is
+ * optional and much of a layout is authored without it, so the search must not
+ * simply refuse to cost those blocks. A single constant makes an unmeasured
+ * stretch of track behave like an average one: on a layout with no lengths
+ * recorded at all, every hop costs the same and Dijkstra degenerates to a
+ * fewest-hops search, which is the sensible fallback. Deliberately NOT zero
+ * (which would make unmeasured track free and always preferred) and not
+ * Infinity (which would make it impassable).
+ *
+ * The braking model makes the opposite call on the same missing datum and
+ * refuses — guessing a cost only picks a worse route, guessing a stopping
+ * distance is a collision.
  */
-export const DEFAULT_EDGE_LENGTH_MM = 1000;
+export const DEFAULT_BLOCK_LENGTH_MM = 1000;
 
 /** Cap on how many `PathBlocker`s a `no-path` result reports, so a large layout cannot produce an unbounded diagnostic string. Same posture as `describeViolations`' truncation. */
 export const MAX_REPORTED_BLOCKERS = 20;
@@ -178,7 +182,7 @@ export function findPath(request: PathfindingRequest, view: PathfindingView): Pa
         continue;
       }
 
-      relax(edge, current, distance, previous, settled, frontier);
+      relax(edge, current, distance, previous, settled, frontier, view.graph.blockLengthsMm);
     }
   }
 
@@ -210,11 +214,15 @@ function relax(
   previous: Map<string, { edge: BlockEdge; from: string }>,
   settled: ReadonlySet<string>,
   frontier: MinHeap<QueueEntry>,
+  blockLengthsMm: ReadonlyMap<BlockId, number>,
 ): void {
   const nextKey = nodeKey(edge.toBlockId, edge.toEnd);
   if (settled.has(nextKey)) return;
 
-  const cost = current.cost + (edge.lengthMm ?? DEFAULT_EDGE_LENGTH_MM);
+  // The cost of taking this edge is the block it lands in, not the edge itself
+  // — a joint has no length (D5). Traversing the graph therefore charges each
+  // block once, as it is entered.
+  const cost = current.cost + (blockLengthsMm.get(edge.toBlockId) ?? DEFAULT_BLOCK_LENGTH_MM);
   const known = distance.get(nextKey);
 
   if (known === undefined || cost < known) {

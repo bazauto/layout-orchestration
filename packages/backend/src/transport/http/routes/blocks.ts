@@ -36,6 +36,7 @@ export async function blockRoutes(
       const block = await repo.createBlock({
         layoutId: req.params.layoutId,
         name: parsed.data.name,
+        lengthMm: parsed.data.lengthMm,
       });
       // D5: refresh after the write so the new block's name is available to
       // the next operator-facing string that renders it.

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  DEFAULT_EDGE_LENGTH_MM,
+  DEFAULT_BLOCK_LENGTH_MM,
   MAX_REPORTED_BLOCKERS,
   PathfindingView,
   describeBlocker,
@@ -21,7 +21,6 @@ function edge(overrides: Partial<BlockEdge> & Pick<BlockEdge, 'id'>): BlockEdge 
     toBlockId: 'b2',
     toEnd: 'west',
     pointConditions: [],
-    lengthMm: null,
     ...overrides,
   };
 }
@@ -53,14 +52,19 @@ function point(pointId: string, overrides: Partial<PointState> = {}): PointState
  * expected to be supplied `occupied` by the caller when that matters, since
  * `findPath` itself does not care what the start block reads (that is
  * `planReservation`'s precondition, not the search's).
+ *
+ * `lengthsMm` is keyed by **block**, not edge: the cost of a hop is the block it
+ * lands in (D4). Omitting a block leaves it unmeasured, which the search costs
+ * at `DEFAULT_BLOCK_LENGTH_MM`.
  */
 function view(
   edges: BlockEdge[],
   blocks: BlockState[],
   points: PointState[] = [],
+  lengthsMm: Record<string, number> = {},
 ): PathfindingView {
   return {
-    graph: buildTrackGraph(LAYOUT, edges),
+    graph: buildTrackGraph(LAYOUT, edges, new Map(Object.entries(lengthsMm))),
     blocks: new Map(blocks.map((b) => [b.blockId, b])),
     points: new Map(points.map((p) => [p.pointId, p])),
   };
@@ -160,14 +164,16 @@ describe('findPath — direction of travel', () => {
     // b2 once by the cheaper west route and never discover the b4 path.
     const v = view(
       [
-        edge({ id: 'e1', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west', lengthMm: 100 }),
-        edge({ id: 'e2', fromBlockId: 'b1', fromEnd: 'south', toBlockId: 'b3', toEnd: 'north', lengthMm: 200 }),
-        edge({ id: 'e3', fromBlockId: 'b3', fromEnd: 'south', toBlockId: 'b2', toEnd: 'south', lengthMm: 200 }),
+        edge({ id: 'e1', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' }),
+        edge({ id: 'e2', fromBlockId: 'b1', fromEnd: 'south', toBlockId: 'b3', toEnd: 'north' }),
+        edge({ id: 'e3', fromBlockId: 'b3', fromEnd: 'south', toBlockId: 'b2', toEnd: 'south' }),
         // Only reachable from b2 by leaving via its west end — i.e. only if
         // b2 was entered by its south end.
-        edge({ id: 'e4', fromBlockId: 'b2', fromEnd: 'west', toBlockId: 'b4', toEnd: 'east', lengthMm: 100 }),
+        edge({ id: 'e4', fromBlockId: 'b2', fromEnd: 'west', toBlockId: 'b4', toEnd: 'east' }),
       ],
       [block('b1', { occupancy: 'occupied' }), block('b2'), block('b3'), block('b4')],
+      [],
+      { b2: 100, b3: 200, b4: 100 },
     );
     expect(findPath({ startBlockId: 'b1', destinationBlockId: 'b4' }, v)).toEqual({
       found: true,
@@ -309,10 +315,10 @@ describe('findPath — blocked paths', () => {
   it('routes around a blocked branch when an alternative exists', () => {
     const v = view(
       [
-        edge({ id: 'e1', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west', lengthMm: 100 }),
-        edge({ id: 'e2', fromBlockId: 'b2', fromEnd: 'east', toBlockId: 'b4', toEnd: 'west', lengthMm: 100 }),
-        edge({ id: 'e3', fromBlockId: 'b1', fromEnd: 'south', toBlockId: 'b3', toEnd: 'north', lengthMm: 500 }),
-        edge({ id: 'e4', fromBlockId: 'b3', fromEnd: 'south', toBlockId: 'b4', toEnd: 'north', lengthMm: 500 }),
+        edge({ id: 'e1', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' }),
+        edge({ id: 'e2', fromBlockId: 'b2', fromEnd: 'east', toBlockId: 'b4', toEnd: 'west' }),
+        edge({ id: 'e3', fromBlockId: 'b1', fromEnd: 'south', toBlockId: 'b3', toEnd: 'north' }),
+        edge({ id: 'e4', fromBlockId: 'b3', fromEnd: 'south', toBlockId: 'b4', toEnd: 'north' }),
       ],
       [
         block('b1', { occupancy: 'occupied' }),
@@ -320,6 +326,9 @@ describe('findPath — blocked paths', () => {
         block('b3'),
         block('b4'),
       ],
+      [],
+      // The b2 road is short, the b3 road long — and b2 is occupied anyway.
+      { b2: 100, b3: 500, b4: 100 },
     );
     // The short way through b2 is blocked, so the long way round is taken.
     expect(findPath({ startBlockId: 'b1', destinationBlockId: 'b4' }, v)).toEqual({
@@ -427,43 +436,61 @@ describe('findPath — point conditions', () => {
 // ─── Cost model (P2) ──────────────────────────────────────────────────────────
 
 describe('findPath — cost model', () => {
-  it('prefers the shorter path by length, not by hop count', () => {
+  it('prefers the shorter path by length, taking more hops to do it', () => {
+    // Cost accrues on the blocks a route passes *through*, one charge per
+    // block as it is entered (D4). The destination is charged on every route,
+    // so what discriminates is the intermediate track — which means a longer
+    // route in hops wins outright when the blocks it crosses are shorter.
     const v = view(
       [
-        // One long hop...
-        edge({ id: 'e-long', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'goal', toEnd: 'west', lengthMm: 5000 }),
-        // ...versus two short ones.
-        edge({ id: 'e-a', fromBlockId: 'b1', fromEnd: 'south', toBlockId: 'mid', toEnd: 'north', lengthMm: 100 }),
-        edge({ id: 'e-b', fromBlockId: 'mid', fromEnd: 'south', toBlockId: 'goal', toEnd: 'north', lengthMm: 100 }),
+        // Two hops, through one long block.
+        edge({ id: 'e-long1', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'long', toEnd: 'west' }),
+        edge({ id: 'e-long2', fromBlockId: 'long', fromEnd: 'east', toBlockId: 'goal', toEnd: 'west' }),
+        // Three hops, through two short ones: 200mm against 5000mm.
+        edge({ id: 'e-a', fromBlockId: 'b1', fromEnd: 'south', toBlockId: 'm1', toEnd: 'north' }),
+        edge({ id: 'e-b', fromBlockId: 'm1', fromEnd: 'south', toBlockId: 'm2', toEnd: 'north' }),
+        edge({ id: 'e-c', fromBlockId: 'm2', fromEnd: 'south', toBlockId: 'goal', toEnd: 'north' }),
       ],
-      [block('b1', { occupancy: 'occupied' }), block('mid'), block('goal')],
+      [
+        block('b1', { occupancy: 'occupied' }),
+        block('long'),
+        block('m1'),
+        block('m2'),
+        block('goal'),
+      ],
+      [],
+      { long: 5000, m1: 100, m2: 100, goal: 100 },
     );
+    expect(findPath({ startBlockId: 'b1', destinationBlockId: 'goal' }, v)).toEqual({
+      found: true,
+      edgeIds: ['e-a', 'e-b', 'e-c'],
+    });
+  });
+
+  it('costs an unmeasured block at DEFAULT_BLOCK_LENGTH_MM rather than treating it as free', () => {
+    const v = view(
+      [
+        // Through an unmeasured block — costs DEFAULT_BLOCK_LENGTH_MM (1000).
+        edge({ id: 'e-u1', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'unmeasured', toEnd: 'west' }),
+        edge({ id: 'e-u2', fromBlockId: 'unmeasured', fromEnd: 'east', toBlockId: 'goal', toEnd: 'west' }),
+        // Measured alternative, cheaper than the default.
+        edge({ id: 'e-a', fromBlockId: 'b1', fromEnd: 'south', toBlockId: 'mid', toEnd: 'north' }),
+        edge({ id: 'e-b', fromBlockId: 'mid', fromEnd: 'south', toBlockId: 'goal', toEnd: 'north' }),
+      ],
+      [block('b1', { occupancy: 'occupied' }), block('unmeasured'), block('mid'), block('goal')],
+      [],
+      // `unmeasured` is deliberately absent from the map.
+      { mid: 1, goal: 1 },
+    );
+    expect(DEFAULT_BLOCK_LENGTH_MM).toBe(1000);
+    // If the unmeasured block were free its route would win; it does not.
     expect(findPath({ startBlockId: 'b1', destinationBlockId: 'goal' }, v)).toEqual({
       found: true,
       edgeIds: ['e-a', 'e-b'],
     });
   });
 
-  it('costs an unmeasured edge at DEFAULT_EDGE_LENGTH_MM rather than treating it as free', () => {
-    const v = view(
-      [
-        // Unmeasured single hop — costs DEFAULT_EDGE_LENGTH_MM (1000).
-        edge({ id: 'e-unmeasured', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'goal', toEnd: 'west', lengthMm: null }),
-        // Measured two-hop alternative, cheaper in total than the default.
-        edge({ id: 'e-a', fromBlockId: 'b1', fromEnd: 'south', toBlockId: 'mid', toEnd: 'north', lengthMm: 1 }),
-        edge({ id: 'e-b', fromBlockId: 'mid', fromEnd: 'south', toBlockId: 'goal', toEnd: 'north', lengthMm: 1 }),
-      ],
-      [block('b1', { occupancy: 'occupied' }), block('mid'), block('goal')],
-    );
-    expect(DEFAULT_EDGE_LENGTH_MM).toBe(1000);
-    // If the unmeasured edge were free it would win; it does not.
-    expect(findPath({ startBlockId: 'b1', destinationBlockId: 'goal' }, v)).toEqual({
-      found: true,
-      edgeIds: ['e-a', 'e-b'],
-    });
-  });
-
-  it('falls back to fewest hops when no edge records a length', () => {
+  it('falls back to fewest hops when no block records a length', () => {
     const v = view(
       [
         edge({ id: 'e-direct', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'goal', toEnd: 'west' }),

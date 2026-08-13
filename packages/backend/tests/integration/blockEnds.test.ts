@@ -367,7 +367,6 @@ describe('POST .../block-ends/generate', () => {
       toBlockId: BLOCK_B,
       toEnd: 'south',
       pointConditions: [],
-      lengthMm: null,
     });
     await drawSiding(BLOCK_A, 0);
 
@@ -503,7 +502,6 @@ describe('block end rename and delete', () => {
       toBlockId: BLOCK_B,
       toEnd: 'south',
       pointConditions: [],
-      lengthMm: null,
     });
 
     const res = await app.inject({
@@ -529,7 +527,6 @@ describe('block end rename and delete', () => {
       toBlockId: BLOCK_A,
       toEnd: 'yard-3',
       pointConditions: [],
-      lengthMm: null,
     });
 
     const res = await app.inject({ method: 'DELETE', url: `${ENDS_URL}/${end.id}` });
@@ -606,7 +603,6 @@ describe('GET .../grid/diagnostics', () => {
       toBlockId: BLOCK_B,
       toEnd: 'west',
       pointConditions: [],
-      lengthMm: null,
     });
 
     const found = (await fetchDiagnostics()).find(
@@ -836,7 +832,7 @@ describe('GET .../grid/edge-proposals', () => {
     await drawConnectedPair();
     const [first] = (await fetchProposals()).proposals;
 
-    // Accepted by posting the proposal to the normal route, with no `lengthMm`.
+    // Accepted by posting the proposal to the normal route.
     const created = await app.inject({
       method: 'POST',
       url: `/api/layouts/${LAYOUT_ID}/edges`,
@@ -849,7 +845,6 @@ describe('GET .../grid/edge-proposals', () => {
       },
     });
     expect(created.statusCode).toBe(201);
-    expect(JSON.parse(created.body).lengthMm).toBeNull();
 
     // Re-proposing now reports it rather than hiding it — silence would be
     // indistinguishable from "not found".
