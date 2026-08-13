@@ -21,15 +21,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGridEditor } from '../hooks/useGridEditor';
 import { useBlockEnds } from '../hooks/useBlockEnds';
 import { useGridDiagnostics } from '../hooks/useGridDiagnostics';
+import { useOpenings } from '../hooks/useOpenings';
 import { BlockEndsPanel } from './BlockEndsPanel';
 import { assignRunTints, findBlockRuns } from '../diagram/blockRuns';
-import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, OCCUPANCY, SURFACE } from '../diagram/encoding';
+import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, OCCUPANCY, OPENING, SURFACE } from '../diagram/encoding';
 import { describeDiagnostic, diagnosticCoordinate, partitionDiagnostics } from '../diagram/diagnostics';
 import { defaultPointRoads, edgeAnchor, isPointTile, roadLabel } from '../diagram/pointRoads';
+import { portMarkGeometry } from '../diagram/openings';
 import { pointLabelAnchors, shortPointLabel } from '../diagram/pointLabels';
 import { describeCursor } from '../diagram/cursorAnnouncement';
 import { rulerTicks } from '../diagram/ruler';
-import { GridDiagnostic, GridTileMetadata, TileType, classifyTile } from '../types';
+import { CompiledOpening, GridDiagnostic, GridTileMetadata, Port, TileType, classifyTile } from '../types';
 import { BlockRecord, PointRecord, SensorRecord } from '../types';
 
 interface Props {
@@ -247,6 +249,13 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
     remove: removeEnd,
   } = useBlockEnds(layoutId);
   const { diagnostics } = useGridDiagnostics(layoutId, gridRevision);
+  /**
+   * #103 (D-H) — pure geometry, no walk, so it is cheap enough to read on
+   * every stroke end alongside the diagnostics above. `ends`/`useBlockEnds`
+   * above is #72's model and stays working for now (step 6.2 removes it);
+   * this is the drawing marks are drawn from.
+   */
+  const { openings } = useOpenings(layoutId, gridRevision);
 
   /**
    * The last refused write, held here rather than in the hook (#62).
@@ -963,6 +972,39 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
     return out;
   }, [ends]);
 
+  /**
+   * #103 (D-H) — every compiled opening's ports, keyed by the tile **the
+   * boundary itself sits on**. An opening can span several tiles (a
+   * multi-cell handover face is still one opening), so a port's own cell is
+   * frequently not `opening.at` — the tile the label below is drawn at — and
+   * the two must be looked up separately.
+   */
+  const portsAtCell = useMemo(() => {
+    const out = new Map<string, { edge: Port['edge']; label: string }[]>();
+    for (const o of openings) {
+      for (const p of o.ports) {
+        const k = `${p.x},${p.y}`;
+        const entry = { edge: p.edge, label: o.label };
+        const list = out.get(k);
+        if (list) list.push(entry);
+        else out.set(k, [entry]);
+      }
+    }
+    return out;
+  }, [openings]);
+
+  /** Compiled openings keyed by the tile the compiler chose to carry their label (`opening.at`). */
+  const openingsAtCell = useMemo(() => {
+    const out = new Map<string, CompiledOpening[]>();
+    for (const o of openings) {
+      const k = `${o.at.x},${o.at.y}`;
+      const list = out.get(k);
+      if (list) list.push(o);
+      else out.set(k, [o]);
+    }
+    return out;
+  }, [openings]);
+
   /** What's at the cursor's cell, resolved the same way the render loop resolves any other tile. */
   const cursorTile = useMemo(() => {
     const k = `${cursor.x},${cursor.y}`;
@@ -1439,7 +1481,12 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
                 ? (points.find((p) => p.id === meta.pointId)?.name ?? meta.pointId)
                 : null;
               const classification = classifyTile(meta);
-              const cellEnds = endsAtCell.get(`${tile.x},${tile.y}`) ?? [];
+              // #103 (D-H) — ports whose boundary sits on THIS tile (an
+              // opening can span several tiles, so a port's own cell is not
+              // necessarily `opening.at`) and openings whose *label* sits
+              // here.
+              const portsHere = portsAtCell.get(`${tile.x},${tile.y}`) ?? [];
+              const openingsHere = openingsAtCell.get(`${tile.x},${tile.y}`) ?? [];
               return (
                 <g key={tile.id || `${tile.x},${tile.y}`}
                   transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}>
@@ -1544,29 +1591,90 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
                   ) : null}
 
                   {/*
-                    #72 — the end labels, at the openings the geometry found.
-                    A pinned label is drawn in brackets so you can see which
-                    names are load-bearing: a generated one will move when the
-                    drawing does, a pinned one never will, and the edges depend
-                    on the pinned ones.
+                    #103 (D-H) — a tick at each tile boundary a compiled
+                    opening's ports actually cross. This is the mark #91's
+                    fused-siding bug argues for: a word at a *nearby* cell
+                    (the model this replaces, `docs/track-editor.md` D12) read
+                    as a perfectly plausible label right up until someone
+                    checked it against the drawing, and a mark at the *wrong*
+                    boundary is not plausible — it is visibly wrong. The tick
+                    says *where*; the block label below says *which*.
+
+                    Drawn in THIS `<g>`, never inside the sibling one below
+                    that applies `rotation` to `TilePath` — `port.edge` is
+                    already in the rotated (screen) frame
+                    (`diagram/openings.ts`), and rotating it again is the
+                    double-rotation bug that module's header warns about.
                   */}
-                  {cellEnds.map((end) => (
-                    <text
-                      key={end.label}
-                      x={H}
-                      y={H + 3}
-                      textAnchor="middle"
-                      fontSize={7}
-                      fill={INK.secondary}
-                      fontFamily="monospace"
-                      stroke={SURFACE.canvas}
-                      strokeWidth={3}
-                      paintOrder="stroke"
-                    >
-                      {end.pinned ? `[${end.label}]` : end.label}
-                      {end.terminated ? ' ⊣' : ''}
-                    </text>
-                  ))}
+                  {labelsVisible(tile.x, tile.y) &&
+                    portsHere.map((p, i) => {
+                      const mark = portMarkGeometry(p, T);
+                      return (
+                        <line
+                          key={`${p.edge}-${i}`}
+                          x1={mark.x1}
+                          y1={mark.y1}
+                          x2={mark.x2}
+                          y2={mark.y2}
+                          stroke={OPENING.colour}
+                          strokeWidth={2}
+                          strokeLinecap="round"
+                        >
+                          <title>{p.label}</title>
+                        </line>
+                      );
+                    })}
+
+                  {/*
+                    The stop glyph, on a terminated opening's closed side.
+                    Drawn inside the same rotation `TilePath` uses below —
+                    `buffer` is the only palette tile that terminates today,
+                    and its stop block is always drawn just right of centre in
+                    the *unrotated* frame, so sharing that transform puts the
+                    glyph on the correct physical side without re-deriving
+                    which edge is "closed" a second time.
+                  */}
+                  {labelsVisible(tile.x, tile.y) && openingsHere.some((o) => o.terminated) && (
+                    <g transform={`rotate(${rotation}, ${H}, ${H})`}>
+                      <text
+                        x={H + 12}
+                        y={H + 3}
+                        textAnchor="middle"
+                        fontSize={9}
+                        fill={OPENING.colour}
+                        fontFamily="monospace"
+                        stroke={SURFACE.tile}
+                        strokeWidth={2.5}
+                        paintOrder="stroke"
+                      >
+                        ⊣
+                      </text>
+                    </g>
+                  )}
+
+                  {/*
+                    The label, once per opening, at `opening.at` — the tile
+                    the compiler chose to carry it. Not "pinned"/"generated":
+                    unlike a `block_ends` row, a compiled label is disposable
+                    output with nothing referencing it between compiles (D8).
+                  */}
+                  {labelsVisible(tile.x, tile.y) &&
+                    openingsHere.map((o) => (
+                      <text
+                        key={o.label}
+                        x={H}
+                        y={H + 3}
+                        textAnchor="middle"
+                        fontSize={7}
+                        fill={INK.secondary}
+                        fontFamily="monospace"
+                        stroke={SURFACE.canvas}
+                        strokeWidth={3}
+                        paintOrder="stroke"
+                      >
+                        {o.label}
+                      </text>
+                    ))}
                   {/*
                     #93 — the point's name, drawn **once per point** at the tile
                     `pointLabelAnchors` chose, and abbreviated to what a 40px

@@ -455,6 +455,35 @@ export type GridDiagnostic =
     }
   | { kind: 'block-without-detection'; severity: 'info'; blockId: string };
 
+// ─── Compiled openings (#103, D-H) ─────────────────────────────────────────────
+
+/**
+ * Mirrors `tileGeometry.ts`'s `Port`. One place drawn track crosses a tile
+ * boundary. `edge` is already in the **rotated (screen)** frame — do not
+ * apply a tile's `metadata.rotation` to it a second time.
+ */
+export interface Port {
+  x: number;
+  y: number;
+  edge: TileEdge;
+}
+
+/**
+ * Mirrors the backend's `CompiledOpening` — pure geometry, disposable compiler
+ * output (D8). Read via `GET .../grid/openings` on every stroke end, the way
+ * `grid/diagnostics` already is.
+ */
+export interface CompiledOpening {
+  blockId: string;
+  /** 8-point cardinal, suffixed `-1`…`-n` when a block has several facing the same way. */
+  label: string;
+  /** A tile of the block, where the label may be drawn. */
+  at: { x: number; y: number };
+  terminated: boolean;
+  /** The tile boundaries this opening covers. Empty for a buffer's closed side. */
+  ports: Port[];
+}
+
 export interface GridTileRecord {
   id: string;
   layoutId: string;

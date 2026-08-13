@@ -168,3 +168,155 @@ test('label density off hides the labels but keeps the drawing', async ({ page }
   // The track itself is untouched — this hides text, not tiles.
   await expect(page.getByText(/30 tiles/)).toBeVisible();
 });
+
+/**
+ * #103 step 6.1 — opening marks at tile boundaries, replacing the old
+ * "a word at a nearby cell" model (`docs/track-editor.md` D12, superseded).
+ *
+ * `GET .../grid/openings` is stubbed directly with a hand-built
+ * `CompiledOpening[]`, rather than relying on the real compiler, so the test
+ * asserts against a geometry it controls: block `b1`'s west end (a real
+ * boundary, one port) and its east end (a buffer, terminated, no port).
+ */
+test.describe('opening marks (#103 D-H)', () => {
+  const OPENING_TILES: Tile[] = [
+    { x: 2, y: 8, tileType: 'straight-h', blockId: 'b1' },
+    { x: 3, y: 8, tileType: 'straight-h', blockId: 'b1' },
+    { x: 4, y: 8, tileType: 'straight-h', blockId: 'b1' },
+    { x: 5, y: 8, tileType: 'straight-h', blockId: 'b1' },
+    { x: 6, y: 8, tileType: 'buffer', blockId: 'b1' },
+  ];
+
+  const OPENINGS = [
+    {
+      blockId: 'b1',
+      label: 'west',
+      at: { x: 2, y: 8 },
+      terminated: false,
+      ports: [{ x: 2, y: 8, edge: 'w' }],
+    },
+    {
+      blockId: 'b1',
+      label: 'east',
+      at: { x: 6, y: 8 },
+      terminated: true,
+      ports: [],
+    },
+  ];
+
+  async function openEditorWithOpenings(page: Page) {
+    await installMockWebSocket(page);
+    await installMockAuth(page);
+
+    await page.route('**://localhost:3000/api/layouts', (r) =>
+      r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([{ id: 'layout-1', name: 'Westgate Hollow' }]),
+      }),
+    );
+    await page.route('**://localhost:3000/api/layouts/layout-1/grid', (r) =>
+      r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          OPENING_TILES.map((t, i) => ({
+            id: `ot${i}`,
+            layoutId: 'layout-1',
+            x: t.x,
+            y: t.y,
+            tileType: t.tileType,
+            metadata: JSON.stringify({ rotation: 0, blockId: t.blockId }),
+          })),
+        ),
+      }),
+    );
+    const json = (body: unknown) => ({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    });
+    await page.route('**://localhost:3000/api/layouts/layout-1/blocks', (r) =>
+      r.fulfill(json([{ id: 'b1', layoutId: 'layout-1', name: 'Siding 1' }])),
+    );
+    await page.route('**://localhost:3000/api/layouts/layout-1/points', (r) => r.fulfill(json([])));
+    await page.route('**://localhost:3000/api/layouts/layout-1/sensors', (r) => r.fulfill(json([])));
+    await page.route('**://localhost:3000/api/layouts/layout-1/locos', (r) => r.fulfill(json([])));
+    await page.route('**://localhost:3000/api/layouts/layout-1/edges', (r) => r.fulfill(json([])));
+    await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+      r.fulfill(json({ valid: true, violations: [], edgeCount: 0 })),
+    );
+    await page.route('**://localhost:3000/api/layouts/layout-1/grid/openings', (r) =>
+      r.fulfill(json(OPENINGS)),
+    );
+
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Track Editor' }).click();
+    await expect(page.getByText(/5 tiles/)).toBeVisible();
+  }
+
+  test('a mark is drawn exactly at the boundary the port names, not a nearby cell', async ({
+    page,
+  }) => {
+    await openEditorWithOpenings(page);
+
+    // The `west` opening's one port sits on tile (2, 8)'s west edge —
+    // `portMarkGeometry({ edge: 'w' }, 40)` in the tile's own local frame.
+    // Asserting the raw SVG attributes, rather than a computed screen
+    // position, is deliberate: it is what makes a mark drawn at the wrong
+    // boundary (the #91 failure mode this replaces) fail visibly here,
+    // instead of only "close enough" to a plausible position passing.
+    const westTick = page
+      .locator('svg line')
+      .filter({ has: page.locator('title', { hasText: /^west$/ }) });
+    await expect(westTick).toHaveCount(1);
+    await expect(westTick).toHaveAttribute('x1', '5');
+    await expect(westTick).toHaveAttribute('y1', '20');
+    await expect(westTick).toHaveAttribute('x2', '-5');
+    await expect(westTick).toHaveAttribute('y2', '20');
+  });
+
+  test('a buffered opening draws the stop glyph, and no boundary tick (it has no port)', async ({
+    page,
+  }) => {
+    await openEditorWithOpenings(page);
+
+    // The `east` opening is terminated with an empty `ports` array (a
+    // buffer's closed side is not a boundary anything can cross), so there is
+    // no tick for it — only the stop glyph, inside the buffer tile at (6, 8).
+    const bufferTileGroup = page.locator('svg g[transform="translate(240,320)"]');
+    await expect(bufferTileGroup.locator('text', { hasText: '⊣' })).toHaveCount(1);
+    // Scoped to a tick (a `<title>`-bearing `<line>`) rather than every
+    // `<line>` in the tile — `TilePath` itself draws the buffer's own stub
+    // line, which is track, not an opening mark, and must not be mistaken
+    // for one here.
+    await expect(bufferTileGroup.locator('line').filter({ has: page.locator('title') })).toHaveCount(
+      0,
+    );
+
+    const eastTick = page
+      .locator('svg line')
+      .filter({ has: page.locator('title', { hasText: /^east$/ }) });
+    await expect(eastTick).toHaveCount(0);
+  });
+
+  test('the label is still drawn once per opening, alongside its mark', async ({ page }) => {
+    await openEditorWithOpenings(page);
+
+    const texts = await svgTexts(page);
+    expect(texts.filter((t) => t === 'west')).toHaveLength(1);
+    expect(texts.filter((t) => t === 'east')).toHaveLength(1);
+  });
+
+  test('label density off hides opening marks and the stop glyph too', async ({ page }) => {
+    await openEditorWithOpenings(page);
+    await expect(page.locator('svg line').filter({ has: page.locator('title') })).toHaveCount(1);
+
+    await page.getByRole('combobox', { name: /labels/i }).selectOption('off');
+
+    await expect(page.locator('svg line').filter({ has: page.locator('title') })).toHaveCount(0);
+    await expect(page.locator('svg text', { hasText: '⊣' })).toHaveCount(0);
+    // The track itself is untouched — this hides marks and labels, not tiles.
+    await expect(page.getByText(/5 tiles/)).toBeVisible();
+  });
+});

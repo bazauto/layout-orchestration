@@ -53,6 +53,18 @@ const BLOCK_ENDS = [
   },
 ];
 
+/**
+ * `useBlockEnds`'s `pinned`/`geometry` shape above no longer drives what the
+ * canvas draws (#103 step 6.1 deletes that rendering; `Ends ✎`/`Ends ⟳`
+ * themselves stay working, tested elsewhere). This is `GET .../grid/openings`
+ * instead — pure geometry, no "pinned" concept at all, since a compiled label
+ * is disposable and nothing references it between compiles (D8).
+ */
+const OPENINGS = [
+  { blockId: 'b1', label: 'west', at: { x: 2, y: 3 }, terminated: false, ports: [{ x: 2, y: 3, edge: 'w' }] },
+  { blockId: 'b1', label: 'yard-3', at: { x: 5, y: 3 }, terminated: true, ports: [] },
+];
+
 const DIAGNOSTICS = [
   { kind: 'diamond-blind-spot', severity: 'warning', at: { x: 6, y: 3 } },
   {
@@ -134,6 +146,9 @@ async function stubApis(page: Page, writes: Write[]) {
 
   await page.route('**://localhost:3000/api/layouts/layout-1/block-ends', (r) =>
     r.fulfill(json(BLOCK_ENDS)),
+  );
+  await page.route('**://localhost:3000/api/layouts/layout-1/grid/openings', (r) =>
+    r.fulfill(json(OPENINGS)),
   );
   await page.route('**://localhost:3000/api/layouts/layout-1/block-ends/generate', (r) => {
     writes.push({ method: 'POST', url: r.request().url(), body: null });
@@ -256,16 +271,23 @@ test('clicking an already-annotated tile removes the annotation', async ({ page 
   expect(write.metadata.annotations).toBeUndefined();
 });
 
-test('block end labels are drawn, with pinned ones bracketed and buffers marked', async ({ page }) => {
+test('opening labels and boundary marks are drawn, with the stop glyph on a terminated one (#103)', async ({
+  page,
+}) => {
   await openEditor(page);
 
   const texts = await page.locator('svg text').allTextContents();
-
-  // A generated label is plain; a pinned one is bracketed, because a pinned
-  // label is what the edges depend on and will not move when the drawing does.
   expect(texts).toContain('west');
-  expect(texts.some((t) => t.includes('[yard-3]'))).toBe(true);
+  expect(texts).toContain('yard-3');
   expect(texts.some((t) => t.includes('⊣'))).toBe(true);
+
+  // Not just the label — the boundary tick itself, at the port the geometry
+  // actually names. A mark at the wrong cell is visibly wrong in a way a
+  // word at a nearby cell was not (#91), which is the point of #103 step 6.1.
+  const westTick = page
+    .locator('svg line')
+    .filter({ has: page.locator('title', { hasText: /^west$/ }) });
+  await expect(westTick).toHaveCount(1);
 });
 
 test('the diagnostics panel separates hazards from unfinished authoring', async ({ page }) => {
