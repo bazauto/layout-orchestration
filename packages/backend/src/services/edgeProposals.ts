@@ -63,30 +63,9 @@
  * rather than two different things.
  */
 
-import {
-  BlockEdge,
-  BlockEnd,
-  BlockId,
-  GridTileMetadata,
-  PointCondition,
-  PointId,
-  TileEdge,
-  TilePointRoad,
-  classifyTile,
-  depictsPoint,
-} from '../domain/types';
+import { BlockEdge, BlockEnd, BlockId, PointCondition, PointId, TileEdge } from '../domain/types';
 import { BlockOpening, Coordinate, GeometryTile } from './gridGeometry';
-import {
-  EDGE_OFFSET,
-  Port,
-  drawnEdges,
-  exitsFrom,
-  opposingPort,
-  oppositeEdge,
-  portKey,
-  rotateEdge,
-  tileLegs,
-} from './tileGeometry';
+import { compileConnections } from './trackGraphCompiler';
 
 /** A single path may cross this many tiles before the branch is abandoned. */
 export const MAX_PROPOSAL_PATH_TILES = 32;
@@ -171,485 +150,50 @@ const conditionKey = (conditions: readonly PointCondition[]): string =>
 
 const endKey = (blockId: string, end: string | null): string => `${blockId}${SEP}${end ?? ''}`;
 
-/** One live path, mid-walk. */
-interface Branch {
-  /** The port the walk is arriving *at* — already on the far side of the last boundary. */
-  at: Port;
-  conditions: PointCondition[];
-  via: Coordinate[];
-  crossesDiamond: boolean;
-  visited: Set<string>;
-}
-
 /**
- * Walks the drawing from every opening and returns the connections it finds, in
- * both directions.
+ * Shapes the compiler's walk (`./trackGraphCompiler`) into #78's proposal
+ * vocabulary.
  *
- * Pure, and deliberately ignorant of existing edges — `reconcileProposals` is
- * what compares the result against the graph. Splitting them keeps the walk
- * testable against a hand-built tile array with no repository at all.
+ * The walk itself moved out (D-A). It is one piece of geometry with two
+ * consumers, and this area already carries two hand-maintained duplicates —
+ * `findBlockRuns` and `TILE_LEGS` — that a change to one silently leaves
+ * stale in the other. A third was not worth having.
+ *
+ * What stays here is everything the walk has no opinion about: the review
+ * statuses, the pairing of the two directions of a connection, the cap on how
+ * many candidates a person will read, and the comparison against the authored
+ * graph. All of it is #78's surface, and all of it is deleted when the
+ * compile-diff UI replaces this panel.
  */
 export function proposeEdges(input: {
   tiles: readonly GeometryTile[];
   openings: readonly BlockOpening[];
 }): EdgeProposalReport {
-  const byKey = new Map<string, GeometryTile>();
-  for (const t of input.tiles) byKey.set(`${t.x},${t.y}`, t);
+  const { connections, notes } = compileConnections(input);
 
-  /** Which opening each boundary belongs to, so an arrival can be named. */
-  const openingByPort = new Map<string, BlockOpening>();
-  for (const o of input.openings) {
-    for (const p of o.ports) openingByPort.set(portKey(p), o);
+  if (connections.length > MAX_EDGE_PROPOSALS) {
+    throw new ProposalLimitExceededError(MAX_EDGE_PROPOSALS, connections.length);
   }
 
-  const notes: ProposalNote[] = [];
-  const found: Omit<EdgeProposal, 'pairId' | 'status'>[] = [];
+  const proposals = connections.map((c) => ({
+    fromBlockId: c.fromBlockId,
+    fromEnd: c.fromEnd,
+    toBlockId: c.toBlockId,
+    toEnd: c.toEnd,
+    pointConditions: c.pointConditions,
+    // Always `null`, and the literal type is the guard: geometry can never
+    // supply distance, and since #105 an edge carries none at all.
+    lengthMm: null as null,
+    via: c.via,
+    crossesDiamond: c.crossesDiamond,
+    pairId: [endKey(c.fromBlockId, c.fromEnd), endKey(c.toBlockId, c.toEnd)]
+      .sort()
+      .join(SEP)
+      .concat(SEP, conditionKey(c.pointConditions)),
+    status: 'new' as const,
+  }));
 
-  for (const opening of input.openings) {
-    if (opening.terminated) continue; // nothing leaves a buffered end
-
-    for (const port of opening.ports) {
-      // The departing tile may itself be a point, and frequently is: a throat
-      // tile is tagged to the block it serves, so the block's opening sits *on*
-      // the point. Leaving through that port costs whatever the road using it
-      // requires, and missing it was worth catching — the Westgate Hollow fiddle
-      // yard proposed `Fiddle Yard 1 ↔ Fiddle Yard 2` with no condition at all,
-      // which as an authored edge would let a route plan across P1 set against
-      // it. Conditions on arrival were never the whole story.
-      const from = byKey.get(`${port.x},${port.y}`);
-      if (!from) continue;
-
-      const roads = from.metadata.pointRoads ?? [];
-
-      // Gated on the tile *type*, as #92 established: a point is drawn as two
-      // tiles and only the point tile has legs to map, so a `straight-45`
-      // companion carrying a `pointId` is not an unmapped point.
-      if (depictsPoint(from.tileType) && roads.length === 0) {
-        notes.push({
-          kind: 'blocked-by-unmapped-point',
-          at: { x: port.x, y: port.y },
-          pointId: from.metadata.pointId!,
-        });
-        continue;
-      }
-
-      const ctx = { byKey, openingByPort, notes, found };
-
-      if (roads.length === 0) {
-        walkFrom(opening, port, [], ctx);
-        continue;
-      }
-
-      const along = roadsAlong(from, port.edge, roads);
-
-      if (along.length === 0) {
-        notes.push({ kind: 'leg-not-covered-by-road', at: { x: port.x, y: port.y }, edge: port.edge });
-        continue;
-      }
-
-      // Departure, not arrival: the train reaching this boundary came from
-      // somewhere inside the block, so the road's other leg has to lead back
-      // into it. See the header — the mirror-image test on arrival is #104.
-      const seeds = along.filter((road) =>
-        leadsIntoBlock(from, otherLeg(road.legs, port.edge), opening.blockId, byKey),
-      );
-
-      if (seeds.length === 0) {
-        notes.push({
-          kind: 'no-road-out-of-block',
-          at: { x: port.x, y: port.y },
-          blockId: opening.blockId,
-          edge: port.edge,
-        });
-        continue;
-      }
-
-      for (const seed of seeds) walkFrom(opening, port, seed.conditions, ctx);
-    }
-  }
-
-  return { proposals: assemble(found), notes: sortNotes(notes) };
-}
-
-/** One authored road that uses `edge` as a leg, rotated onto the drawing. */
-interface RoadAlongLeg {
-  legs: [TileEdge, TileEdge];
-  conditions: PointCondition[];
-}
-
-/**
- * The drawn roads that use `edge`, and what each costs.
- *
- * Empty with roads authored means the tile draws a leg its mapping does not
- * cover — an incomplete mapping, reported as `leg-not-covered-by-road` wherever
- * this is called, never treated as "no connection here".
- */
-function roadsAlong(
-  tile: GeometryTile,
-  edge: TileEdge,
-  roads: readonly TilePointRoad[],
-): RoadAlongLeg[] {
-  const out: RoadAlongLeg[] = [];
-
-  for (const road of roads) {
-    const legs = rotatedLegs(road, tile.metadata);
-    if (!legs.includes(edge)) continue;
-
-    out.push({
-      legs,
-      conditions: road.when.map((w) => ({ pointId: w.pointId, requiredPosition: w.position })),
-    });
-  }
-
-  return out;
-}
-
-const otherLeg = (legs: readonly [TileEdge, TileEdge], edge: TileEdge): TileEdge =>
-  legs[0] === edge ? legs[1] : legs[0];
-
-/**
- * Whether `leg` of `from` opens onto a tile of `blockId` that draws track back
- * across the same boundary. Coupling is mutual (#91), so a same-tinted tile
- * butted alongside without track meeting the boundary does not count.
- */
-function leadsIntoBlock(
-  from: GeometryTile,
-  leg: TileEdge,
-  blockId: BlockId,
-  byKey: ReadonlyMap<string, GeometryTile>,
-): boolean {
-  const offset = EDGE_OFFSET[leg];
-  const neighbour = byKey.get(`${from.x + offset.dx},${from.y + offset.dy}`);
-  if (!neighbour || neighbour.metadata.blockId !== blockId) return false;
-  return drawnEdges(neighbour.tileType, neighbour.metadata).has(oppositeEdge(leg));
-}
-
-/**
- * What it costs to *arrive* in a block at its boundary tile, one entry per way
- * of doing it (#104).
- *
- * On an ordinary tile: one way, no conditions.
- *
- * On a point tile, every road along the arriving leg counts, and the road's own
- * `when` is the whole cost. There is deliberately no test that the road's other
- * leg leads further into the block, because **the tile is the block**: a tile
- * tinted `Fiddle Yard 1` is part of Fiddle Yard 1's detection section, so a
- * train that has reached it has arrived. Requiring the road to carry on inward
- * is what silently deleted three blocks' connectivity on Westgate Hollow when
- * P1's tile was tinted as the yard it serves.
- *
- * Requiring the road to *exist along the leg* is what remains, and it is the
- * load-bearing half: it is what stops the walk reading a point as "any leg
- * reaches any other" and proposing a conditionless arrival over blades set
- * against it.
- */
-function arrivalConditions(
-  tile: GeometryTile,
-  edge: TileEdge,
-  roads: readonly TilePointRoad[],
-): PointCondition[][] {
-  if (roads.length === 0) return [[]];
-  return roadsAlong(tile, edge, roads).map((road) => road.conditions);
-}
-
-function walkFrom(
-  opening: BlockOpening,
-  start: Port,
-  seed: PointCondition[],
-  ctx: {
-    byKey: ReadonlyMap<string, GeometryTile>;
-    openingByPort: ReadonlyMap<string, BlockOpening>;
-    notes: ProposalNote[];
-    found: Omit<EdgeProposal, 'pairId' | 'status'>[];
-  },
-): void {
-  const queue: Branch[] = [
-    {
-      at: opposingPort(start),
-      conditions: seed,
-      via: [],
-      crossesDiamond: false,
-      visited: new Set([portKey(start)]),
-    },
-  ];
-
-  let expanded = 0;
-
-  while (queue.length > 0) {
-    const branch = queue.pop()!;
-
-    if (expanded++ > MAX_BRANCHES_PER_OPENING) {
-      ctx.notes.push({ kind: 'search-truncated', blockId: opening.blockId, at: opening.at });
-      return;
-    }
-
-    const here = { x: branch.at.x, y: branch.at.y };
-    const tile = ctx.byKey.get(`${here.x},${here.y}`);
-    if (!tile) continue; // open air: the line simply ends
-
-    // Coupling is mutual. A tile drawn alongside without any track meeting this
-    // boundary is not connected to it — the whole reason this can only exist
-    // after #91, and the reason two parallel yard roads yield nothing. `#91`'s
-    // `track-not-joined` already reports the drawing fault, so this is silent.
-    if (!drawnEdges(tile.tileType, tile.metadata).has(branch.at.edge)) continue;
-
-    const classification = classifyTile(tile.metadata);
-
-    if (classification === 'unclassified') {
-      // Walking through untagged track finds wrong things confidently; stopping
-      // silently is indistinguishable from "there is no connection". The note is
-      // the difference, and it tells the operator that classifying one cell
-      // unlocks the proposal.
-      ctx.notes.push({ kind: 'blocked-by-unclassified', at: here });
-      continue;
-    }
-
-    if (classification === 'block') {
-      const arrived = ctx.openingByPort.get(portKey(branch.at));
-
-      if (tile.metadata.blockId === opening.blockId) {
-        // A block reachable from itself is not a connection to author, and the
-        // schema refuses `from_block_id = to_block_id` anyway. Worth a note
-        // because a point tile tinted as its own approach block terminates here,
-        // and an unexplained absence would look like a bug.
-        ctx.notes.push({ kind: 'stopped-in-own-block', blockId: opening.blockId, at: here });
-        continue;
-      }
-
-      // No check is needed here for arriving at a buffered end, and that is a
-      // structural guarantee rather than an omission.
-      //
-      // #91 gives a terminating tile two contributions: a connection opening for
-      // its *stub*, which is the way in, and a terminus on its **closed** side
-      // with no port at all — because a closed side is not a boundary anything
-      // can cross. A terminated opening therefore has nothing to arrive at, so
-      // the walk cannot propose an edge into one however hard it tries.
-      //
-      // Which is also the right answer physically. A buffer says track goes no
-      // further; it does not say the block is unreachable. Arriving through the
-      // stub is how you get to the siding. Going *past* it never arises, since
-      // the first block always terminates the branch.
-
-      // Arriving *at* a block's point tile costs whatever road carries the
-      // arriving leg — and nothing more. Not the mirror of the departure above:
-      // the tile is the block, so reaching it is arriving (#104).
-      const arrivalRoads = tile.metadata.pointRoads ?? [];
-      if (depictsPoint(tile.tileType) && arrivalRoads.length === 0) {
-        ctx.notes.push({
-          kind: 'blocked-by-unmapped-point',
-          at: here,
-          pointId: tile.metadata.pointId!,
-        });
-        continue;
-      }
-
-      const entries = arrivalConditions(tile, branch.at.edge, arrivalRoads);
-
-      if (entries.length === 0) {
-        // Track reaches this cell and the tile's mapping does not cover the leg
-        // it reaches it by. That is an incomplete mapping, not an absent
-        // connection, and guessing which position selects a leg nobody mapped is
-        // the one guess this walk must never make.
-        ctx.notes.push({ kind: 'leg-not-covered-by-road', at: here, edge: branch.at.edge });
-        continue;
-      }
-
-      for (const entry of entries) {
-        const conditions = mergeConditions(branch.conditions, entry);
-        if (!conditions) continue; // one path cannot need a point both ways
-
-        ctx.found.push({
-          fromBlockId: opening.blockId,
-          fromEnd: opening.label,
-          toBlockId: tile.metadata.blockId!,
-          toEnd: arrived?.label ?? null,
-          pointConditions: conditions,
-          lengthMm: null,
-          via: branch.via,
-          crossesDiamond: branch.crossesDiamond,
-        });
-      }
-      continue; // first block wins — never continue past it
-    }
-
-    // Decorative: traversable, and the case that motivates the feature. The
-    // Fiddle Yard reaches the sidings through the entry feeder, which is
-    // deliberately part of no block.
-    if (branch.via.length >= MAX_PROPOSAL_PATH_TILES) {
-      ctx.notes.push({ kind: 'search-truncated', blockId: opening.blockId, at: here });
-      continue;
-    }
-
-    const roads = tile.metadata.pointRoads ?? [];
-    if (depictsPoint(tile.tileType) && roads.length === 0) {
-      // The walk knows it crossed a point but not which position selects which
-      // road, and `pointConditions` is the field whose errors are least visible.
-      //
-      // Gated on tile type for #92's reason: the `straight-45` companion of a
-      // point carries the same `pointId` and cannot hold a mapping, so treating
-      // it as unmapped would refuse every point on the layout.
-      ctx.notes.push({
-        kind: 'blocked-by-unmapped-point',
-        at: here,
-        pointId: tile.metadata.pointId!,
-      });
-      continue;
-    }
-
-    const exits = exitsOf(tile, branch.at.edge, roads);
-
-    if (exits.length === 0 && roads.length > 0) {
-      // Same incompleteness as on arrival, met while passing through: the tile
-      // draws a leg no road maps. Reported rather than dropped, because a branch
-      // that dies here is indistinguishable from a drawing with no connection.
-      ctx.notes.push({ kind: 'leg-not-covered-by-road', at: here, edge: branch.at.edge });
-      continue;
-    }
-
-    for (const exit of exits) {
-      const merged = mergeConditions(branch.conditions, exit.conditions);
-      if (!merged) continue; // one path cannot need a point both ways
-
-      const exitPort: Port = { x: here.x, y: here.y, edge: exit.edge };
-      if (branch.visited.has(portKey(exitPort))) continue;
-
-      queue.push({
-        at: opposingPort(exitPort),
-        conditions: merged,
-        via: [...branch.via, here],
-        crossesDiamond: branch.crossesDiamond || tile.tileType === 'crossing',
-        visited: new Set([...branch.visited, portKey(branch.at), portKey(exitPort)]),
-      });
-    }
-  }
-}
-
-/**
- * The ways out of a tile entered through `entry`, and what each costs in point
- * conditions.
- *
- * Where `pointRoads` is authored it **governs**: the generic leg table is not
- * consulted, because the roads are the statement of which legs exist and which
- * position selects them. A slip or three-way falls out with no special case,
- * since `when` is a list — which is exactly why it was modelled as a position
- * tuple rather than a boolean (`docs/track-grid.md` D9).
- */
-function exitsOf(
-  tile: GeometryTile,
-  entry: TileEdge,
-  roads: readonly TilePointRoad[],
-): { edge: TileEdge; conditions: PointCondition[] }[] {
-  if (roads.length === 0) {
-    return exitsFrom(tileLegs(tile.tileType, tile.metadata), entry).map((edge) => ({
-      edge,
-      conditions: [],
-    }));
-  }
-
-  const out: { edge: TileEdge; conditions: PointCondition[] }[] = [];
-
-  for (const road of roads) {
-    // Roads are stored unrotated, like every leg on the drawing (#73).
-    const legs = rotatedLegs(road, tile.metadata);
-    for (const exit of exitsFrom([legs], entry)) {
-      out.push({
-        edge: exit,
-        conditions: road.when.map((w) => ({
-          pointId: w.pointId,
-          requiredPosition: w.position,
-        })),
-      });
-    }
-  }
-
-  return out;
-}
-
-function rotatedLegs(road: TilePointRoad, metadata: GridTileMetadata): [TileEdge, TileEdge] {
-  const rotation = metadata.rotation ?? 0;
-  return [rotateEdge(road.legs[0], rotation), rotateEdge(road.legs[1], rotation)];
-}
-
-/** `null` when the two sets disagree about a point — no path needs P1 both normal and reverse. */
-function mergeConditions(
-  existing: readonly PointCondition[],
-  added: readonly PointCondition[],
-): PointCondition[] | null {
-  const byPoint = new Map(existing.map((c) => [c.pointId, c]));
-
-  for (const c of added) {
-    const held = byPoint.get(c.pointId);
-    if (held && held.requiredPosition !== c.requiredPosition) return null;
-    byPoint.set(c.pointId, c);
-  }
-
-  return [...byPoint.values()].sort((a, b) => a.pointId.localeCompare(b.pointId));
-}
-
-/**
- * Dedupes and pairs the two directions of each connection.
- *
- * **The reverse is never synthesised** (#104). Ordinary track is walked from
- * both blocks' openings and yields both directions on its own, so mirroring
- * would be redundant everywhere it is harmless — and wrong exactly where it is
- * not. Departing a block through a point tile tinted as that block costs a road
- * leading back into the block's interior, which arriving does not; mirroring an
- * arrival into a departure manufactures an edge the drawing refuses, and a route
- * planned over it runs a train through blades set against it.
- *
- * So a one-way row here is a statement, not an oversight: the drawing supports
- * that direction and not the other. Both directions are still offered wherever
- * both exist, and either may be declined.
- */
-function assemble(found: readonly Omit<EdgeProposal, 'pairId' | 'status'>[]): EdgeProposal[] {
-  const best = new Map<string, Omit<EdgeProposal, 'pairId' | 'status'>>();
-
-  const keyOf = (p: Omit<EdgeProposal, 'pairId' | 'status'>) =>
-    [
-      p.fromBlockId,
-      p.fromEnd ?? '',
-      p.toBlockId,
-      p.toEnd ?? '',
-      conditionKey(p.pointConditions),
-    ].join(SEP);
-
-  const keep = (p: Omit<EdgeProposal, 'pairId' | 'status'>) => {
-    const k = keyOf(p);
-    const held = best.get(k);
-    // Shortest path wins: the same two blocks reached the long way round is the
-    // same connection, and the short `via` is the one that helps an operator
-    // find it on the drawing.
-    if (!held || p.via.length < held.via.length) best.set(k, p);
-  };
-
-  for (const p of found) keep(p);
-
-  if (best.size > MAX_EDGE_PROPOSALS) {
-    throw new ProposalLimitExceededError(MAX_EDGE_PROPOSALS, best.size);
-  }
-
-  return [...best.values()]
-    .map((p) => ({
-      ...p,
-      pairId: [endKey(p.fromBlockId, p.fromEnd), endKey(p.toBlockId, p.toEnd)]
-        .sort()
-        .join(SEP)
-        .concat(SEP, conditionKey(p.pointConditions)),
-      status: 'new' as const,
-    }))
-    .sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
-}
-
-function sortNotes(notes: readonly ProposalNote[]): ProposalNote[] {
-  const seen = new Set<string>();
-  return [...notes]
-    .filter((n) => {
-      const k = JSON.stringify(n);
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    })
-    .sort((a, b) => a.kind.localeCompare(b.kind) || JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return { proposals, notes };
 }
 
 /**
