@@ -95,7 +95,10 @@ test('a failed inline block rename stays in edit mode with the draft intact', as
 
   await openBlocksTab(page);
 
-  await page.getByTitle('Edit').click();
+  // Named, not `getByTitle('Edit')`: a blocks row now carries an edit button
+  // for the name and another for the length, and most other tabs have carried
+  // several all along. Each says what it edits.
+  await page.getByRole('button', { name: 'Edit name' }).click();
   const input = page.locator('input').last();
   await input.fill('Renamed Block');
   await page.getByRole('button', { name: '✓' }).click();

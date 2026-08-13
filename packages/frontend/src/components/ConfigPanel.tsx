@@ -84,6 +84,14 @@ function EditableCell({
   value,
   onSave,
   /**
+   * What this cell edits, e.g. `"length"`. Required, not defaulted to "Edit":
+   * most rows here carry several of these — a loco row has four — and a column
+   * of identical `Edit` buttons is unusable with a screen reader and ambiguous
+   * to a test locator. It renders as `Edit length` in both `title` and
+   * `aria-label`.
+   */
+  label,
+  /**
    * Shown in place of an empty value. Only meaningful with `allowEmpty` — a
    * blank cell reads as an oversight, and for a block length the difference
    * between "unmeasured" and "nobody filled this in" decides whether an
@@ -99,6 +107,7 @@ function EditableCell({
 }: {
   value: string;
   onSave: (v: string) => Promise<SaveResult>;
+  label: string;
   placeholder?: string;
   allowEmpty?: boolean;
 }) {
@@ -151,7 +160,12 @@ function EditableCell({
   return (
     <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
       {value === '' && placeholder ? <em style={s.placeholderText}>{placeholder}</em> : value}
-      <button onClick={() => { setDraft(value); setEditing(true); setError(null); }} style={s.editBtn} title="Edit">✎</button>
+      <button
+        onClick={() => { setDraft(value); setEditing(true); setError(null); }}
+        style={s.editBtn}
+        title={`Edit ${label}`}
+        aria-label={`Edit ${label}`}
+      >✎</button>
     </span>
   );
 }
@@ -216,7 +230,7 @@ function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
           {blocks.map((b) => (
             <tr key={b.id}>
               <td style={s.td}>
-                <EditableCell value={b.name} onSave={(v) => ops.updateBlock(b.id, { name: v })} />
+                <EditableCell label="name" value={b.name} onSave={(v) => ops.updateBlock(b.id, { name: v })} />
               </td>
               <td style={s.td}>
                 {/*
@@ -226,6 +240,7 @@ function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
                   An empty edit clears it back to unmeasured.
                 */}
                 <EditableCell
+                  label="length"
                   value={b.lengthMm === null ? '' : String(b.lengthMm)}
                   placeholder="unmeasured"
                   allowEmpty
@@ -309,7 +324,7 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
           {sensors.map((ss) => (
             <tr key={ss.id}>
               <td style={s.td}>
-                <EditableCell value={ss.name} onSave={(v) => ops.updateSensor(ss.id, { name: v })} />
+                <EditableCell label="name" value={ss.name} onSave={(v) => ops.updateSensor(ss.id, { name: v })} />
               </td>
               <td style={s.td}>
                 <select
@@ -347,7 +362,7 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
                 />
               </td>
               <td style={s.tdMono}>
-                <EditableCell value={ss.mqttTopic} onSave={(v) => ops.updateSensor(ss.id, { mqttTopic: v })} />
+                <EditableCell label="MQTT topic" value={ss.mqttTopic} onSave={(v) => ops.updateSensor(ss.id, { mqttTopic: v })} />
               </td>
               <td style={s.td}><button onClick={() => runUpdate(ops.deleteSensor(ss.id))} style={s.delBtn}>×</button></td>
             </tr>
@@ -408,10 +423,11 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
           {points.map((p) => (
             <tr key={p.id}>
               <td style={s.td}>
-                <EditableCell value={p.name} onSave={(v) => ops.updatePoint(p.id, { name: v })} />
+                <EditableCell label="name" value={p.name} onSave={(v) => ops.updatePoint(p.id, { name: v })} />
               </td>
               <td style={s.td}>
                 <EditableCell
+                  label="DCC address"
                   value={String(p.dccAddress)}
                   onSave={(v) => {
                     const n = parseInt(v, 10);
@@ -492,10 +508,11 @@ function LocosTab({ locos, ops }: { locos: Ops['config']['locos']; ops: Ops }) {
           {locos.map((l) => (
             <tr key={l.id}>
               <td style={s.td}>
-                <EditableCell value={l.name} onSave={(v) => ops.updateLoco(l.id, { name: v })} />
+                <EditableCell label="name" value={l.name} onSave={(v) => ops.updateLoco(l.id, { name: v })} />
               </td>
               <td style={s.td}>
                 <EditableCell
+                  label="DCC address"
                   value={String(l.address)}
                   onSave={(v) => {
                     const n = parseInt(v, 10);
@@ -515,6 +532,7 @@ function LocosTab({ locos, ops }: { locos: Ops['config']['locos']; ops: Ops }) {
               </td>
               <td style={s.td}>
                 <EditableCell
+                  label="max speed"
                   value={String(l.maxSpeed)}
                   onSave={(v) => {
                     const n = parseInt(v, 10);
@@ -525,6 +543,7 @@ function LocosTab({ locos, ops }: { locos: Ops['config']['locos']; ops: Ops }) {
               </td>
               <td style={s.td}>
                 <EditableCell
+                  label="braking factor"
                   value={String(l.brakingFactor)}
                   onSave={(v) => {
                     const n = parseFloat(v);
