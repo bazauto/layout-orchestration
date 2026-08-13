@@ -383,6 +383,36 @@ export const sessions = sqliteTable(
   ],
 );
 
+// ─── Compiled Graphs (see docs/track-graph-compilation.md D10, #103) ──────────
+
+/**
+ * The provenance of the graph currently in `block_edges`: which drawing it was
+ * compiled from, and when.
+ *
+ * One row per layout, and a *missing* row is the honest spelling of "never
+ * compiled" — not a NULL every reader must remember to check. `block_edges`
+ * being empty is a different statement from the graph being unbuilt.
+ *
+ * `drawing_fingerprint` is `drawingFingerprint()`'s SHA-256 over exactly what
+ * the compiler's walk reads (D10, D-G). It does three jobs at once: `apply`
+ * carries the fingerprint that was *reviewed* and is refused if the drawing has
+ * moved since, so review-then-apply cannot become check-then-use; a live
+ * fingerprint differing from the drawing's says the graph is behind the
+ * drawing, which is a warning and never a gate; and a matching one makes
+ * re-applying provably a no-op.
+ *
+ * Deliberately no `edge_count` and no `gap_count`. Both are recomputable from
+ * the drawing, and a stored copy would be a second source of truth about the
+ * very thing #103 exists to stop having two of.
+ */
+export const compiledGraphs = sqliteTable('compiled_graphs', {
+  layoutId: text('layout_id')
+    .primaryKey()
+    .references(() => layouts.id, { onDelete: 'cascade' }),
+  drawingFingerprint: text('drawing_fingerprint').notNull(),
+  compiledAt: integer('compiled_at', { mode: 'timestamp' }).notNull(),
+});
+
 // ─── Grid Tiles ───────────────────────────────────────────────────────────────
 
 export const gridTiles = sqliteTable('grid_tiles', {
@@ -415,6 +445,8 @@ export type BlockEdgeRow = typeof blockEdges.$inferSelect;
 export type NewBlockEdgeRow = typeof blockEdges.$inferInsert;
 export type BlockEndRow = typeof blockEnds.$inferSelect;
 export type NewBlockEndRow = typeof blockEnds.$inferInsert;
+export type CompiledGraphRow = typeof compiledGraphs.$inferSelect;
+export type NewCompiledGraphRow = typeof compiledGraphs.$inferInsert;
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
 export type SessionRow = typeof sessions.$inferSelect;

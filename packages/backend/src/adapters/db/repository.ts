@@ -9,6 +9,7 @@ import { and, eq, inArray, or } from 'drizzle-orm';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { randomUUID } from 'crypto';
 import {
+  CompiledGraphRecord,
   ILayoutRepository,
   LayoutRecord,
   LocoRecord,
@@ -40,6 +41,7 @@ import {
   gridTiles,
   blockEdges,
   blockEnds,
+  compiledGraphs,
   routeReservations,
   routeHolds,
 } from './schema';
@@ -367,6 +369,24 @@ export class DrizzleRepository implements ILayoutRepository {
           .run();
       }
     });
+  }
+
+  // ─── Compiled graph provenance (#103) ───────────────────────────────────────
+
+  /**
+   * Read-only for now, and that is the whole of the surface until the apply
+   * lands: nothing in this codebase writes `compiled_graphs` yet, because
+   * nothing yet compiles the drawing *into* `block_edges`. A writer with no
+   * caller would be an untested path into the one table that says which drawing
+   * the pathfinder's graph came from.
+   */
+  async getCompiledGraph(layoutId: string): Promise<CompiledGraphRecord | null> {
+    const rows = this.db
+      .select()
+      .from(compiledGraphs)
+      .where(eq(compiledGraphs.layoutId, layoutId))
+      .all();
+    return rows.length > 0 ? rows[0] : null;
   }
 
   // ─── Route Reservations ─────────────────────────────────────────────────────

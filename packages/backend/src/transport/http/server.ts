@@ -22,6 +22,7 @@ import { blockRoutes } from './routes/blocks';
 import { sensorRoutes } from './routes/sensors';
 import { gridRoutes } from './routes/grid';
 import { GridService } from '../../services/GridService';
+import { CompileService } from '../../services/CompileService';
 import { blockEndRoutes } from './routes/blockEnds';
 import { BlockEndService } from '../../services/BlockEndService';
 import { edgeRoutes } from './routes/edges';
@@ -99,14 +100,18 @@ export async function buildServer(
   // reason `layoutRoutes` still takes `repo` directly. It exists so the
   // referential checks a Zod schema cannot express live in a service rather
   // than in the route callback.
-  await gridRoutes(fastify, new GridService(repo));
+  // #103: repository-only and stateless, like `GridService` beside it — the
+  // compile is a read, and the *write* it feeds lives on `TopologyService`,
+  // which stays the only writer of `block_edges`.
+  const compileService = new CompileService(repo);
+  await gridRoutes(fastify, new GridService(repo), compileService);
   // Same reasoning as `GridService`: stateless, repository-only. `block_ends`
   // is topology-adjacent but is not the graph — it names openings, and
   // `TopologyService` is deliberately not involved so that an end label can
   // never refuse an edge write (#72).
   await blockEndRoutes(fastify, new BlockEndService(repo));
   await edgeRoutes(fastify, topologyService);
-  await topologyRoutes(fastify, layoutService, topologyService);
+  await topologyRoutes(fastify, layoutService, topologyService, compileService);
   await routeRoutes(fastify, layoutService);
   await capabilityRoutes(fastify, { sensorSimulation: sensorSimulation !== undefined });
   // D2: mounted only when the flag constructed the service — an absent

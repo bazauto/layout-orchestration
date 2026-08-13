@@ -229,6 +229,67 @@ describe('migrations', () => {
     });
   });
 
+  // ── compiled_graphs (#103, docs/track-graph-compilation.md D10 / D-F) ────────
+
+  describe('compiled_graphs', () => {
+    it('exists with exactly the three columns, layout_id as the primary key', () => {
+      const columns = sqlite.prepare('PRAGMA table_info(compiled_graphs)').all() as Array<{
+        name: string;
+        notnull: number;
+        pk: number;
+      }>;
+
+      expect(columns.map((c) => c.name).sort()).toEqual([
+        'compiled_at',
+        'drawing_fingerprint',
+        'layout_id',
+      ]);
+      // One row per layout, and *no* edge_count or gap_count: both are
+      // recomputable from the drawing, and a stored copy would be a second
+      // source of truth about the very thing #103 exists to stop having two of.
+      expect(columns.find((c) => c.name === 'layout_id')?.pk).toBe(1);
+      expect(columns.find((c) => c.name === 'drawing_fingerprint')?.notnull).toBe(1);
+      expect(columns.find((c) => c.name === 'compiled_at')?.notnull).toBe(1);
+    });
+
+    it('cascades on layout delete, so provenance cannot outlive its layout', () => {
+      const fks = sqlite.prepare('PRAGMA foreign_key_list(compiled_graphs)').all() as Array<{
+        table: string;
+        on_delete: string;
+      }>;
+
+      expect(fks).toHaveLength(1);
+      expect(fks[0].table).toBe('layouts');
+      expect(fks[0].on_delete).toBe('CASCADE');
+    });
+
+    it('reads back as null when a layout has never been compiled', async () => {
+      const layout = await repo.createLayout({ name: 'Never Compiled', description: null });
+      // A missing row, not a NULL column: "never compiled" is a different
+      // statement from "compiled from a drawing that has since moved", and the
+      // absence of a row is the honest spelling of the first.
+      await expect(repo.getCompiledGraph(layout.id)).resolves.toBeNull();
+    });
+
+    it('reads a stored fingerprint back through DrizzleRepository', async () => {
+      const layout = await repo.createLayout({ name: 'Compiled Layout', description: null });
+      const compiledAt = new Date('2026-08-13T10:00:00.000Z');
+
+      // Written raw: nothing in the application writes this table until the
+      // apply lands, and a writer with no caller would be an untested path into
+      // the record of which drawing the pathfinder's graph came from.
+      sqlite
+        .prepare(
+          'INSERT INTO compiled_graphs (layout_id, drawing_fingerprint, compiled_at) VALUES (?, ?, ?)',
+        )
+        .run(layout.id, 'abc123', Math.floor(compiledAt.getTime() / 1000));
+
+      const record = await repo.getCompiledGraph(layout.id);
+      expect(record?.drawingFingerprint).toBe('abc123');
+      expect(record?.compiledAt.toISOString()).toBe(compiledAt.toISOString());
+    });
+  });
+
   // ── DB-level topology invariants (block_edges CHECK/UNIQUE constraints) ──────
   //
   // These insert directly against the raw better-sqlite3 handle so they exercise

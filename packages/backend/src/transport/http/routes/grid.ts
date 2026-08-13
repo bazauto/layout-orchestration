@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyReply } from 'fastify';
 import { ProposalLimitExceededError } from '../../../services/edgeProposals';
+import { CompileService } from '../../../services/CompileService';
 import {
   GridService,
   LayoutNotFoundError,
@@ -32,6 +33,7 @@ import { requireAdmin } from '../auth/hook';
 export async function gridRoutes(
   fastify: FastifyInstance,
   gridService: GridService,
+  compileService: CompileService,
 ): Promise<void> {
   // GET all tiles for a layout
   fastify.get<{ Params: { layoutId: string } }>(
@@ -67,6 +69,25 @@ export async function gridRoutes(
     async (req, reply) => {
       try {
         return await gridService.proposeEdges(req.params.layoutId);
+      } catch (err) {
+        return mapGridError(err, reply);
+      }
+    },
+  );
+
+  // Where every drawn block opens, named (#103, D-H). Pure geometry with no
+  // branch search, so the editor can call it per stroke the way it already
+  // calls `grid/diagnostics` — "where does this block open" is a question about
+  // the drawing, and it must not cost a walk of the whole layout to answer.
+  //
+  // The labels are disposable compiler output (D8): regenerated wholesale on
+  // every compile, referenced by nothing, edited by nobody. Do not build
+  // anything that stores one.
+  fastify.get<{ Params: { layoutId: string } }>(
+    '/api/layouts/:layoutId/grid/openings',
+    async (req, reply) => {
+      try {
+        return await compileService.openings(req.params.layoutId);
       } catch (err) {
         return mapGridError(err, reply);
       }

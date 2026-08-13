@@ -1,6 +1,16 @@
 # Compiling the track graph from the drawing
 
-**Status: accepted 2026-08-13. D4 and D5 have shipped (#105); the rest has not.**
+**Status: accepted 2026-08-13. Part built.**
+
+| Decision | State |
+|---|---|
+| D4, D5 — length on blocks, joints zero | **shipped** (#105) |
+| D6, D7 — partial graph, completeness contract | **shipped** as compiler output; nothing gates on it yet |
+| D8 — disposable end labels | **shipped** in `compileOpenings`; `block_ends` still exists alongside |
+| D9 — a compile cannot Safe-Stop | **shipped** for the read surfaces; re-argued when the apply lands |
+| D10 — fingerprint | **shipped**: `compiled_graphs` and `GET .../topology/compile` |
+| D1 — compile under operator review | **partly**: the diff exists, the review UI and the apply do not |
+| D2, D3 — the compiler owns the edge set; `block_ends` deleted | **not started**: `block_edges` is still hand-authored and still empty |
 
 This document records a design decision, not shipped behaviour. Everything it
 describes supersedes parts of #72 (block ends) and #78 (edge proposals), both of

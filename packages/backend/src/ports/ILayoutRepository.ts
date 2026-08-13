@@ -81,6 +81,13 @@ export interface GridTileRecord {
   metadata: string;
 }
 
+/** One row of `compiled_graphs`: which drawing the live graph came from, and when (#103, D10). */
+export interface CompiledGraphRecord {
+  layoutId: string;
+  drawingFingerprint: string;
+  compiledAt: Date;
+}
+
 export interface ILayoutRepository {
   // Layouts
   listLayouts(): Promise<LayoutRecord[]>;
@@ -159,6 +166,18 @@ export interface ILayoutRepository {
     blockId: string,
     labels: readonly string[],
   ): Promise<void>;
+
+  // Compiled graph provenance (see docs/track-graph-compilation.md D10, #103)
+  /**
+   * The drawing the layout's current `block_edges` were compiled from, or
+   * `null` if the graph has never been compiled.
+   *
+   * `null` and "a fingerprint that no longer matches the drawing" are different
+   * answers and both are ordinary: the first says the graph is unbuilt, the
+   * second that it is behind the drawing. Neither is an error — staleness is a
+   * warning, never a gate (D10).
+   */
+  getCompiledGraph(layoutId: string): Promise<CompiledGraphRecord | null>;
 
   // Route Reservations (see docs/route-locking.md)
   listReservations(layoutId: string, statuses?: RouteStatus[]): Promise<RouteReservation[]>;

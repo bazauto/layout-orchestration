@@ -64,6 +64,13 @@
       "when": 1786601208314,
       "tag": "0008_lowly_captain_midlands",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1786640588886,
+      "tag": "0009_good_star_brand",
+      "breakpoints": true
     }
   ]
 }
