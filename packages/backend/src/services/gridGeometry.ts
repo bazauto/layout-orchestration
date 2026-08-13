@@ -468,7 +468,13 @@ function allTerminated(openings: readonly { terminated: boolean }[]): boolean {
 function groupOpenings(raw: readonly RawOpening[]): GeneratedEnds {
   const byBlockLabel = new Map<string, RawOpening[]>();
   for (const o of raw) {
-    const k = `${o.blockId} ${o.label}`;
+    // NUL as the composite-key separator, for the reason `domain/topology.ts`
+    // uses `^@`: it cannot occur in a block id or an end label, so no name can
+    // forge a key. Written as an **escape** and never as a literal — a raw NUL
+    // in the source makes git render this whole file as "Binary files differ"
+    // and makes ripgrep skip it, which hid this module from content searches
+    // and from PR review between #78 and this fix.
+    const k = `${o.blockId}\u0000${o.label}`;
     const list = byBlockLabel.get(k);
     if (list) list.push(o);
     else byBlockLabel.set(k, [o]);
