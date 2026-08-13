@@ -39,6 +39,23 @@
  * connection found" — so the note is the whole difference between a to-do and a
  * mystery.
  *
+ * ## Departing a block and arriving at one are different questions (#104)
+ *
+ * Both directions of a connection are found by the walk itself, and neither is
+ * synthesised from the other, because **they do not cost the same**. Crossing a
+ * point tile that carries a `blockId` is asymmetric: leaving the block through
+ * it means you came from the block's interior, so the road must join the
+ * boundary to a leg leading back into the block; arriving at it means you are in
+ * the block the moment you are on the tile, so any road along the arriving leg
+ * will do.
+ *
+ * Treating those as the same question is what made a point tinted as one of its
+ * neighbouring blocks delete edges — on Westgate Hollow, three blocks lost their
+ * entire connectivity with only cell-level notes to show for it. Mirroring one
+ * direction into the other is the same mistake wearing the opposite sign: it
+ * manufactures a departure the drawing refuses, which is an edge a route would
+ * plan over and a train would run through the blades of.
+ *
  * The leg mapping itself is unverifiable authored data (`docs/track-grid.md`
  * D9). Nothing can check which way round a physical point is wired, and a
  * proposal inherits that uncertainty exactly. This feature does not make point
@@ -110,8 +127,19 @@ export type ProposalNote =
   | { kind: 'blocked-by-unclassified'; at: Coordinate }
   | { kind: 'blocked-by-unmapped-point'; at: Coordinate; pointId: PointId }
   | { kind: 'stopped-in-own-block'; blockId: BlockId; at: Coordinate }
-  /** The drawn point offers no road between this boundary and the block the tile is tinted as. */
-  | { kind: 'no-road-into-block'; at: Coordinate; blockId: BlockId; edge: TileEdge }
+  /**
+   * The tile draws track on this side, but none of its authored roads use that
+   * leg — so the walk cannot say which point position selects it. An incomplete
+   * mapping rather than a missing one, which is why it is not
+   * `blocked-by-unmapped-point`.
+   */
+  | { kind: 'leg-not-covered-by-road'; at: Coordinate; edge: TileEdge }
+  /**
+   * The point offers no road from inside this block out through this boundary
+   * (#104). The way in may still exist: arriving is a different question, and a
+   * one-way connection is a real thing to report rather than to mirror.
+   */
+  | { kind: 'no-road-out-of-block'; at: Coordinate; blockId: BlockId; edge: TileEdge }
   | { kind: 'search-truncated'; blockId: BlockId; at: Coordinate };
 
 export interface EdgeProposalReport {
@@ -205,63 +233,123 @@ export function proposeEdges(input: {
         continue;
       }
 
-      for (const seed of pointTransitConditions(from, port.edge, roads, opening.blockId, byKey)) {
-        walkFrom(opening, port, seed, { byKey, openingByPort, notes, found });
+      const ctx = { byKey, openingByPort, notes, found };
+
+      if (roads.length === 0) {
+        walkFrom(opening, port, [], ctx);
+        continue;
       }
+
+      const along = roadsAlong(from, port.edge, roads);
+
+      if (along.length === 0) {
+        notes.push({ kind: 'leg-not-covered-by-road', at: { x: port.x, y: port.y }, edge: port.edge });
+        continue;
+      }
+
+      // Departure, not arrival: the train reaching this boundary came from
+      // somewhere inside the block, so the road's other leg has to lead back
+      // into it. See the header — the mirror-image test on arrival is #104.
+      const seeds = along.filter((road) =>
+        leadsIntoBlock(from, otherLeg(road.legs, port.edge), opening.blockId, byKey),
+      );
+
+      if (seeds.length === 0) {
+        notes.push({
+          kind: 'no-road-out-of-block',
+          at: { x: port.x, y: port.y },
+          blockId: opening.blockId,
+          edge: port.edge,
+        });
+        continue;
+      }
+
+      for (const seed of seeds) walkFrom(opening, port, seed.conditions, ctx);
     }
   }
 
   return { proposals: assemble(found), notes: sortNotes(notes) };
 }
 
+/** One authored road that uses `edge` as a leg, rotated onto the drawing. */
+interface RoadAlongLeg {
+  legs: [TileEdge, TileEdge];
+  conditions: PointCondition[];
+}
+
 /**
- * What it costs to cross a block's boundary tile at `edge`, one entry per way of
- * doing it. Used at **both** ends of a walk — leaving the origin block and
- * entering the destination — because they are the same question asked twice.
+ * The drawn roads that use `edge`, and what each costs.
  *
- * On an ordinary tile: one way, no conditions.
- *
- * On a point tile, a road only counts if it joins `edge` to a leg that leads
- * **into this block**. That test is the whole of it. Without it the walk reads a
- * point as "any leg reaches any other", and on Westgate Hollow it proposed
- * `Fiddle Yard 1 ↔ Fiddle Yard 2` — a connection P1 cannot make, since both yard
- * roads hang off its diverging legs and meet only at the toe. Authored as an
- * edge, that is a route through a point that does not physically exist.
- *
- * It is also what makes the *condition* right rather than merely present.
- * Leaving Fiddle Yard 1 through P1's toe is only possible with the point normal,
- * because the west leg is the one inside that block; offering both positions
- * would author an edge usable with the point set against it.
+ * Empty with roads authored means the tile draws a leg its mapping does not
+ * cover — an incomplete mapping, reported as `leg-not-covered-by-road` wherever
+ * this is called, never treated as "no connection here".
  */
-function pointTransitConditions(
-  from: GeometryTile,
+function roadsAlong(
+  tile: GeometryTile,
   edge: TileEdge,
   roads: readonly TilePointRoad[],
-  blockId: BlockId,
-  byKey: ReadonlyMap<string, GeometryTile>,
-): PointCondition[][] {
-  if (roads.length === 0) return [[]];
-
-  const leadsIntoBlock = (leg: TileEdge): boolean => {
-    const offset = EDGE_OFFSET[leg];
-    const neighbour = byKey.get(`${from.x + offset.dx},${from.y + offset.dy}`);
-    if (!neighbour || neighbour.metadata.blockId !== blockId) return false;
-    return drawnEdges(neighbour.tileType, neighbour.metadata).has(oppositeEdge(leg));
-  };
-
-  const out: PointCondition[][] = [];
+): RoadAlongLeg[] {
+  const out: RoadAlongLeg[] = [];
 
   for (const road of roads) {
-    const legs = rotatedLegs(road, from.metadata);
+    const legs = rotatedLegs(road, tile.metadata);
     if (!legs.includes(edge)) continue;
 
-    const other = legs[0] === edge ? legs[1] : legs[0];
-    if (!leadsIntoBlock(other)) continue;
-
-    out.push(road.when.map((w) => ({ pointId: w.pointId, requiredPosition: w.position })));
+    out.push({
+      legs,
+      conditions: road.when.map((w) => ({ pointId: w.pointId, requiredPosition: w.position })),
+    });
   }
 
   return out;
+}
+
+const otherLeg = (legs: readonly [TileEdge, TileEdge], edge: TileEdge): TileEdge =>
+  legs[0] === edge ? legs[1] : legs[0];
+
+/**
+ * Whether `leg` of `from` opens onto a tile of `blockId` that draws track back
+ * across the same boundary. Coupling is mutual (#91), so a same-tinted tile
+ * butted alongside without track meeting the boundary does not count.
+ */
+function leadsIntoBlock(
+  from: GeometryTile,
+  leg: TileEdge,
+  blockId: BlockId,
+  byKey: ReadonlyMap<string, GeometryTile>,
+): boolean {
+  const offset = EDGE_OFFSET[leg];
+  const neighbour = byKey.get(`${from.x + offset.dx},${from.y + offset.dy}`);
+  if (!neighbour || neighbour.metadata.blockId !== blockId) return false;
+  return drawnEdges(neighbour.tileType, neighbour.metadata).has(oppositeEdge(leg));
+}
+
+/**
+ * What it costs to *arrive* in a block at its boundary tile, one entry per way
+ * of doing it (#104).
+ *
+ * On an ordinary tile: one way, no conditions.
+ *
+ * On a point tile, every road along the arriving leg counts, and the road's own
+ * `when` is the whole cost. There is deliberately no test that the road's other
+ * leg leads further into the block, because **the tile is the block**: a tile
+ * tinted `Fiddle Yard 1` is part of Fiddle Yard 1's detection section, so a
+ * train that has reached it has arrived. Requiring the road to carry on inward
+ * is what silently deleted three blocks' connectivity on Westgate Hollow when
+ * P1's tile was tinted as the yard it serves.
+ *
+ * Requiring the road to *exist along the leg* is what remains, and it is the
+ * load-bearing half: it is what stops the walk reading a point as "any leg
+ * reaches any other" and proposing a conditionless arrival over blades set
+ * against it.
+ */
+function arrivalConditions(
+  tile: GeometryTile,
+  edge: TileEdge,
+  roads: readonly TilePointRoad[],
+): PointCondition[][] {
+  if (roads.length === 0) return [[]];
+  return roadsAlong(tile, edge, roads).map((road) => road.conditions);
 }
 
 function walkFrom(
@@ -342,10 +430,9 @@ function walkFrom(
       // stub is how you get to the siding. Going *past* it never arises, since
       // the first block always terminates the branch.
 
-      // Arriving *at* a block's point tile costs whatever getting past it into
-      // the block costs — the mirror of the departure above, and the same
-      // helper. Without it, a walk that stops on the point tile proposes a
-      // conditionless edge into a block it has not actually entered.
+      // Arriving *at* a block's point tile costs whatever road carries the
+      // arriving leg — and nothing more. Not the mirror of the departure above:
+      // the tile is the block, so reaching it is arriving (#104).
       const arrivalRoads = tile.metadata.pointRoads ?? [];
       if (depictsPoint(tile.tileType) && arrivalRoads.length === 0) {
         ctx.notes.push({
@@ -356,27 +443,14 @@ function walkFrom(
         continue;
       }
 
-      const entries = pointTransitConditions(
-        tile,
-        branch.at.edge,
-        arrivalRoads,
-        tile.metadata.blockId!,
-        ctx.byKey,
-      );
+      const entries = arrivalConditions(tile, branch.at.edge, arrivalRoads);
 
       if (entries.length === 0) {
-        // The track reaches this cell but no drawn road carries it on into the
-        // block the cell is tinted as. Usually an authoring consequence rather
-        // than a mistake: a point at a throat is routinely tinted as its
-        // approach block (`docs/track-grid.md` D3), which leaves the block on
-        // its other diverging leg with no way through. Silence here would leave
-        // that block with no proposals and no explanation.
-        ctx.notes.push({
-          kind: 'no-road-into-block',
-          at: here,
-          blockId: tile.metadata.blockId!,
-          edge: branch.at.edge,
-        });
+        // Track reaches this cell and the tile's mapping does not cover the leg
+        // it reaches it by. That is an incomplete mapping, not an absent
+        // connection, and guessing which position selects a leg nobody mapped is
+        // the one guess this walk must never make.
+        ctx.notes.push({ kind: 'leg-not-covered-by-road', at: here, edge: branch.at.edge });
         continue;
       }
 
@@ -422,7 +496,17 @@ function walkFrom(
       continue;
     }
 
-    for (const exit of exitsOf(tile, branch.at.edge, roads)) {
+    const exits = exitsOf(tile, branch.at.edge, roads);
+
+    if (exits.length === 0 && roads.length > 0) {
+      // Same incompleteness as on arrival, met while passing through: the tile
+      // draws a leg no road maps. Reported rather than dropped, because a branch
+      // that dies here is indistinguishable from a drawing with no connection.
+      ctx.notes.push({ kind: 'leg-not-covered-by-road', at: here, edge: branch.at.edge });
+      continue;
+    }
+
+    for (const exit of exits) {
       const merged = mergeConditions(branch.conditions, exit.conditions);
       if (!merged) continue; // one path cannot need a point both ways
 
@@ -503,13 +587,19 @@ function mergeConditions(
 }
 
 /**
- * Dedupes, synthesises the missing reverse of every connection, and pairs the
- * two directions.
+ * Dedupes and pairs the two directions of each connection.
  *
- * A connection is bidirectional track, so both directions are always offered
- * and either may be declined. The reverse is synthesised rather than required
- * from the walk because a drawn asymmetry — a point reachable one way only — is
- * a real thing to report, not something to silently make symmetric.
+ * **The reverse is never synthesised** (#104). Ordinary track is walked from
+ * both blocks' openings and yields both directions on its own, so mirroring
+ * would be redundant everywhere it is harmless — and wrong exactly where it is
+ * not. Departing a block through a point tile tinted as that block costs a road
+ * leading back into the block's interior, which arriving does not; mirroring an
+ * arrival into a departure manufactures an edge the drawing refuses, and a route
+ * planned over it runs a train through blades set against it.
+ *
+ * So a one-way row here is a statement, not an oversight: the drawing supports
+ * that direction and not the other. Both directions are still offered wherever
+ * both exist, and either may be declined.
  */
 function assemble(found: readonly Omit<EdgeProposal, 'pairId' | 'status'>[]): EdgeProposal[] {
   const best = new Map<string, Omit<EdgeProposal, 'pairId' | 'status'>>();
@@ -533,17 +623,6 @@ function assemble(found: readonly Omit<EdgeProposal, 'pairId' | 'status'>[]): Ed
   };
 
   for (const p of found) keep(p);
-
-  for (const p of [...best.values()]) {
-    keep({
-      ...p,
-      fromBlockId: p.toBlockId,
-      fromEnd: p.toEnd,
-      toBlockId: p.fromBlockId,
-      toEnd: p.fromEnd,
-      via: [...p.via].reverse(),
-    });
-  }
 
   if (best.size > MAX_EDGE_PROPOSALS) {
     throw new ProposalLimitExceededError(MAX_EDGE_PROPOSALS, best.size);

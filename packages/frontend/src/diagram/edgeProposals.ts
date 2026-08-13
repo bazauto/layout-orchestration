@@ -152,8 +152,11 @@ export function describeProposalNote(note: ProposalNote, names: ProposalNames): 
     case 'stopped-in-own-block':
       return `A path from ${named(note.blockId, names.blocks)} came back to itself at ${at(note.at)}. Not a connection to author — usually a point tile tinted as its own approach block.`;
 
-    case 'no-road-into-block':
-      return `Track reaches ${at(note.at)} through its ${EDGE_NAMES[note.edge]} side, but no drawn road carries it on into ${named(note.blockId, names.blocks)}. Check that tile's point roads.`;
+    case 'leg-not-covered-by-road':
+      return `The tile at ${at(note.at)} draws track on its ${EDGE_NAMES[note.edge]} side, but none of its point roads use that leg — so which position selects it is unknown. Add the missing road in the Track Editor.`;
+
+    case 'no-road-out-of-block':
+      return `${named(note.blockId, names.blocks)} has no drawn road out through the ${EDGE_NAMES[note.edge]} side of ${at(note.at)}: the point there joins that side only to legs outside the block. The way *in* may still be proposed — a connection can be one-way. If it should be two-way, check that tile's tint and its point roads.`;
 
     case 'search-truncated':
       return `The search from ${named(note.blockId, names.blocks)} at ${at(note.at)} hit its branch limit before finishing. Some connections from there may be missing.`;

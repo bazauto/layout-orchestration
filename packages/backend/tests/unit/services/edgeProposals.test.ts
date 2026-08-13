@@ -143,12 +143,41 @@ describe('proposeEdges — what it refuses to find', () => {
     expect(proposals.some((p) => terminatedKeys.has(`${p.fromBlockId} ${p.fromEnd}`))).toBe(false);
   });
 
-  it('does not join two blocks that hang off the same point’s diverging legs', () => {
+  it('does not join two blocks that hang off the same decorative point’s diverging legs', () => {
     // Westgate Hollow's fiddle yard: P1's toe faces the layout, and its two
     // diverging legs carry Fiddle Yard 1 and Fiddle Yard 2. The two yards meet
     // only at the toe — there is no P1 setting that joins them. An early version
     // proposed exactly that, which as an authored edge is a route through a
     // point that does not physically exist.
+    //
+    // The point is decorative here, which is the case where the two yards are
+    // genuinely not adjacent. Tinting it as one of them is a different question
+    // and is #104's, below.
+    const { proposals } = propose([
+      tile(0, 0, inBlock('fy1')),
+      pointTile(1, 0, 'p1', 'point-left', 'n', 180),
+      tile(1, 1, inBlock('fy2'), 'straight-45'),
+      tile(0, 1, inBlock('fy2')),
+    ]);
+
+    const pairs = proposals.map((p) => [p.fromBlockId, p.toBlockId].sort().join('-'));
+    expect(pairs).not.toContain('fy1-fy2');
+  });
+
+  it('never mirrors an arrival into a departure the drawing refuses (#104)', () => {
+    // The same fiddle yard with P1's tile tinted `fy1` — which is how a throat
+    // is routinely drawn, and which used to delete edges wholesale.
+    //
+    // Both halves of #104 are asserted here, because either alone is a bug:
+    //
+    //   fy2 → fy1  is real. The tile *is* fy1, so a train that has reached it
+    //              has arrived, and P1 reverse is what carries it there.
+    //   fy1 → fy2  is not. A train in fy1 proper approaches through P1's west
+    //              leg, which no road joins to the south one; authored as an
+    //              edge it is a route that trails through blades set against it.
+    //
+    // Synthesising the reverse of every connection produced exactly that edge,
+    // which is why `assemble` no longer does it.
     const { proposals, notes } = propose([
       tile(0, 0, inBlock('fy1')),
       // The point, tinted as fy1 and rotated so its toe faces east.
@@ -170,9 +199,53 @@ describe('proposeEdges — what it refuses to find', () => {
       tile(0, 1, inBlock('fy2')),
     ]);
 
-    expect(proposals.some((p) => [p.fromBlockId, p.toBlockId].includes('fy2'))).toBe(false);
-    // …and it says why, rather than leaving fy2 silently unconnected.
-    expect(notes.some((n) => n.kind === 'no-road-into-block')).toBe(true);
+    const inbound = proposals.filter((p) => p.fromBlockId === 'fy2' && p.toBlockId === 'fy1');
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0].pointConditions).toEqual([{ pointId: 'p1', requiredPosition: 'reverse' }]);
+
+    expect(proposals.some((p) => p.fromBlockId === 'fy1' && p.toBlockId === 'fy2')).toBe(false);
+
+    // The one-way-ness is stated, not left as an absence: the direction that is
+    // missing is missing because fy1 has no road out through that boundary.
+    expect(notes).toContainEqual({
+      kind: 'no-road-out-of-block',
+      at: { x: 1, y: 0 },
+      blockId: 'fy1',
+      edge: 's',
+    });
+  });
+
+  it('reports a drawn leg the point’s mapping does not cover', () => {
+    // An incomplete mapping, not an absent one — so neither
+    // `blocked-by-unmapped-point` (there is a mapping) nor silence (the track is
+    // drawn and goes somewhere). Guessing which position selects a leg nobody
+    // mapped is the one guess this walk must never make.
+    const { proposals, notes } = propose([
+      tile(0, 0, inBlock('b1')),
+      {
+        x: 1,
+        y: 0,
+        tileType: 'point-right',
+        metadata: {
+          ...decorative,
+          pointId: 'p1',
+          // The tile draws a south leg; no road uses it.
+          pointRoads: [{ when: [{ pointId: 'p1', position: 'normal' }], legs: ['w', 'e'] }],
+        },
+      },
+      tile(2, 0, inBlock('b2')),
+      tile(1, 1, inBlock('b3'), 'straight-v'),
+    ]);
+
+    // The mapped road still works.
+    expect(proposals.some((p) => p.fromBlockId === 'b1' && p.toBlockId === 'b2')).toBe(true);
+    // The unmapped leg does not, and says so.
+    expect(proposals.some((p) => [p.fromBlockId, p.toBlockId].includes('b3'))).toBe(false);
+    expect(notes).toContainEqual({
+      kind: 'leg-not-covered-by-road',
+      at: { x: 1, y: 0 },
+      edge: 's',
+    });
   });
 
   it('never proposes past the first block it reaches', () => {
@@ -217,6 +290,10 @@ describe('proposeEdges — what it finds', () => {
   });
 
   it('offers both directions of every connection, paired and identical in conditions', () => {
+    // Both directions come out of the **walk**, from each block's own opening —
+    // nothing is mirrored (#104). Ordinary track is symmetric and yields the
+    // pair for free, which is what makes a one-way proposal elsewhere a
+    // statement about the drawing rather than a gap in the search.
     const { proposals } = propose(throat());
 
     for (const p of proposals) {

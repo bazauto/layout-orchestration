@@ -108,7 +108,7 @@ describe('describeProposalNote', () => {
 
   it('spells out the tile edge, since "nw" mid-sentence reads as a typo', () => {
     const note: ProposalNote = {
-      kind: 'no-road-into-block',
+      kind: 'no-road-out-of-block',
       at: { x: 19, y: 8 },
       blockId: 'b-s1',
       edge: 'nw',
@@ -116,6 +116,28 @@ describe('describeProposalNote', () => {
     const text = describeProposalNote(note, names);
     expect(text).toContain('north-west');
     expect(text).toContain('Siding 1');
+  });
+
+  it('says a refused departure may still have a way in, so a one-way row reads as intended', () => {
+    // #104: departing a block through a point tinted as that block and arriving
+    // at it are different questions. An operator seeing one direction proposed
+    // and the other missing needs to know that is the answer, not a search that
+    // gave up halfway.
+    const note: ProposalNote = {
+      kind: 'no-road-out-of-block',
+      at: { x: 11, y: 3 },
+      blockId: 'b-s1',
+      edge: 's',
+    };
+    expect(describeProposalNote(note, names)).toContain('one-way');
+  });
+
+  it('distinguishes a leg no road maps from a point with no mapping at all', () => {
+    const note: ProposalNote = { kind: 'leg-not-covered-by-road', at: { x: 4, y: 2 }, edge: 'se' };
+    const text = describeProposalNote(note, names);
+    expect(text).toContain('(4, 2)');
+    expect(text).toContain('south-east');
+    expect(text).toContain('point roads');
   });
 });
 
