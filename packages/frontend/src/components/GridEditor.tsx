@@ -19,19 +19,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGridEditor } from '../hooks/useGridEditor';
-import { useBlockEnds } from '../hooks/useBlockEnds';
 import { useGridDiagnostics } from '../hooks/useGridDiagnostics';
 import { useOpenings } from '../hooks/useOpenings';
-import { BlockEndsPanel } from './BlockEndsPanel';
 import { assignRunTints, findBlockRuns } from '../diagram/blockRuns';
 import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, OCCUPANCY, OPENING, SURFACE } from '../diagram/encoding';
 import { describeDiagnostic, diagnosticCoordinate, partitionDiagnostics } from '../diagram/diagnostics';
 import { defaultPointRoads, edgeAnchor, isPointTile, roadLabel } from '../diagram/pointRoads';
 import { portMarkGeometry } from '../diagram/openings';
 import { pointLabelAnchors, shortPointLabel } from '../diagram/pointLabels';
-import { describeCursor } from '../diagram/cursorAnnouncement';
+import { CursorOpening, describeCursor } from '../diagram/cursorAnnouncement';
 import { rulerTicks } from '../diagram/ruler';
-import { CompiledOpening, GridDiagnostic, GridTileMetadata, Port, TileType, classifyTile } from '../types';
+import { CompiledOpening, GridDiagnostic, GridTileMetadata, Port, TileEdge, TileType, classifyTile } from '../types';
 import { BlockRecord, PointRecord, SensorRecord } from '../types';
 
 interface Props {
@@ -241,19 +239,15 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
    */
   const [gridRevision, setGridRevision] = useState(0);
 
-  const {
-    ends,
-    generate: generateEnds,
-    create: createEnd,
-    rename: renameEnd,
-    remove: removeEnd,
-  } = useBlockEnds(layoutId);
   const { diagnostics } = useGridDiagnostics(layoutId, gridRevision);
   /**
    * #103 (D-H) — pure geometry, no walk, so it is cheap enough to read on
-   * every stroke end alongside the diagnostics above. `ends`/`useBlockEnds`
-   * above is #72's model and stays working for now (step 6.2 removes it);
-   * this is the drawing marks are drawn from.
+   * every stroke end alongside the diagnostics above.
+   *
+   * The only source of opening names the editor has, as of step 6.2:
+   * `useBlockEnds` and its two toolbar controls are gone. They named the same
+   * openings out of a stored table that could disagree with the drawing; these
+   * come from the drawing itself, on every read.
    */
   const { openings } = useOpenings(layoutId, gridRevision);
 
@@ -307,17 +301,6 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
   const [divergentIsNormal, setDivergentIsNormal] = useState(false);
 
   const [showDiagnostics, setShowDiagnostics] = useState(false);
-  /**
-   * The block-ends list (#72's manual override, finally reachable).
-   *
-   * Its own toggle rather than a section of the diagnostics panel: the
-   * diagnostics are a read of what is wrong, and this is a write surface. They
-   * are also both tall, and stacking them under a canvas is how the canvas
-   * stops being visible.
-   */
-  const [showEnds, setShowEnds] = useState(false);
-  /** Summary of the last `Ends ⟳`, so a regeneration reports what it changed rather than happening invisibly. */
-  const [endsSummary, setEndsSummary] = useState<string | null>(null);
 
   /**
    * Label density (#68 item 4). The useful density genuinely differs between
@@ -825,10 +808,10 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
    * briefly pulse the cell so the jump is visible as more than just the
    * readout changing underneath you.
    *
-   * Extracted from `jumpToDiagnostic` so the block-ends panel can reuse it
-   * verbatim. Both surfaces name a cell and both must land the operator in
-   * the same place in the same way — two implementations of "jump" that
-   * drifted apart would be a genuinely confusing bug.
+   * Extracted from `jumpToDiagnostic` so any surface naming a cell can reuse
+   * it verbatim — the block-ends panel did until #103 PR 6.2, and the next one
+   * will. Two implementations of "jump" that drifted apart would be a genuinely
+   * confusing bug.
    */
   const jumpToCell = useCallback(
     (coord: { x: number; y: number }) => {
@@ -951,28 +934,6 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
   const { warnings, info } = useMemo(() => partitionDiagnostics(diagnostics), [diagnostics]);
 
   /**
-   * Block end labels keyed by the cell they sit at, so the render loop can look
-   * them up without scanning.
-   *
-   * Only ends the drawing can currently place — an end with no geometry is a
-   * mismatch the diagnostics report in words, and inventing a cell for it
-   * would put a wrong name on the diagram, which is the failure this whole
-   * feature exists to prevent.
-   */
-  const endsAtCell = useMemo(() => {
-    const out = new Map<string, { label: string; pinned: boolean; terminated: boolean }[]>();
-    for (const end of ends) {
-      if (!end.geometry) continue;
-      const k = `${end.geometry.x},${end.geometry.y}`;
-      const entry = { label: end.label, pinned: end.pinned, terminated: end.geometry.terminated };
-      const list = out.get(k);
-      if (list) list.push(entry);
-      else out.set(k, [entry]);
-    }
-    return out;
-  }, [ends]);
-
-  /**
    * #103 (D-H) — every compiled opening's ports, keyed by the tile **the
    * boundary itself sits on**. An opening can span several tiles (a
    * multi-cell handover face is still one opening), so a port's own cell is
@@ -1005,6 +966,49 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
     return out;
   }, [openings]);
 
+  /**
+   * Every compiled opening touching a cell, in the shape the readout wants:
+   * the boundaries it crosses *here*, and separately the cell that carries its
+   * label.
+   *
+   * Two maps rather than one because they answer different questions — a
+   * multi-cell opening has one label cell and several boundary cells — and this
+   * is the join between them. It exists so a keyboard user hears what a sighted
+   * user sees: step 6.1 made the boundary tick the primary mark, and a readout
+   * that only knew about the label cell would be the old, weaker diagram.
+   */
+  const openingsAtCursor = useMemo(() => {
+    const out = new Map<string, CursorOpening[]>();
+
+    const push = (k: string, entry: CursorOpening) => {
+      const list = out.get(k);
+      if (list) list.push(entry);
+      else out.set(k, [entry]);
+    };
+
+    for (const o of openings) {
+      const byCell = new Map<string, TileEdge[]>();
+      for (const port of o.ports) {
+        const k = `${port.x},${port.y}`;
+        const edges = byCell.get(k);
+        if (edges) edges.push(port.edge);
+        else byCell.set(k, [port.edge]);
+      }
+      for (const [k, edges] of byCell) {
+        push(k, { label: o.label, terminated: o.terminated, edges });
+      }
+      // The label cell, unless it is already one of the boundary cells above —
+      // saying "at the north boundary" and "labelled here" about one opening at
+      // one cell is two sentences for one fact.
+      const labelKey = `${o.at.x},${o.at.y}`;
+      if (!byCell.has(labelKey)) {
+        push(labelKey, { label: o.label, terminated: o.terminated, edges: [] });
+      }
+    }
+
+    return out;
+  }, [openings]);
+
   /** What's at the cursor's cell, resolved the same way the render loop resolves any other tile. */
   const cursorTile = useMemo(() => {
     const k = `${cursor.x},${cursor.y}`;
@@ -1013,9 +1017,9 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
     return {
       tileType: tile.tileType as TileType,
       metadata: parsedMeta.get(k) ?? {},
-      ends: endsAtCell.get(k) ?? [],
+      openings: openingsAtCursor.get(k) ?? [],
     };
-  }, [cursor, grid, parsedMeta, endsAtCell]);
+  }, [cursor, grid, parsedMeta, openingsAtCursor]);
 
   /**
    * The cursor readout (#94): one string, built by `describeCursor`, that is
@@ -1032,33 +1036,6 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
       }),
     [cursor, cursorTile, blockNames, pointNames, sensorNames],
   );
-
-  /**
-   * Regenerates block end labels from the drawing.
-   *
-   * Deliberately a button. Regeneration on every grid write would silently
-   * rename ends underneath the edges referencing them while you redrew a
-   * corner of the layout — and an end label is the only link between an edge
-   * and a block end, so that rename is a change to the track graph.
-   */
-  const regenerateEnds = useCallback(async () => {
-    const result = await generateEnds();
-    if (!result.ok) {
-      setWriteError(result.message ?? `HTTP ${result.status}`);
-      return;
-    }
-    const s = result.data;
-    if (!s) return;
-    const parts = [
-      `${s.adopted.length} pinned from edges`,
-      `${s.created.length} added`,
-      `${s.removed.length} removed`,
-    ];
-    if (s.collisions.length > 0) parts.push(`${s.collisions.length} could not be named`);
-    setEndsSummary(parts.join(' · '));
-    setWriteError(null);
-    setGridRevision((r) => r + 1);
-  }, [generateEnds]);
 
   /**
    * Whether a label at this tile should be drawn, per the density control.
@@ -1340,26 +1317,15 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
 
         <div style={st.toolSep} />
 
-        {/* #72. A button, not a hook on the grid write path: regeneration
-            renames things edges depend on, and that must never happen as a
-            side effect of redrawing a corner of the layout. */}
-        <button
-          onClick={() => void regenerateEnds()}
-          style={st.iconBtn}
-          tabIndex={-1}
-          title="Regenerate block end labels from the drawing. Pinned ends are never touched."
-        >Ends ⟳</button>
-
-        {/* #72's manual override. Regeneration cannot name an opening the
-            generator refused, and cannot un-name one it got wrong — both need
-            a hand, and until now there was nowhere to put it. */}
-        <button
-          onClick={() => setShowEnds((v) => !v)}
-          style={{ ...st.iconBtn, ...(showEnds ? st.iconBtnActive : {}) }}
-          tabIndex={-1}
-          aria-expanded={showEnds}
-          title="Name, rename and remove block ends by hand"
-        >Ends ✎ {ends.length}</button>
+        {/*
+          `Ends ⟳` and `Ends ✎` were here (#103 PR 6.2). Both existed to keep a
+          stored table of names level with the drawing: one regenerated it, the
+          other patched what regeneration got wrong or refused. Neither has
+          anything to do now — opening names are compiled from the drawing on
+          every read, so there is no second copy to reconcile and no name for a
+          hand to correct. The openings are drawn on the canvas and applied to
+          the graph in Configure → Edges.
+        */}
 
         <button
           onClick={() => setShowDiagnostics((v) => !v)}
@@ -1873,21 +1839,6 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
         {cursorAnnouncement}
       </div>
 
-      {/* ── Block ends (#72's manual override) ── */}
-      {showEnds && (
-        <BlockEndsPanel
-          ends={ends}
-          blocks={blocks}
-          ops={{ create: createEnd, rename: renameEnd, remove: removeEnd }}
-          onJumpTo={jumpToCell}
-          // An end is not a tile, but the diagnostics read both — an added end
-          // can clear an `end-label-collision` note or raise a
-          // `pinned-end-not-on-diagram` one, and neither shows up until the
-          // findings are recomputed.
-          onChanged={() => setGridRevision((r) => r + 1)}
-        />
-      )}
-
       {/* ── Diagnostics ── */}
       {showDiagnostics && (
         <div style={st.diagnostics} role="region" aria-label="Grid diagnostics">
@@ -1953,7 +1904,6 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
           select: 1–7 · Ctrl+Z: undo · Arrows: move cursor · Enter/Space: paint at cursor ·
           Delete: erase at cursor · Esc: leave grid for toolbar · Canvas: {extent.cols}×
           {extent.rows} (grows as you draw) · {grid.size} tile{grid.size !== 1 ? 's' : ''}
-          {endsSummary && <> · Ends: {endsSummary}</>}
         </span>
       </div>
     </div>

@@ -11,7 +11,7 @@
 | D10 — fingerprint | **shipped**: `compiled_graphs`, `GET .../topology/compile`, and the apply's mismatch 409 |
 | D3 — the compiler owns the edge set | **shipped**, and now literally true: `POST`/`PUT`/`DELETE .../edges` and `TopologyService.createEdge`/`updateEdge`/`deleteEdge` are deleted (PR 5, OQ1), so `replaceGraph` is the only writer |
 | D1 — compile under operator review | **shipped**: `CompilePanel` on Configure → Edges — gaps first, then the diff, one `Apply`, and a 409 that says re-compile rather than retrying |
-| D2 — `block_ends` deleted | **not started**. `BlockEndService`, its routes and the `Ends ✎` panel all still work; PR 6.2/6.3 and PR 7 remove them |
+| D2 — `block_ends` deleted | **started**: the Track Editor no longer reads or writes it (PR 6.2 — `Ends ⟳`, `Ends ✎`, `BlockEndsPanel` and `useBlockEnds` are gone). The table, `BlockEndService` and its routes are still there, called by nothing in the browser, and PR 7 removes them |
 
 This document records a design decision. Most of it is now shipped behaviour;
 the table above says which parts. It supersedes #72 (block ends) and #78 (edge

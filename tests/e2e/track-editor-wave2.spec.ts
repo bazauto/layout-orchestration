@@ -34,31 +34,12 @@ const SENSORS = [
   },
 ];
 
-const BLOCK_ENDS = [
-  {
-    id: 'e1',
-    layoutId: 'layout-1',
-    blockId: 'b1',
-    label: 'west',
-    pinned: false,
-    geometry: { x: 2, y: 3, terminated: false },
-  },
-  {
-    id: 'e2',
-    layoutId: 'layout-1',
-    blockId: 'b1',
-    label: 'yard-3',
-    pinned: true,
-    geometry: { x: 5, y: 3, terminated: true },
-  },
-];
-
 /**
- * `useBlockEnds`'s `pinned`/`geometry` shape above no longer drives what the
- * canvas draws (#103 step 6.1 deletes that rendering; `Ends ✎`/`Ends ⟳`
- * themselves stay working, tested elsewhere). This is `GET .../grid/openings`
- * instead — pure geometry, no "pinned" concept at all, since a compiled label
- * is disposable and nothing references it between compiles (D8).
+ * `GET .../grid/openings` — pure geometry, and since #103 PR 6.2 the **only**
+ * source of opening names the editor has. `block_ends` and its `pinned`/
+ * `geometry` shape drove this once; they had a "pinned" concept because a
+ * stored name could disagree with the drawing, and a compiled label cannot
+ * (D8).
  */
 const OPENINGS = [
   { blockId: 'b1', label: 'west', at: { x: 2, y: 3 }, terminated: false, ports: [{ x: 2, y: 3, edge: 'w' }] },
@@ -144,18 +125,9 @@ async function stubApis(page: Page, writes: Write[]) {
     r.fulfill(json(DIAGNOSTICS)),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/block-ends', (r) =>
-    r.fulfill(json(BLOCK_ENDS)),
-  );
   await page.route('**://localhost:3000/api/layouts/layout-1/grid/openings', (r) =>
     r.fulfill(json(OPENINGS)),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/block-ends/generate', (r) => {
-    writes.push({ method: 'POST', url: r.request().url(), body: null });
-    return r.fulfill(
-      json({ adopted: [{ blockId: 'b1', label: 'yard-3' }], created: [], removed: [], collisions: [] }),
-    );
-  });
 
   await page.route('**://localhost:3000/api/layouts/layout-1/blocks', (r) => r.fulfill(json(BLOCKS)));
   await page.route('**://localhost:3000/api/layouts/layout-1/points', (r) => r.fulfill(json(POINTS)));
@@ -311,13 +283,24 @@ test('the diagnostics panel separates hazards from unfinished authoring', async 
   expect(items[items.length - 1]).toContain('neither tagged to a block nor marked decorative');
 });
 
-test('Ends ⟳ regenerates on demand and reports what it changed', async ({ page }) => {
-  const writes = await openEditor(page);
+test('the toolbar offers no block-end controls, and reads no block_ends', async ({ page }) => {
+  // #103 PR 6.2. `Ends ⟳` regenerated a stored table of names from the drawing
+  // and `Ends ✎` patched what regeneration got wrong or refused; both existed
+  // only to keep a second copy of the opening names level with the first. There
+  // is one copy now, compiled on every read, so there is nothing to reconcile
+  // and no name for a hand to correct.
+  //
+  // `block-ends` is deliberately **not** stubbed above: an unrouted request in
+  // Playwright fails loudly, so this asserts the editor no longer asks for it.
+  await openEditor(page);
 
-  await page.getByTitle(/Regenerate block end labels/).click();
+  await expect(page.getByTitle(/Regenerate block end labels/)).toHaveCount(0);
+  await expect(page.getByTitle(/Name, rename and remove block ends/)).toHaveCount(0);
 
-  // On demand, never as a side effect of a grid write: regeneration renames
-  // things the track graph depends on.
-  expect(writes.some((w) => w.method === 'POST' && w.url.endsWith('/generate'))).toBe(true);
-  await expect(page.getByText(/1 pinned from edges/)).toBeVisible();
+  // The openings themselves are still drawn — losing the controls must not lose
+  // the information they were about. Matched on the SVG text node rather than
+  // by page text: an opening label also appears in a hidden `<title>` tooltip,
+  // and a `text=` locator resolves to that one first.
+  const labels = await page.locator('svg text').allTextContents();
+  expect(labels).toContain('west');
 });

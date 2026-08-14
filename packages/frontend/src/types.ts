@@ -327,32 +327,14 @@ export function classifyTile(metadata: GridTileMetadata): TileClassification {
 
 // ─── Block ends (#72) ─────────────────────────────────────────────────────────
 
-/**
- * A named opening of a block, plus where it currently sits on the drawing.
+/*
+ * `BlockEndView` and `GenerateEndsSummary` were here. Nothing on the client
+ * reads `block_ends` any more: `Ends ⟳` and `Ends ✎` are gone (#103 PR 6.2),
+ * and opening names come from `CompiledOpening` above, compiled from the
+ * drawing on every read rather than stored and reconciled.
  *
- * `pinned` means authored — either set by hand or adopted because an edge
- * already referenced the label. Regeneration never touches a pinned end, which
- * is what stops a redraw from silently renaming the thing every edge depends
- * on.
- *
- * `geometry: null` means the drawing has no opening by that name any more.
- * For an end edges reference, that is a real mismatch worth showing.
+ * The table and its routes still exist on the backend and are deleted in PR 7.
  */
-export interface BlockEndView {
-  id: string;
-  layoutId: string;
-  blockId: string;
-  label: string;
-  pinned: boolean;
-  geometry: { x: number; y: number; terminated: boolean } | null;
-}
-
-export interface GenerateEndsSummary {
-  adopted: Array<{ blockId: string; label: string }>;
-  created: Array<{ blockId: string; label: string }>;
-  removed: Array<{ blockId: string; label: string }>;
-  collisions: Array<{ blockId: string; label: string; at: Array<{ x: number; y: number }> }>;
-}
 
 // ─── Compiling the graph from the drawing (#103) ──────────────────────────────
 

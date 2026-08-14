@@ -1344,6 +1344,27 @@ mapping (pure function, `portMarkGeometry(port): { x1, y1, x2, y2 }`).
 
 #### Step 6.2 — `Ends ⟳` and `Ends ✎` go
 
+> **Shipped**, with one addition the step does not mention.
+>
+> **The cursor readout had to move with them.** Step 6.2 lists `endsAtCell` among
+> the things to delete, and `endsAtCell` is what fed the `aria-live` cursor
+> announcement (#94) — deleting it alone would have silently dropped openings out
+> of the one string that is both the visible readout and the screen-reader
+> announcement, leaving a keyboard user with less than the canvas draws. So
+> `CursorEnd` became `CursorOpening` and the sentence changed from
+> `end [yard-3] (buffer)` to `opening yard-3 at the east boundary, buffered`.
+>
+> That is the same move step 6.1 made visually, and it had to be made in both
+> places for the same reason: naming the **boundary** rather than a nearby cell is
+> the whole of #91's fused-siding argument, and an accessible readout that still
+> said only "there is an opening here" would be the version of the diagram that
+> was wrong. `pinned` is gone from the shape with the brackets it rendered — a
+> compiled label is only ever a description.
+>
+> `types.ts` also loses `BlockEndView` and `GenerateEndsSummary`, which had no
+> reader left on the client.
+
+
 **Files:** `packages/frontend/src/components/GridEditor.tsx`, delete
 `packages/frontend/src/components/BlockEndsPanel.tsx` and
 `packages/frontend/src/hooks/useBlockEnds.ts`; delete
