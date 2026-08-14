@@ -77,12 +77,16 @@ export async function registerWebSocket(
     // `request.user` inside the message handler below. `registerAuthHook`
     // (transport/http/auth/hook.ts) has already rejected an unauthenticated
     // upgrade before this handler ever runs, so `request.user` is always
-    // populated here; 'operator' is a fail-safe fallback only, never expected
-    // to be reached. This is what keeps auth enforcement at the connection
-    // edge (docs/auth.md "Enforcement") rather than adding a second,
-    // mid-connection lookup: the role a socket carries for its whole
-    // lifetime is fixed the moment it opens.
-    const role: Role = request.user?.role ?? 'operator';
+    // populated here and this branch is never expected to be reached. The
+    // fallback is 'monitor', not 'operator', precisely BECAUSE it should be
+    // unreachable: CLAUDE.md safety rule 1 resolves uncertainty in the
+    // fail-safe direction, and the least-privileged role is what makes a
+    // broken invariant here cost a refused command rather than handing an
+    // unidentified connection driving authority. This is what keeps auth
+    // enforcement at the connection edge (docs/auth.md "Enforcement") rather
+    // than adding a second, mid-connection lookup: the role a socket carries
+    // for its whole lifetime is fixed the moment it opens.
+    const role: Role = request.user?.role ?? 'monitor';
 
     clients.add(socket);
     fastify.log.info({ total: clients.size }, '[WS] Client connected');

@@ -8,10 +8,20 @@
  * connection edge" property in docs/auth.md. These tests pin that behaviour
  * per role: monitor is refused every driving command but keeps its socket
  * open and EMERGENCY_STOP still works; admin and operator are unaffected.
+ *
+ * The final describe block pins the fail-safe DIRECTION of the fallback used
+ * when `request.user` is absent (`request.user?.role ?? 'monitor'`) — that
+ * branch is meant to be unreachable in normal operation
+ * (`registerAuthHook` always populates `request.user` first, per
+ * `wsAuth.test.ts`), but an unreachable defensive default must still resolve
+ * toward less authority, not more.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import Fastify from 'fastify';
+import fastifyWebSocket from '@fastify/websocket';
 import { buildServer } from '../../src/transport/http/server';
+import { registerWebSocket } from '../../src/transport/websocket/index';
 import { LayoutService } from '../../src/services/LayoutService';
 import { TopologyService } from '../../src/services/TopologyService';
 import { ReservationService } from '../../src/services/ReservationService';
@@ -199,6 +209,92 @@ describe('WebSocket role gate (#63)', () => {
     // Not gated, not refused: no ERROR frame is the observable difference
     // between "processed" and "refused before reaching LayoutService" — same
     // proof shape as the operator/admin SET_MODE tests above.
+    const parsed = frames.map((f) => JSON.parse(f));
+    expect(parsed.filter((m) => m.type === 'ERROR')).toEqual([]);
+
+    ws.close();
+  });
+});
+
+// ─── Fail-safe fallback direction ──────────────────────────────────────────
+//
+// `registerAuthHook` always populates `request.user` before an upgrade
+// reaches `registerWebSocket`'s handler — the branch where it doesn't is
+// meant to be unreachable, and `wsAuth.test.ts` already proves an
+// unauthenticated upgrade never gets that far. What this pins is the OTHER
+// half: if that invariant were ever broken by a future change, which way the
+// default falls. `request.user ?? '<role>'` must resolve toward LESS
+// authority, not more (CLAUDE.md safety rule 1). Reaching the unreachable
+// branch on purpose means testing `registerWebSocket` in isolation, with no
+// auth hook registered at all — the one legitimate way to exercise "what if
+// `request.user` were absent" without weakening the real hook this test
+// deliberately does not register.
+
+describe('WebSocket role gate — fail-safe fallback direction', () => {
+  async function buildHookless() {
+    const repo = makeRepo();
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const state = new LayoutStateManager('layout-1');
+    const reservations = new ReservationService(repo, state, silentLogger);
+    const service = new LayoutService(dcc, mqtt, repo, state, reservations, silentLogger);
+
+    // No registerAuthHook: this Fastify instance never sets `request.user`
+    // for anything, which is exactly the state the fallback exists to defend
+    // against — an upgrade reaching the handler carrying no identity.
+    const app = Fastify({ logger: { level: 'silent' } });
+    await app.register(fastifyWebSocket);
+    await registerWebSocket(app, service);
+    // `buildServer`'s tests never need this explicitly — `app.inject()`
+    // drives the ready lifecycle itself — but `injectWS()` against an
+    // instance that skipped the rest of `buildServer`'s plugin registration
+    // hangs indefinitely without it.
+    await app.ready();
+    return { app, service, state };
+  }
+
+  async function openCollectingClient(app: Awaited<ReturnType<typeof buildHookless>>['app']) {
+    const frames: string[] = [];
+    const ws = await app.injectWS(
+      '/ws',
+      {},
+      {
+        onOpen: (socket: { on: (event: string, cb: (data: Buffer) => void) => void }) =>
+          socket.on('message', (data: Buffer) => frames.push(data.toString())),
+      },
+    );
+    await new Promise((r) => setImmediate(r));
+    frames.length = 0; // drop the STATE_SNAPSHOT
+    return { ws, frames };
+  }
+
+  it('a connection with no request.user is refused a driving command, not granted one', async () => {
+    const harness = await buildHookless();
+    const { ws, frames } = await openCollectingClient(harness.app);
+
+    ws.send(JSON.stringify({ type: 'SET_MODE', payload: { mode: 'auto' } }));
+    await settle();
+
+    expect(ws.readyState).toBe(ws.OPEN); // D3: refused, never a socket close
+    const parsed = frames.map((f) => JSON.parse(f));
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].type).toBe('ERROR');
+    expect(parsed[0].payload.message).toContain('SET_MODE');
+    // The command must not have reached LayoutService either — if the
+    // fallback were ever 'operator' (or any role above 'monitor'), this
+    // would have applied.
+    expect(harness.state.getState().systemMode).toBe('manual');
+
+    ws.close();
+  });
+
+  it('a connection with no request.user still gets EMERGENCY_STOP (D4) — the fallback restricts driving, not the fail-safe control', async () => {
+    const harness = await buildHookless();
+    const { ws, frames } = await openCollectingClient(harness.app);
+
+    ws.send(JSON.stringify({ type: 'EMERGENCY_STOP' }));
+    await settle();
+
     const parsed = frames.map((f) => JSON.parse(f));
     expect(parsed.filter((m) => m.type === 'ERROR')).toEqual([]);
 
