@@ -17,10 +17,24 @@ export type SessionId = string;
 
 export type BlockEdgeId = string;
 /**
- * A named physical opening of a block ('north', 'yard-3', ...).
- * Labels are arbitrary but must be used consistently for a given block.
- * A non-reversing movement must leave a block via an end different from
- * the one it entered by.
+ * A named physical opening of a block (`north`, `southeast-1`, ...).
+ *
+ * **Disposable compiler output** (`docs/track-graph-compilation.md` D8). It is
+ * derived from the drawing by `compileOpenings` on every compile, unique per
+ * block within one compile, and referenced by nothing but the `block_edges`
+ * row that carries it. Nobody stores one, nobody edits one, and a recompile may
+ * legitimately produce a different set — the apply rewrites every edge at once,
+ * which is what makes that safe.
+ *
+ * It was the join key into a `block_ends` table until #103 PR 7, and that is
+ * the whole story of this issue: an identifier must be stable and a
+ * geometry-derived description must not be, and one string was being asked to
+ * do both. String equality against the paired `blockId` is now the **only**
+ * operation performed on it.
+ *
+ * A non-reversing movement must still leave a block via an end different from
+ * the one it entered by — that is `domain/pathfinding.ts`'s search state, and
+ * it needs only inequality.
  */
 export type BlockEndLabel = string;
 
@@ -347,31 +361,12 @@ export function classifyTile(metadata: GridTileMetadata): TileClassification {
   return 'unclassified';
 }
 
-// ─── Block Ends (see docs/topology.md) ────────────────────────────────────────
-
-/**
- * A named opening of a block — the thing `block_edges.fromEnd`/`toEnd`
- * reference, `#79`'s signals attach to, and `#84`'s buffers terminate.
- *
- * Stored in its own table rather than in tile metadata, deliberately the
- * **opposite** call to `trackRole` and `annotations` above (#72). Those are
- * properties of the drawing. An end is a property of the *block*: it survives
- * the diagram being re-laid, and it is the one thing every edge depends on.
- * Burying it in a tile blob would make that dependency the least durable
- * record in the system.
- *
- * `pinned` means "authored, outranks geometry permanently". A generated label
- * is a function of the drawing and is replaced whenever the drawing changes; a
- * pinned one is never regenerated over, never renamed by the generator, and is
- * what an already-authored edge is protected by.
+/*
+ * `BlockEnd` — a stored, pinnable, hand-editable row naming an opening — was
+ * here, and is deleted with its table (#103 PR 7). `BlockEndLabel` above is
+ * what remains, and it is a different kind of thing: compiler output, not a
+ * record.
  */
-export interface BlockEnd {
-  id: string;
-  layoutId: LayoutId;
-  blockId: BlockId;
-  label: string;
-  pinned: boolean;
-}
 
 // ─── Sensors (see docs/sensor-fault-recovery.md) ──────────────────────────────
 

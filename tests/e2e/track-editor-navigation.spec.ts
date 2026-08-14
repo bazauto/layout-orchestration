@@ -184,8 +184,14 @@ test('a diagnostic line click moves the cursor to its cell', async ({ page }) =>
 });
 
 test('a diagnostic with no coordinate renders as plain text, not a button', async ({ page }) => {
-  // `block-without-detection` names a block, not a cell — #94 requires this
-  // NOT become a button that would have nowhere to jump to.
+  // `buffer-contradicted-by-edge` names a block opening, not a cell — #94
+  // requires this NOT become a button that would have nowhere to jump to. An
+  // opening spans boundaries and its label sits wherever the compiler put it,
+  // so any coordinate here would be arbitrary.
+  //
+  // Used to be `block-without-detection`, which named a block and is now a
+  // compile gap rather than a diagnostic (#103 PR 7). The property under test
+  // is the same one; only the last coordinate-less kind changed.
   const writes: Write[] = [];
   await installMockWebSocket(page);
   await installMockAuth(page);
@@ -194,7 +200,15 @@ test('a diagnostic with no coordinate renders as plain text, not a button', asyn
     r.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([{ kind: 'block-without-detection', severity: 'info', blockId: 'b1' }]),
+      body: JSON.stringify([
+        {
+          kind: 'buffer-contradicted-by-edge',
+          severity: 'warning',
+          blockId: 'b1',
+          label: 'east',
+          edgeIds: ['edge-1'],
+        },
+      ]),
     }),
   );
   await page.goto('/');
@@ -203,6 +217,6 @@ test('a diagnostic with no coordinate renders as plain text, not a button', asyn
 
   await page.getByTitle(/disagree about/).click();
   const panel = page.getByRole('region', { name: 'Grid diagnostics' });
-  await expect(panel).toContainText('no in-service sensor reports on it');
+  await expect(panel).toContainText('has a buffer stop');
   await expect(panel.getByRole('button')).toHaveCount(0);
 });

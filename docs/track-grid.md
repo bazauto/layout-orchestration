@@ -333,11 +333,27 @@ known hazard is drawn; `info` means authoring is unfinished.** An unfinished
 layout is a normal state, and a to-do list styled as a wall of errors trains the
 operator to ignore the findings that matter.
 
+**What is left here, and what moved (#103 PR 7).** This surface once carried
+five end-related findings. Four are gone with `block_ends` —
+`end-not-on-diagram`, `pinned-end-not-on-diagram` and `end-label-collision`
+described states a stored label could be in and none of them can occur now, and
+`end-unfinished` was **promoted** rather than deleted: it is the compile gap
+`opening-unresolved`, which refuses `auto` where an `info` line refused nothing.
+`block-without-detection` moved the same way and for the same reason.
+
+That inversion is worth stating plainly, because it cuts against D6's framing
+above. A diagnostic is advisory *because it compares two representations that
+may legitimately disagree while authoring*. A **gap** is a statement that the
+compiler is not confident, and confidence is precisely what automatic running
+requires — so a gap gates and a diagnostic does not. Anything that was really
+the second kind belonged in the compiler all along.
+
 **Buffers (#84).** A `buffer` tile asserts "track ends here, nothing continues
-beyond", and that is checkable against `block_edges`. It turns a block end with
-no edges from *ambiguous* — deliberate dead end, or an edge nobody has authored
-yet — into a fact, and the buffers were already drawn on every siding and yard
-road. They were simply inert.
+beyond", and that is checkable against `block_edges`. It is the one end-related
+finding that survives, because it is the one that still has two artefacts to
+compare: the drawing, and the graph some earlier compile wrote. Keyed on
+`(blockId, label)` over compiled openings (OQ3) — draw a buffer across an
+opening the live graph routes through and it says so, before anyone recompiles.
 
 It is **not** a route-safety mechanism. The pathfinder already cannot plan
 beyond a block end with no outgoing edge, and the absence of that edge remains
@@ -376,14 +392,18 @@ Hollow's six points. It now gates on `depictsPoint(tileType)`, and that
 predicate lives in `domain/types.ts` beside `TILE_TYPES` so the two cannot drift.
 
 **A pinned end is an assertion, and its absence from the drawing is news.**
-`end-not-on-diagram` only fires once an edge references the end. That guard is
-right for a *generated* end, which has an opening by construction, and for a
-hand-authored end naming track not yet drawn — a legitimate work order. It is
-wrong for a **pinned** end with nothing referencing it yet: pinning means "this
-outranks geometry permanently" (#72), and a layout with no edges authored is
-exactly when you would want to hear that the name has nowhere to sit — *before*
-an edge is authored against it. That case is now `pinned-end-not-on-diagram`,
-`info`, on the same rule as everything else here: unfinished is normal.
+This was `pinned-end-not-on-diagram` (#92), and it is gone with `block_ends`
+(#103 PR 7) — a compiled label cannot be pinned, and cannot exist without the
+opening it was derived from.
+
+The rule it established is the one worth keeping: **a guard tuned for the
+common case can silence the case that matters.** `end-not-on-diagram` only fired
+once an edge referenced the end, which was right for a generated end (an opening
+by construction) and for a hand-authored end naming track not yet drawn (a
+legitimate work order) — and wrong for a deliberately pinned end on a layout
+with no edges yet, which is exactly when hearing about it is useful. Ask of any
+new finding what state it is silent in, and whether that state is the
+interesting one.
 
 The same two-tiles-one-point fact is why a point is labelled once per *point*
 rather than once per tile (`docs/track-editor.md` D10). One property of the

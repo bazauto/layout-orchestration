@@ -15,8 +15,8 @@
 
 import { ILayoutRepository, GridTileRecord } from '../ports/ILayoutRepository';
 import { GridTileMetadata, LayoutId } from '../domain/types';
-import { GridTileWriteInput, parseTileMetadata } from './validation';
-import { Coordinate, GeometryTile, findUnjoinedEdges, generateBlockEnds } from './gridGeometry';
+import { GridTileWriteInput } from './validation';
+import { compileOpenings, findUnjoinedEdges, readDrawing } from './gridGeometry';
 import { GridDiagnostic, runGridDiagnostics } from './gridDiagnostics';
 
 /** Thrown when `:layoutId` does not resolve to a layout. Mapped to 404. */
@@ -118,40 +118,27 @@ export class GridService {
   async diagnose(layoutId: LayoutId): Promise<GridDiagnostic[]> {
     await this.assertLayoutExists(layoutId);
 
-    const [rows, blocks, points, sensors, edges, ends] = await Promise.all([
+    const [rows, blocks, points, sensors, edges] = await Promise.all([
       this.repo.listGridTiles(layoutId),
       this.repo.listBlocks(layoutId),
       this.repo.listPoints(layoutId),
       this.repo.listSensors(layoutId),
       this.repo.listBlockEdges(layoutId),
-      this.repo.listBlockEnds(layoutId),
     ]);
 
-    const tiles: GeometryTile[] = [];
-    const unreadableTiles: Coordinate[] = [];
-    for (const row of rows) {
-      const parsed = parseTileMetadata(row.metadata);
-      if (!parsed.ok) unreadableTiles.push({ x: row.x, y: row.y });
-      tiles.push({
-        x: row.x,
-        y: row.y,
-        tileType: row.tileType as GeometryTile['tileType'],
-        metadata: parsed.metadata,
-      });
-    }
-
-    const { openings, collisions } = generateBlockEnds(tiles);
+    const { tiles, unreadable } = readDrawing(rows);
 
     return runGridDiagnostics({
       tiles,
-      unreadableTiles,
+      unreadableTiles: unreadable.map((u) => u.at),
       blocks,
       points,
       sensors,
       edges,
-      ends,
-      openings,
-      collisions,
+      // `compileOpenings`, not `generateBlockEnds` (#103 PR 7): every drawn
+      // opening, named, none refused. The diagnostics compare the drawing
+      // against `block_edges`, and those are the labels a compile writes there.
+      openings: compileOpenings(tiles),
       // A separate pass over every tile, not only the block ones the run walk
       // visits (#91).
       unjoined: findUnjoinedEdges(tiles),

@@ -71,6 +71,7 @@ import {
   classifyTile,
 } from '../domain/types';
 import { EDGE_OFFSET, Port, drawnEdges, oppositeEdge, terminatesTrack } from './tileGeometry';
+import { parseTileMetadata } from './validation';
 
 /** The minimum a tile must expose for any of this. Parsed metadata, not the raw JSON column. */
 export interface GeometryTile {
@@ -86,62 +87,14 @@ export interface Coordinate {
 }
 
 /**
- * One opening of a block: a place its drawn track stops being that block.
+ * One place a block opens.
  *
- * `terminated` is #84's whole contribution. A buffer tile drawn at an opening
- * asserts "track ends here, nothing continues beyond" — which turns a block
- * end with no edges from *ambiguous* (deliberate dead end, or an edge nobody
- * has authored yet) into a fact. On Westgate Hollow the buffers are already
- * drawn at every siding and yard road; they were simply inert.
- */
-export interface BlockOpening {
-  blockId: BlockId;
-  label: CardinalEndLabel;
-  /** A tile **of the block**, where the editor draws the label. Never a computed mean, which for an L-shaped run falls in the hole. */
-  at: Coordinate;
-  terminated: boolean;
-  /**
-   * The tile boundaries this opening actually covers (#78).
-   *
-   * An end is frequently several cells wide — a three-cell handover face is one
-   * opening — so "which end did I arrive at?" cannot be answered by comparing
-   * against `at`, which is only the cell the *label* is drawn on. The ports are
-   * the exact set, so the lookup is an equality test rather than a proximity
-   * guess. Empty for the synthetic terminus a buffer contributes on its closed
-   * side: there is no boundary there, which is the point of it.
-   */
-  ports: Port[];
-}
-
-/**
- * A bearing the generator refused rather than guessed at: two openings of one
- * block that are not adjacent to each other but face the same way.
- *
- * Refusing is the decision from #72, over suffixing (`east`, `east_2`) or
- * falling back to a finer bearing. A silently suffixed label is exactly the
- * kind that gets typed wrong later in an edge, and the manual override exists
- * for precisely this case — so the honest move is to say which end could not
- * be named and let the author name it.
- */
-export interface EndLabelCollision {
-  blockId: BlockId;
-  label: CardinalEndLabel;
-  /** Each contending opening, so the editor can point at them on the diagram. */
-  at: Coordinate[];
-}
-
-export interface GeneratedEnds {
-  openings: BlockOpening[];
-  collisions: EndLabelCollision[];
-}
-
-/**
- * One place a block opens, as `services/trackGraphCompiler.ts` (#103) sees it.
- *
- * The disposable-output twin of `BlockOpening` (D8, `docs/track-graph-compilation.md`):
- * where that type's `label` is a `block_ends` row #72 refuses to write on a
- * collision, this one is never refused and never dropped, because nothing
- * after a compile references it by name across a redraw. `GET
+ * Was the disposable-output twin of `BlockOpening`, which #72 used for a
+ * `block_ends` row and which is deleted (#103 PR 7). The difference between
+ * them was the whole issue: that one **refused** a name it could not resolve
+ * uniquely, because the name was an identifier a later edge would be typed
+ * against; this one never refuses and never drops an opening, because nothing
+ * references a label across a redraw (D8). `GET
  * .../grid/openings` (D-H) returns these directly — pure geometry, no walk.
  */
 export interface CompiledOpening {
@@ -241,10 +194,11 @@ export function findBlockRuns(tiles: readonly GeometryTile[]): BlockRun[] {
  * disambiguation.
  *
  * `label` is nullable — a cluster sitting exactly on its run's centroid has no
- * honest bearing (`bearingLabel` says so). `generateBlockEnds` drops those
- * (#72's refusal, kept exactly for that caller); `compileOpenings` (#103, D-I)
- * does not, because once a label is disposable compiler output there is no
- * reason left to throw away a real opening for want of a name.
+ * honest bearing (`bearingLabel` says so). `generateBlockEnds` used to drop
+ * those, refusing rather than guessing at an identifier; `compileOpenings`
+ * (D-I) falls back instead, because once a label is disposable compiler output
+ * there is no reason left to throw away a real, trafficable opening for want of
+ * a name.
  */
 interface RawOpening {
   blockId: BlockId;
@@ -253,14 +207,6 @@ interface RawOpening {
   terminated: boolean;
   ports: Port[];
 }
-
-/**
- * A `RawOpening` whose bearing resolved. `generateBlockEnds` narrows to this
- * before grouping, which is what lets the grouping code — and `GeneratedEnds`
- * itself, whose `label` has always been non-null — stay exactly as #72 wrote
- * them while the walk beneath grows a nullable label for #103's benefit.
- */
-type LabelledOpening = RawOpening & { label: CardinalEndLabel };
 
 /**
  * One place drawn track leaves a run, before it has been named.
@@ -295,11 +241,11 @@ interface RunOpening {
  * in two disconnected places has two centroids, and averaging them puts the
  * origin in the gap between, which points every opening the wrong way.
  *
- * Shared by `generateBlockEnds` (#72, kept for its exact current behaviour
- * until PR 7) and `compileOpenings` (#103, D-I) below — the walk that finds an
- * opening is one thing; what a caller does with a name it cannot resolve is
- * two different policies, refuse versus disambiguate, and neither belongs
- * inside this function.
+ * Kept separate from `compileOpenings` below even though that is now its only
+ * caller: the walk that finds an opening is one thing, and what is done with a
+ * name it cannot resolve is a policy. There were two such policies — refuse
+ * (#72) and disambiguate (#103) — and the split is why replacing one with the
+ * other touched no geometry at all.
  */
 function rawOpenings(tiles: readonly GeometryTile[]): RawOpening[] {
   const byKey = new Map<string, GeometryTile>();
@@ -348,20 +294,6 @@ function rawOpenings(tiles: readonly GeometryTile[]): RawOpening[] {
   }
 
   return raw;
-}
-
-/**
- * Derives every block's openings and their generated cardinal labels.
- *
- * Kept byte-for-byte as it behaved before #103: drops a zero-bearing opening
- * and refuses two that collide, on `rawOpenings`' walk. Superseded by
- * `compileOpenings` below, and deleted in PR 7 once nothing reads it.
- */
-export function generateBlockEnds(tiles: readonly GeometryTile[]): GeneratedEnds {
-  const named = rawOpenings(tiles).filter(
-    (o): o is RawOpening & { label: CardinalEndLabel } => o.label !== null,
-  );
-  return groupOpenings(named);
 }
 
 /**
@@ -432,6 +364,55 @@ function openingBaseLabel(raw: RawOpening): string {
  * cluster's own `(y, x)` so a redraw that does not move these openings does
  * not renumber them either.
  */
+/** A stored tile row, as both readers of the drawing receive it. */
+export interface StoredTileRow {
+  x: number;
+  y: number;
+  tileType: string;
+  metadata: string;
+}
+
+/**
+ * Turns stored tile rows into the shape the geometry works on, reporting the
+ * ones whose metadata would not parse.
+ *
+ * Lived in `BlockEndService` until #103 PR 7 deleted it, and was open-coded a
+ * second and third time in `GridService.diagnose` and `CompileService`. It is
+ * geometry — it was only in the service because that is where it was first
+ * needed — and the two surviving callers want exactly the same two things out
+ * of it.
+ *
+ * Metadata is parsed **tolerantly** (`docs/track-grid.md` D10): a blob that
+ * predates #70's closed schema reads as `{}` and takes no part in run
+ * detection, rather than making the whole screen 500. That is why `unreadable`
+ * is returned rather than thrown — the tile still draws, and both callers
+ * report it rather than swallowing it. `raw` rides along so the compile
+ * fingerprint moves when corruption is repaired (D-G); the diagnostics ignore
+ * it and want only the coordinate.
+ */
+export function readDrawing(rows: readonly StoredTileRow[]): {
+  tiles: GeometryTile[];
+  unreadable: { at: Coordinate; raw: string }[];
+} {
+  const tiles: GeometryTile[] = [];
+  const unreadable: { at: Coordinate; raw: string }[] = [];
+
+  for (const row of rows) {
+    const parsed = parseTileMetadata(row.metadata);
+    // `ok`, not a catch: `parseTileMetadata` degrades rather than throwing, so
+    // a `try` here would never fire and every tile would read as fine.
+    if (!parsed.ok) unreadable.push({ at: { x: row.x, y: row.y }, raw: row.metadata });
+    tiles.push({
+      x: row.x,
+      y: row.y,
+      tileType: row.tileType as GeometryTile['tileType'],
+      metadata: parsed.metadata,
+    });
+  }
+
+  return { tiles, unreadable };
+}
+
 export function compileOpenings(tiles: readonly GeometryTile[]): CompiledOpening[] {
   const groups = new Map<string, RawOpening[]>();
 
@@ -625,66 +606,6 @@ function meanOffset(edges: ReadonlySet<TileEdge>): Coordinate | null {
  */
 function allTerminated(openings: readonly { terminated: boolean }[]): boolean {
   return openings.every((o) => o.terminated);
-}
-
-/**
- * Collapses raw openings into one named end per (block, bearing), and splits
- * out the bearings that cannot be named.
- *
- * Several raw openings almost always describe one physical end — a throat tile
- * touches its neighbour block on three of eight sides. They are one end when
- * their tiles are adjacent to each other. Two openings of one block that face
- * the same way from *different* places are two ends wanting one name, which is
- * the collision #72 refuses.
- */
-function groupOpenings(raw: readonly LabelledOpening[]): GeneratedEnds {
-  const byBlockLabel = new Map<string, LabelledOpening[]>();
-  for (const o of raw) {
-    // NUL as the composite-key separator, for the reason `domain/topology.ts`
-    // uses `^@`: it cannot occur in a block id or an end label, so no name can
-    // forge a key. Written as an **escape** and never as a literal — a raw NUL
-    // in the source makes git render this whole file as "Binary files differ"
-    // and makes ripgrep skip it, which hid this module from content searches
-    // and from PR review between #78 and this fix.
-    const k = `${o.blockId}\u0000${o.label}`;
-    const list = byBlockLabel.get(k);
-    if (list) list.push(o);
-    else byBlockLabel.set(k, [o]);
-  }
-
-  const openings: BlockOpening[] = [];
-  const collisions: EndLabelCollision[] = [];
-
-  for (const group of byBlockLabel.values()) {
-    const clusters = clusterTiles(group);
-
-    if (clusters.length > 1) {
-      collisions.push({
-        blockId: group[0].blockId,
-        label: group[0].label,
-        at: clusters.map((c) => representative(c.map((o) => o.at))),
-      });
-      continue;
-    }
-
-    const cluster = clusters[0];
-    openings.push({
-      blockId: cluster[0].blockId,
-      label: cluster[0].label,
-      at: representative(cluster.map((o) => o.at)),
-      terminated: allTerminated(cluster),
-      ports: cluster.flatMap((o) => o.ports),
-    });
-  }
-
-  return {
-    openings: openings.sort(
-      (a, b) => a.blockId.localeCompare(b.blockId) || a.label.localeCompare(b.label),
-    ),
-    collisions: collisions.sort(
-      (a, b) => a.blockId.localeCompare(b.blockId) || a.label.localeCompare(b.label),
-    ),
-  };
 }
 
 /**

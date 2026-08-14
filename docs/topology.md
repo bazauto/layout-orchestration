@@ -43,24 +43,39 @@ satisfy the pattern by construction. A `block_edges` row that fails it (e.g.
 `'North'`, un-normalised) is therefore DB corruption — see "Safe-Stop on invalid
 topology" below.
 
-Since #72 the labels are also **generated and stored** in a `block_ends` table
-— see the next section. The contract above is unchanged: `fromEnd`/`toEnd` stay
-free text, stay un-FK'd, and an end label with no other referent stays legal.
+A label is **compiler output** (`docs/track-graph-compilation.md` D8). It is
+derived from the drawing by `compileOpenings` on every compile, unique per block
+within one compile, and written only by the apply, which rewrites every edge at
+once. Nobody stores one, nobody edits one, and **string equality against the
+paired `blockId` is the only operation performed on it** — the pathfinder needs
+inequality to refuse a reversal, the diff needs equality to pair two rows, and
+nothing needs anything else.
+
+`block_ends` stored these labels from #72 until #103 PR 7 deleted it. That table
+is the whole subject of this issue: its `label` column was simultaneously the
+join key `block_edges` referenced and a geometry-derived description, and an
+identifier must be stable while a description must not be. Everything that
+follows in the next section is the record of that conflict, kept because the
+reasoning is why the fixes proposed for it were the wrong shape.
 
 ## Block ends: derived by default, authored by exception (#72)
 
-> **Superseded in design; the code is most of the way there.** This section
-> describes `block_ends`, which still exists and still works. It is replaced by
-> `docs/track-graph-compilation.md` (accepted 2026-08-13, tracking issue
-> **#103**), which deletes it entirely: the drawing compiles to `block_edges`
-> under operator review, and an end label becomes disposable compiler output that
-> nothing references and nobody edits.
+> **Historical. `block_ends` is deleted** (#103 PR 7, migration
+> `0010_drop_block_ends.sql`), along with `BlockEndService`, its routes, the
+> six repository methods, `generateBlockEnds`, and the four grid diagnostics
+> that reported on it. Nothing below describes running code.
 >
-> **Shipped:** D4/D5 (length on blocks), the compiler, both read surfaces, the
-> apply, the `auto` gate, and — since PR 5 — the review UI, the deletion of the
-> edge-proposal surface, and the deletion of the manual edge write path. The
-> compiler is now the **only** writer of `block_edges`. Still to come: PR 6.2/6.3
-> and PR 7, which delete `block_ends` itself and everything below.
+> It is kept rather than deleted because the *reasoning* is still load-bearing
+> in two places. The absence of a foreign key from `block_edges` is what made
+> the drop clean rather than a migration, and `migrations.test.ts` still
+> asserts it. And the two obvious fixes to the collision problem — an anchor
+> coordinate (#97) and a 16-point bearing — are still **rejected**, so the
+> argument against them needs to survive the thing it was about.
+>
+> The root fault, in one sentence: **`block_ends.label` was simultaneously the
+> join key `block_edges` referenced and a geometry-derived description.** An
+> identifier must be stable and a description must not be. `pinned`, the rename
+> 409, adoption and the collision refusal were all that conflict surfacing.
 >
 > The root fault it fixes: **`block_ends.label` is simultaneously the join key
 > `block_edges` references and a geometry-derived description.** An identifier
@@ -138,26 +153,31 @@ one silently re-points every edge referencing it. `BlockEndService` therefore
 answers **409** to a rename or delete of a label any edge uses, rather than
 cascading. The operator edits the edges, or keeps the name.
 
-The **Track Editor** used to be where all of this was reached, through `Ends ✎`.
-That panel is gone (#103 PR 6.2) along with `Ends ⟳`, so `BlockEndService`'s
-create, rename and delete are still routed and still refuse correctly, but
-nothing in the browser calls them. The 409 above is now unreachable in practice
-and dies with the table in PR 7.
+The **Track Editor** was where all of this was reached, through `Ends ✎`. That
+panel went in #103 PR 6.2 and `BlockEndService` with it in PR 7, so there is no
+rename left to refuse.
+
+The 409 is worth remembering as a symptom rather than a feature. It existed
+because renaming a label silently re-pointed every edge referencing it — which
+is only true if the label is an identifier. It is not one now, so a compile
+renames ends freely and the apply rewrites every edge in the same transaction.
 
 The interaction reasoning that panel established outlived it and is recorded in
 `docs/track-editor.md` D12: a list of ordinary controls rather than a click on a
 label drawn on a `role="application"` canvas, and one shared `jumpToCell`.
 
-### Known limit (closed in the graph, open in `block_ends`): an end the generator refused to name
+### Closed: an end the generator refused to name
 
-> **Resolved where it mattered, 2026-08-14.** Everything below still describes
-> `generateBlockEnds` and `block_ends` accurately, and both still exist. It no
-> longer describes the **track graph**: the applied compile carries
+> **Closed, 2026-08-14.** `generateBlockEnds` and `block_ends` are both deleted
+> (#103 PR 7), and the applied live graph carries
 > `Engine / Goods Transfer:southeast-1 → Engine Shed 1/2` and
-> `southeast-2 → Goods Shed`, because `compileOpenings` disambiguates by suffix
-> and had nothing to refuse. The paragraphs below are kept as the record of why
-> the refusal existed and why neither obvious fix was taken; they die with
-> `block_ends`.
+> `southeast-2 → Goods Shed` — `compileOpenings` disambiguates by suffix and had
+> nothing to refuse.
+>
+> Kept as the record of why the refusal existed and, more usefully, why neither
+> obvious fix was taken. Both remain rejected, and the reasoning is the same
+> reasoning that would apply to any future proposal to make a derived name
+> referenceable.
 
 Two openings of one block facing the same bearing are an `end-label-collision`:
 the generator names neither, because a silently suffixed `east_2` is exactly the
@@ -340,7 +360,15 @@ Since PR 5 the compiler is the **only** writer of `block_edges`:
 `POST`/`PUT`/`DELETE .../edges` are gone, `TopologyService.createEdge` /
 `updateEdge` / `deleteEdge` are gone, and so is `GET .../grid/edge-proposals`
 with the panel that read it. `GET .../edges` stays, and the Edges tab still
-lists what it returns. `block_ends` is still live and is deleted in PR 7.
+lists what it returns.
+
+**`block_ends` is deleted** (PR 7): the table, `BlockEndService`, its routes,
+the six repository methods, `generateBlockEnds`, and the four diagnostics that
+reported on it. One survives, re-expressed over compiled openings:
+`buffer-contradicted-by-edge`, which compares the drawing against the stored
+graph and so still has two things to compare. `block-without-detection` moved
+the other way — it is a compile gap, where it refuses `auto` rather than merely
+advising.
 
 ### The three surfaces
 

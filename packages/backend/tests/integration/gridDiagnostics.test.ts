@@ -1,19 +1,23 @@
 /**
- * Block end integration tests (#72, see docs/topology.md).
+ * Grid write-path and diagnostics integration tests.
  *
- * The invariant nearly every test here defends is the same one:
- * **a label an edge already references is never renamed and never deleted by
- * anything automatic.** `block_edges.fromEnd`/`toEnd` are free text and are
- * the only link between an edge and a block end, so a rename is a change to
- * the track graph disguised as a naming tidy-up — and the pathfinder plans on
- * that graph.
+ * Was `blockEnds.test.ts` (#72). Everything it defended about a *stored* end
+ * label — that a label an edge references is never renamed or deleted by
+ * anything automatic — went with `block_ends` itself (#103 PR 7). There is no
+ * stored label left to protect: a name is derived from the drawing on every
+ * compile and referenced by nothing between compiles.
  *
- * Also covered: the wave-2 tile metadata (#71 classification, #73 point roads,
- * #74 annotations) on the validated write path, and the diagnostics surface
- * (#84's buffer cross-check, #83's diamond blind spot).
+ * What survives is what was never about that table, and is here rather than
+ * scattered because it exercises the real HTTP write path against a real
+ * repository fake:
+ *
+ * - the wave-2 tile metadata (#71 classification, #73 point roads, #74
+ *   annotations) on the validated write path;
+ * - the diagnostics surface — #84's buffer cross-check, #83's diamond blind
+ *   spot, #91's `track-not-joined`, #74's duplicate annotation.
  *
  * Posture throughout: ordinary 4xx. Nothing in this file may Safe-Stop — these
- * are admin config surfaces, and an end label is a name.
+ * are admin config surfaces.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -26,10 +30,9 @@ import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
 import { GridTileRecord, ILayoutRepository } from '../../src/ports/ILayoutRepository';
-import { BlockEdge, BlockEnd } from '../../src/domain/types';
+import { BlockEdge } from '../../src/domain/types';
 import {
   authenticateAsAdmin,
-  authenticateAsOperator,
   makeTestAuthService,
   TEST_AUTH_CONFIG,
 } from './testAuthHelpers';
@@ -43,15 +46,12 @@ const POINT_ID = 'point-1';
 const SENSOR_ID = 'sensor-1';
 
 const GRID_URL = `/api/layouts/${LAYOUT_ID}/grid`;
-const ENDS_URL = `/api/layouts/${LAYOUT_ID}/block-ends`;
 
 let tiles: GridTileRecord[];
-let ends: BlockEnd[];
 let edges: BlockEdge[];
 
 function makeRepo(): ILayoutRepository {
   tiles = [];
-  ends = [];
   edges = [];
   let nextId = 1;
 
@@ -126,9 +126,10 @@ function makeRepo(): ILayoutRepository {
     }),
     listBlockEdges: vi.fn(async (layoutId: string) => edges.filter((e) => e.layoutId === layoutId)),
     getBlockEdge: vi.fn(async (id: string) => edges.find((e) => e.id === id) ?? null),
-    // Functional, so #78's accept path can be exercised end to end: a proposal
-    // is accepted by POSTing it to the ordinary edges route, and that has to
-    // actually create a row for the re-propose to see it.
+    // Functional so a diagnostic that compares the drawing against the graph
+    // has a graph to compare against — `buffer-contradicted-by-edge` is the
+    // only one left that reads `block_edges`, and it is the reason this fake
+    // stores edges rather than returning a fixed list.
     createBlockEdge: vi.fn(async (data: Omit<BlockEdge, 'id'>) => {
       const created = { id: `edge-${nextId++}`, ...data };
       edges.push(created);
@@ -136,33 +137,6 @@ function makeRepo(): ILayoutRepository {
     }),
     updateBlockEdge: vi.fn(),
     deleteBlockEdge: vi.fn(),
-    listBlockEnds: vi.fn(async (layoutId: string) => ends.filter((e) => e.layoutId === layoutId)),
-    getBlockEnd: vi.fn(async (id: string) => ends.find((e) => e.id === id) ?? null),
-    createBlockEnd: vi.fn(async (data: Omit<BlockEnd, 'id'>) => {
-      const created = { id: `end-${nextId++}`, ...data };
-      ends.push(created);
-      return created;
-    }),
-    updateBlockEnd: vi.fn(async (id: string, data: { label?: string; pinned?: boolean }) => {
-      const end = ends.find((e) => e.id === id)!;
-      Object.assign(end, data);
-      return end;
-    }),
-    deleteBlockEnd: vi.fn(async (id: string) => {
-      ends = ends.filter((e) => e.id !== id);
-    }),
-    replaceGeneratedBlockEnds: vi.fn(
-      async (layoutId: string, blockId: string, labels: readonly string[]) => {
-        const pinned = new Set(
-          ends.filter((e) => e.blockId === blockId && e.pinned).map((e) => e.label),
-        );
-        ends = ends.filter((e) => e.blockId !== blockId || e.pinned);
-        for (const label of new Set(labels)) {
-          if (pinned.has(label)) continue;
-          ends.push({ id: `end-${nextId++}`, layoutId, blockId, label, pinned: false });
-        }
-      },
-    ),
     listReservations: vi.fn().mockResolvedValue([]),
     getReservation: vi.fn().mockResolvedValue(null),
     createReservation: vi.fn(),
@@ -340,234 +314,6 @@ describe('PUT .../grid — wave 2 metadata', () => {
 
 // ─── Block ends (#72) ───────────────────────────────────────────────────────
 
-describe('POST .../block-ends/generate', () => {
-  it('generates cardinal labels from the drawing', async () => {
-    await drawSiding(BLOCK_A, 0);
-
-    const res = await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
-    expect(res.statusCode).toBe(200);
-
-    const listed = JSON.parse((await app.inject({ method: 'GET', url: ENDS_URL })).body);
-    expect(listed.map((e: BlockEnd) => e.label).sort()).toEqual(['east', 'west']);
-    expect(listed.every((e: BlockEnd) => e.pinned === false)).toBe(true);
-  });
-
-  it('pins every label an existing edge already references, and never renames one', async () => {
-    // The adoption pass. Westgate Hollow's edges were authored long before any
-    // of this existed; the first generate must protect them rather than
-    // clobber them with whatever the geometry happens to say.
-    edges.push({
-      id: 'edge-1',
-      layoutId: LAYOUT_ID,
-      fromBlockId: BLOCK_A,
-      fromEnd: 'yard-3',
-      toBlockId: BLOCK_B,
-      toEnd: 'south',
-      pointConditions: [],
-    });
-    await drawSiding(BLOCK_A, 0);
-
-    const res = await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
-    const summary = JSON.parse(res.body);
-
-    expect(summary.adopted).toEqual(
-      expect.arrayContaining([
-        { blockId: BLOCK_A, label: 'yard-3' },
-        { blockId: BLOCK_B, label: 'south' },
-      ]),
-    );
-
-    const listed: BlockEnd[] = JSON.parse((await app.inject({ method: 'GET', url: ENDS_URL })).body);
-    const adopted = listed.find((e) => e.label === 'yard-3')!;
-    expect(adopted.pinned).toBe(true);
-    // The generated labels sit alongside it; the authored one is untouched.
-    expect(listed.filter((e) => e.blockId === BLOCK_A).map((e) => e.label).sort()).toEqual([
-      'east',
-      'west',
-      'yard-3',
-    ]);
-  });
-
-  it('gives two sidings drawn on adjacent rows two ends each (#91)', async () => {
-    // The shape #91 is about, through the real write path and repository. Two
-    // yard roads touch along their whole length and connect nowhere.
-    await drawSiding(BLOCK_A, 0);
-    await drawSiding(BLOCK_B, 1);
-
-    const res = await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).collisions).toEqual([]);
-
-    const labelsOf = (blockId: string) =>
-      ends
-        .filter((e) => e.blockId === blockId)
-        .map((e) => e.label)
-        .sort();
-
-    // Before the fix each block got a single end named for the row above or
-    // below it, sitting in the middle of its own siding.
-    expect(labelsOf(BLOCK_A)).toEqual(['east', 'west']);
-    expect(labelsOf(BLOCK_B)).toEqual(['east', 'west']);
-  });
-
-  it('is idempotent — running it twice changes nothing', async () => {
-    await drawSiding(BLOCK_A, 0);
-    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
-    const first = JSON.parse((await app.inject({ method: 'GET', url: ENDS_URL })).body);
-
-    const second = JSON.parse(
-      (await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` })).body,
-    );
-
-    expect(second.created).toEqual([]);
-    expect(second.removed).toEqual([]);
-    const after = JSON.parse((await app.inject({ method: 'GET', url: ENDS_URL })).body);
-    expect(after.map((e: BlockEnd) => e.label).sort()).toEqual(
-      first.map((e: BlockEnd) => e.label).sort(),
-    );
-  });
-
-  it('leaves a pinned label alone when the drawing changes underneath it', async () => {
-    await drawSiding(BLOCK_A, 0);
-    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
-
-    const listed: BlockEnd[] = JSON.parse((await app.inject({ method: 'GET', url: ENDS_URL })).body);
-    const west = listed.find((e) => e.label === 'west')!;
-    // Renaming to the same label is how an operator says "stop regenerating
-    // this one".
-    await app.inject({ method: 'PUT', url: `${ENDS_URL}/${west.id}`, payload: { label: 'west' } });
-
-    await app.inject({ method: 'DELETE', url: `${GRID_URL}/tile?x=0&y=0` });
-    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
-
-    const after: BlockEnd[] = JSON.parse((await app.inject({ method: 'GET', url: ENDS_URL })).body);
-    expect(after.find((e) => e.label === 'west')?.pinned).toBe(true);
-  });
-
-  it('reports a collision instead of suffixing a duplicate label', async () => {
-    // One block drawn as two parallel roads: both open west, from two places.
-    await drawSiding(BLOCK_A, 0);
-    await drawSiding(BLOCK_A, 4);
-
-    const summary = JSON.parse(
-      (await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` })).body,
-    );
-
-    expect(summary.collisions.map((c: { label: string }) => c.label).sort()).toEqual([
-      'east',
-      'west',
-    ]);
-    const listed = JSON.parse((await app.inject({ method: 'GET', url: ENDS_URL })).body);
-    expect(listed).toEqual([]);
-  });
-
-  it('requires admin — an operator may read ends but not regenerate them', async () => {
-    await authenticateAsOperator(app);
-    expect((await app.inject({ method: 'GET', url: ENDS_URL })).statusCode).toBe(200);
-    expect((await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` })).statusCode).toBe(403);
-  });
-});
-
-describe('block end rename and delete', () => {
-  async function seedEnd(label = 'west'): Promise<BlockEnd> {
-    const res = await app.inject({
-      method: 'POST',
-      url: ENDS_URL,
-      payload: { blockId: BLOCK_A, label },
-    });
-    return JSON.parse(res.body);
-  }
-
-  it('creates a hand-authored end pinned, and normalises the label', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: ENDS_URL,
-      payload: { blockId: BLOCK_A, label: '  YARD-3 ' },
-    });
-
-    expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body)).toMatchObject({ label: 'yard-3', pinned: true });
-  });
-
-  it('refuses a rename of a label an edge references, and names the edges', async () => {
-    const end = await seedEnd('yard-3');
-    edges.push({
-      id: 'edge-1',
-      layoutId: LAYOUT_ID,
-      fromBlockId: BLOCK_A,
-      fromEnd: 'yard-3',
-      toBlockId: BLOCK_B,
-      toEnd: 'south',
-      pointConditions: [],
-    });
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: `${ENDS_URL}/${end.id}`,
-      payload: { label: 'north' },
-    });
-
-    // Not a cascade: rewriting the edges to follow the rename would be a
-    // change to the track graph made as a side effect of naming something.
-    expect(res.statusCode).toBe(409);
-    expect(JSON.parse(res.body).edgeIds).toEqual(['edge-1']);
-    expect(ends.find((e) => e.id === end.id)!.label).toBe('yard-3');
-  });
-
-  it('refuses a delete of a label an edge references', async () => {
-    const end = await seedEnd('yard-3');
-    edges.push({
-      id: 'edge-1',
-      layoutId: LAYOUT_ID,
-      fromBlockId: BLOCK_B,
-      fromEnd: 'south',
-      toBlockId: BLOCK_A,
-      toEnd: 'yard-3',
-      pointConditions: [],
-    });
-
-    const res = await app.inject({ method: 'DELETE', url: `${ENDS_URL}/${end.id}` });
-    expect(res.statusCode).toBe(409);
-    expect(ends).toHaveLength(1);
-  });
-
-  it('refuses a rename onto a label the block already carries', async () => {
-    await seedEnd('west');
-    const other = await seedEnd('east');
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: `${ENDS_URL}/${other.id}`,
-      payload: { label: 'west' },
-    });
-
-    // Merging two ends into one is a topology change; say so explicitly by
-    // deleting one rather than having a rename do it quietly.
-    expect(res.statusCode).toBe(409);
-  });
-
-  it('404s for an end id belonging to another layout, not 200', async () => {
-    ends.push({ id: 'foreign', layoutId: 'other', blockId: BLOCK_A, label: 'north', pinned: true });
-    const res = await app.inject({
-      method: 'PUT',
-      url: `${ENDS_URL}/foreign`,
-      payload: { label: 'south' },
-    });
-    expect(res.statusCode).toBe(404);
-  });
-
-  it('400s for a blockId that is not in this layout', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: ENDS_URL,
-      payload: { blockId: 'block-elsewhere', label: 'north' },
-    });
-    expect(res.statusCode).toBe(400);
-  });
-});
-
-// ─── Diagnostics (#71, #73, #74, #83, #84) ─────────────────────────────────
-
 describe('GET .../grid/diagnostics', () => {
   const fetchDiagnostics = async () =>
     JSON.parse((await app.inject({ method: 'GET', url: `${GRID_URL}/diagnostics` })).body);
@@ -589,9 +335,12 @@ describe('GET .../grid/diagnostics', () => {
     ).toBe(false);
   });
 
-  it('reports a buffered end that an edge nonetheless leaves', async () => {
+  it('reports a buffered opening that an edge nonetheless leaves', async () => {
+    // The one end-related diagnostic left (OQ3), and the one that still has two
+    // representations to compare: the drawing, and the `block_edges` some
+    // earlier compile wrote. No `/generate` step any more — the label the edge
+    // names is the one `compileOpenings` derives from the drawing itself.
     await drawSiding(BLOCK_A, 0);
-    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
     edges.push({
       id: 'edge-1',
       layoutId: LAYOUT_ID,
@@ -606,29 +355,6 @@ describe('GET .../grid/diagnostics', () => {
       (d: { kind: string }) => d.kind === 'buffer-contradicted-by-edge',
     );
     expect(found).toMatchObject({ severity: 'warning', blockId: BLOCK_A, label: 'east' });
-  });
-
-  it('reports an unfinished end — no edges and no buffer — as a to-do', async () => {
-    await drawSiding(BLOCK_A, 0, false);
-    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
-
-    const found = (await fetchDiagnostics()).filter(
-      (d: { kind: string }) => d.kind === 'end-unfinished',
-    );
-    // Both ends are unauthored, and neither is a deliberate dead end — the
-    // ambiguity #84 exists to resolve, now resolved in the honest direction.
-    expect(found.map((d: { label: string }) => d.label).sort()).toEqual(['east', 'west']);
-    expect(found.every((d: { severity: string }) => d.severity === 'info')).toBe(true);
-  });
-
-  it('does not report an end as unfinished once a buffer terminates it', async () => {
-    await drawSiding(BLOCK_A, 0);
-    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
-
-    const unfinished = (await fetchDiagnostics()).filter(
-      (d: { kind: string }) => d.kind === 'end-unfinished',
-    );
-    expect(unfinished.map((d: { label: string }) => d.label)).toEqual(['west']);
   });
 
   it('warns that a drawn plain diamond is a known blind spot', async () => {
@@ -678,56 +404,30 @@ describe('GET .../grid/diagnostics', () => {
     ).toBe(false);
   });
 
-  it('reports a pinned end with no opening, even with no edge referencing it', async () => {
-    // #92. `end-not-on-diagram` only fires once an edge depends on the end, so
-    // on a layout with no edges authored yet a pinned end naming track nobody
-    // has drawn was reported by nothing at all.
-    await app.inject({
-      method: 'POST',
-      url: ENDS_URL,
-      payload: { blockId: BLOCK_A, label: 'north' },
-    });
-
-    const found = (await fetchDiagnostics()).find(
-      (d: { kind: string }) => d.kind === 'pinned-end-not-on-diagram',
-    );
-    expect(found).toMatchObject({ blockId: BLOCK_A, label: 'north', severity: 'info' });
-  });
-
-  it('stays quiet about a generated end that the drawing does place', async () => {
+  it('gives two sidings drawn on adjacent rows two openings each (#91)', async () => {
+    // The shape #91 is about, through the real write path and repository: two
+    // yard roads touch along their whole length and connect nowhere.
+    //
+    // This was asserted through `POST .../block-ends/generate` until #103 PR 7.
+    // The surface changed and the property did not, so it moved to
+    // `GET .../grid/openings` rather than going with the route — before the
+    // fix each block got a *single* opening named for the row above or below
+    // it, sitting in the middle of its own siding.
     await drawSiding(BLOCK_A, 0);
-    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
+    await drawSiding(BLOCK_B, 1);
 
-    expect(
-      (await fetchDiagnostics()).some(
-        (d: { kind: string }) => d.kind === 'pinned-end-not-on-diagram',
-      ),
-    ).toBe(false);
-  });
+    const res = await app.inject({ method: 'GET', url: `${GRID_URL}/openings` });
+    expect(res.statusCode).toBe(200);
 
-  it('flags a drawn block that no in-service sensor reports on', async () => {
-    await drawSiding(BLOCK_B, 0);
+    const openings = JSON.parse(res.body) as Array<{ blockId: string; label: string }>;
+    const labelsOf = (blockId: string) =>
+      openings
+        .filter((o) => o.blockId === blockId)
+        .map((o) => o.label)
+        .sort();
 
-    const found = (await fetchDiagnostics()).find(
-      (d: { kind: string }) => d.kind === 'block-without-detection',
-    );
-    expect(found).toMatchObject({ blockId: BLOCK_B, severity: 'info' });
-  });
-
-  it('reports every unfinished end of two adjacent yard roads (#91)', async () => {
-    // The "hides real work" consequence in #91: the fused end inherited a
-    // buffer flag from one tile, so `end-unfinished` never fired for either
-    // road even though the layout had no authored edges at all.
-    await drawSiding(BLOCK_A, 0, false);
-    await drawSiding(BLOCK_B, 1, false);
-    await app.inject({ method: 'POST', url: `${ENDS_URL}/generate` });
-
-    const unfinished = (await fetchDiagnostics()).filter(
-      (d: { kind: string }) => d.kind === 'end-unfinished',
-    );
-
-    expect(unfinished).toHaveLength(4);
-    expect(unfinished.every((d: { severity: string }) => d.severity === 'info')).toBe(true);
+    expect(labelsOf(BLOCK_A)).toEqual(['east', 'west']);
+    expect(labelsOf(BLOCK_B)).toEqual(['east', 'west']);
   });
 
   it('warns when drawn track runs into a tile that does not meet it (#91)', async () => {

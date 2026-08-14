@@ -1389,6 +1389,38 @@ authoring** row.
 
 ### PR 7 — `block_ends` is deleted
 
+> **Shipped**, with three notes:
+>
+> 1. **Step 7.3's safety argument had gone stale and needed replacing.** The plan
+>    justifies the drop with "none of which any edge references (verified:
+>    `block_edges` is empty)". It is not empty any more — the operator applied the
+>    compile on 2026-08-14. Measured against a copy of the live DB instead:
+>    `block_edges` references eleven `(block, label)` pairs, **two of which this
+>    table never held** (`southeast-1`, `southeast-2`, the collision it refused to
+>    name), while most of its nineteen rows are referenced by nothing at all. The
+>    two representations had already diverged in production. The drop is safe for
+>    the original reason, which is structural rather than empirical: there is no
+>    foreign key, and #72 refused one deliberately.
+> 2. **`readDrawing` was extracted rather than `toGeometryTiles` moved.** Step 7.1
+>    says to move `toGeometryTiles` from `BlockEndService` to `gridGeometry`. It
+>    was open-coded a second and third time in `GridService.diagnose` and
+>    `CompileService`, and both of those want the unreadable-tile list as well as
+>    the tiles. One function returning both replaces all three.
+> 3. **Two test files were ported, not deleted.** `gridGeometry.test.ts`'s two
+>    `generateBlockEnds` describes are the walk's geometry coverage — parallel
+>    roads, rotation, buffered ends, the multi-cell handover face, mixed-face
+>    termination — and all of it applies unchanged to `compileOpenings`. The
+>    collision-refusal case became its opposite: the same fixture now yields
+>    `east-1`/`east-2`/`west-1`/`west-2`. And `blockEnds.test.ts` became
+>    `gridDiagnostics.test.ts`, keeping the wave-2 write path and the diagnostics;
+>    its #91 "two sidings get two ends each" case moved to
+>    `GET .../grid/openings`, the same property on the surviving surface.
+>
+> One e2e case had to change subject. `track-editor-navigation.spec.ts`'s
+> "a diagnostic with no coordinate renders as plain text" used
+> `block-without-detection`, which is a compile gap now; it uses
+> `buffer-contradicted-by-edge`, the last coordinate-less kind.
+
 Last, because everything that read it is gone by now.
 
 #### Step 7.1 — Backend deletions

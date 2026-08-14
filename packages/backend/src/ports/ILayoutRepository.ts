@@ -7,7 +7,6 @@
 
 import {
   BlockEdge,
-  BlockEnd,
   RouteHoldKind,
   RouteId,
   RouteReservation,
@@ -145,27 +144,12 @@ export interface ILayoutRepository {
   updateBlockEdge(id: string, data: Partial<Omit<BlockEdge, 'id' | 'layoutId'>>): Promise<BlockEdge>;
   deleteBlockEdge(id: string): Promise<void>;
 
-  // Block Ends (see docs/topology.md, #72)
-  listBlockEnds(layoutId: string): Promise<BlockEnd[]>;
-  getBlockEnd(id: string): Promise<BlockEnd | null>;
-  createBlockEnd(data: Omit<BlockEnd, 'id'>): Promise<BlockEnd>;
-  updateBlockEnd(id: string, data: { label?: string; pinned?: boolean }): Promise<BlockEnd>;
-  deleteBlockEnd(id: string): Promise<void>;
-  /**
-   * Replaces every **unpinned** end of `blockId` with `labels`, atomically.
-   *
-   * One method rather than a delete loop plus an insert loop because that is
-   * what regeneration is: a pinned end must survive it untouched, and a
-   * half-applied regeneration would leave a block briefly holding neither the
-   * old generated ends nor the new ones. Implementations MUST NOT touch a row
-   * with `pinned = true`, and MUST skip a label a pinned row already holds —
-   * the unique index on `(block_id, label)` is the backstop, not the plan.
+  /*
+   * Six block-end methods were here, including `replaceGeneratedBlockEnds`
+   * (#72). All deleted with the table (#103 PR 7): an opening's name is derived
+   * from the drawing on every compile, so there is nothing to store, nothing to
+   * regenerate atomically, and nothing to pin against regeneration.
    */
-  replaceGeneratedBlockEnds(
-    layoutId: string,
-    blockId: string,
-    labels: readonly string[],
-  ): Promise<void>;
 
   // Compiled graph provenance (see docs/track-graph-compilation.md D10, #103)
   /**

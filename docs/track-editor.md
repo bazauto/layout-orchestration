@@ -371,8 +371,8 @@ forever. That was a `block_ends` schema problem — an end could not name a
 *specific* opening — and it dissolves rather than being fixed:
 `compileOpenings` disambiguates two openings of one block facing the same way
 by suffix, so there is nothing for the generator to refuse and nothing for a
-hand to rescue. `block_ends` itself still exists on the backend and is deleted
-in PR 7; until then its diagnostics can still report the old shape.
+hand to rescue. `block_ends` is deleted outright in PR 7, and the four
+diagnostics that reported on it with it.
 
 ---
 

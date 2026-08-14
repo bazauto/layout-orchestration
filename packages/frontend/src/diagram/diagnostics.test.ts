@@ -51,27 +51,12 @@ describe('diagnosticCoordinate', () => {
     expect(diagnosticCoordinate(d)).toBeNull();
   });
 
-  it('returns null for end-not-on-diagram and block-without-detection, the other two coordinate-less kinds', () => {
-    const endNotOnDiagram: GridDiagnostic = {
-      kind: 'end-not-on-diagram',
-      severity: 'warning',
-      blockId: 'b1',
-      label: 'east',
-    };
-    const blockWithoutDetection: GridDiagnostic = {
-      kind: 'block-without-detection',
-      severity: 'info',
-      blockId: 'b1',
-    };
-    expect(diagnosticCoordinate(endNotOnDiagram)).toBeNull();
-    expect(diagnosticCoordinate(blockWithoutDetection)).toBeNull();
-  });
-
-  // Both kinds below were added to the `GridDiagnostic` union without a case
+  // `track-not-joined` was added to the `GridDiagnostic` union without a case
   // here, so the function fell off its own end and returned `undefined` —
   // which reads as falsy at the call site and renders the line as plain text.
-  // `track-not-joined` is the worst one to lose: it is a warning whose entire
-  // content is "go and look at this cell".
+  // It is the worst one to lose: a warning whose entire content is "go and look
+  // at this cell". (`pinned-end-not-on-diagram` was the other, and is gone with
+  // `block_ends` — #103 PR 7.)
   it('jumps to the drawn tile of track-not-joined, not the tile it butts against', () => {
     const d: GridDiagnostic = {
       kind: 'track-not-joined',
@@ -81,15 +66,5 @@ describe('diagnosticCoordinate', () => {
       against: { x: 13, y: 5 },
     };
     expect(diagnosticCoordinate(d)).toEqual({ x: 12, y: 5 });
-  });
-
-  it('returns null for pinned-end-not-on-diagram, which names an end with no opening by definition', () => {
-    const d: GridDiagnostic = {
-      kind: 'pinned-end-not-on-diagram',
-      severity: 'info',
-      blockId: 'b1',
-      label: 'yard-3',
-    };
-    expect(diagnosticCoordinate(d)).toBeNull();
   });
 });

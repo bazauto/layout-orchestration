@@ -1,0 +1,15 @@
+-- #103 PR 7. An opening's name is derived from the drawing on every compile
+-- and referenced by nothing between compiles, so there is nothing to store.
+--
+-- Safe to drop rather than migrate: `block_edges.from_end`/`to_end` never had
+-- a foreign key to this table. #72 refused one deliberately (the model
+-- tolerated a label with no referent; a malformed label was Safe-Stop's
+-- problem, not referential integrity's; the adoption pass would have deadlocked
+-- against its own constraint), so no edge points here and none can be orphaned.
+--
+-- Nor is any label lost. On Westgate Hollow the applied graph already
+-- references two labels this table never held -- `southeast-1` and
+-- `southeast-2`, the collision the generator refused to name -- and most rows
+-- here are referenced by nothing at all. The two representations had already
+-- diverged; this deletes the one nothing reads.
+DROP TABLE `block_ends`;
