@@ -382,6 +382,24 @@ stays testable standalone (a hand-rolled `IRouteLockView` in tests, no real
   (`docs/track-graph-compilation.md` D8) — nothing can be holding a stale one
   when they are regenerated.
 
+### The HTTP mapping, which was documented before it existed
+
+Every refusal above is **HTTP 409 with `{ error, routeId }`**, on all four
+routes: `PUT`/`DELETE .../edges/:id`, `DELETE .../blocks/:id`,
+`DELETE .../points/:id`, and `POST .../topology/compile/apply`.
+
+For a long time only the compile apply actually did that. The other three named
+`LockedByRouteError` in this document and mapped it nowhere, so the refusal
+fell through to Fastify's default handler and came back as a bare **500** —
+the server reporting itself broken for correctly refusing a write. Worse, a 500
+carries no `routeId`, so the one fact that makes the situation actionable was
+lost: a named route is holding this, cancel it and the write succeeds.
+
+409 rather than 422 throughout, and the distinction is worth keeping: 422 means
+the *graph* refused the change (an edge still references this point, a candidate
+set has violations), 409 means the layout's live state conflicts with an
+otherwise valid request. They call for different actions.
+
 Note the interaction with the existing rule that edge writes stay permitted
 during Safe-Stop for recovery (`docs/topology.md`): still true, but a
 *suspended* reservation still blocks the write, because `IRouteLockView`

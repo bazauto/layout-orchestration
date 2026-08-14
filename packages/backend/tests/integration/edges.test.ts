@@ -21,6 +21,7 @@ import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
 import { ILayoutRepository, BlockRecord, PointRecord } from '../../src/ports/ILayoutRepository';
+import { IRouteLockView } from '../../src/ports/IRouteLockView';
 import { BlockEdge } from '../../src/domain/types';
 import { MAX_EDGES_PER_LAYOUT } from '../../src/domain/topology';
 import {
@@ -124,7 +125,10 @@ function makeRepo(): ILayoutRepository {
  * file's existing tests were all written to exercise TopologyService, not
  * auth, so they run as admin unless a test opts out.
  */
-async function buildTestServer(repo: ILayoutRepository, options: { skipLogin?: boolean } = {}) {
+async function buildTestServer(
+  repo: ILayoutRepository,
+  options: { skipLogin?: boolean; lockView?: IRouteLockView } = {},
+) {
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
   const state = new LayoutStateManager(LAYOUT_ID);
@@ -134,7 +138,7 @@ async function buildTestServer(repo: ILayoutRepository, options: { skipLogin?: b
     repo,
     () => service.reloadTopology(),
     silentLogger,
-    reservations,
+    options.lockView ?? reservations,
   );
   await service.start(LAYOUT_ID);
   const authService = await makeTestAuthService();
@@ -335,6 +339,47 @@ describe('Edge routes', () => {
 
     const listRes = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
     expect(JSON.parse(listRes.body)).toHaveLength(MAX_EDGES_PER_LAYOUT);
+  });
+
+  it('PUT and DELETE against an edge a route holds are 409s naming the route, not 500s', async () => {
+    // D10's write-guard reaching the wire. `LockedByRouteError` matched no
+    // `catch` here, so a refusal that the service performs correctly came back
+    // as a bare 500 — the server reporting itself broken for doing its job.
+    const created = JSON.parse(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/api/layouts/${LAYOUT_ID}/edges`,
+          payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
+        })
+      ).body,
+    );
+
+    const held: IRouteLockView = {
+      findRouteHoldingBlock: () => null,
+      findRouteHoldingPoint: () => null,
+      findRouteHoldingEdge: () => 'route-42',
+      findAnyHeldRoute: () => 'route-42',
+    };
+    const guarded = await buildTestServer(repo, { lockView: held });
+
+    const put = await guarded.inject({
+      method: 'PUT',
+      url: `/api/layouts/${LAYOUT_ID}/edges/${created.id}`,
+      payload: { toEnd: 'north' },
+    });
+    expect(put.statusCode).toBe(409);
+    expect(JSON.parse(put.body)).toMatchObject({ routeId: 'route-42' });
+
+    const del = await guarded.inject({
+      method: 'DELETE',
+      url: `/api/layouts/${LAYOUT_ID}/edges/${created.id}`,
+    });
+    expect(del.statusCode).toBe(409);
+
+    // Neither refusal touched the graph.
+    const listRes = await guarded.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
+    expect(JSON.parse(listRes.body)).toHaveLength(1);
   });
 });
 

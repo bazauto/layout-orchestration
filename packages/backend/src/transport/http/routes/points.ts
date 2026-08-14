@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
 import { INameBook } from '../../../ports/INameBook';
 import {
+  LockedByRouteError,
   RecordNotFoundError,
   TopologyRejectedError,
   TopologyService,
@@ -94,6 +95,14 @@ export async function pointRoutes(
       } catch (err) {
         if (err instanceof RecordNotFoundError) {
           return reply.status(404).send({ error: err.message });
+        }
+        // See `blocks.ts` — D10's write-guard was reaching Fastify's default
+        // handler as a 500. A held point is a 409, distinct from the 422 below:
+        // 422 means the *graph* refused (an edge still references this point),
+        // 409 means a live route is holding it and cancelling the route is what
+        // unblocks the delete.
+        if (err instanceof LockedByRouteError) {
+          return reply.status(409).send({ error: err.message, routeId: err.routeId });
         }
         if (err instanceof TopologyRejectedError) {
           return reply.status(422).send({ error: err.message, violations: err.violations });

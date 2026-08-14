@@ -1,7 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import { ILayoutRepository } from '../../../ports/ILayoutRepository';
 import { INameBook } from '../../../ports/INameBook';
-import { RecordNotFoundError, TopologyService } from '../../../services/TopologyService';
+import {
+  LockedByRouteError,
+  RecordNotFoundError,
+  TopologyService,
+} from '../../../services/TopologyService';
 import { blockCreateSchema, blockUpdateSchema } from '../../../services/validation';
 import { requireAdmin } from '../auth/hook';
 
@@ -78,6 +82,15 @@ export async function blockRoutes(
       } catch (err) {
         if (err instanceof RecordNotFoundError) {
           return reply.status(404).send({ error: err.message });
+        }
+        // D10's write-guard reaching the wire. Without this the refusal is a
+        // bare 500 and the operator is told the server broke, when what
+        // actually happened is that a route is holding the block and cancelling
+        // it is the fix. 409, matching every other `LockedByRouteError` mapping
+        // (`topology.ts#mapCompileError`): the request is well-formed and it is
+        // the state of the layout that conflicts.
+        if (err instanceof LockedByRouteError) {
+          return reply.status(409).send({ error: err.message, routeId: err.routeId });
         }
         throw err;
       }

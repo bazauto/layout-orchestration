@@ -4,6 +4,7 @@ import {
   TopologyRejectedError,
   EdgeNotFoundError,
   EdgeLimitExceededError,
+  LockedByRouteError,
 } from '../../../services/TopologyService';
 import { edgeCreateSchema, edgeUpdateSchema } from '../../../services/validation';
 import { requireAdmin } from '../auth/hook';
@@ -70,6 +71,9 @@ export async function edgeRoutes(
         if (err instanceof EdgeNotFoundError) {
           return reply.status(404).send({ error: err.message });
         }
+        if (err instanceof LockedByRouteError) {
+          return reply.status(409).send({ error: err.message, routeId: err.routeId });
+        }
         if (err instanceof TopologyRejectedError) {
           return reply.status(422).send({ error: err.message, violations: err.violations });
         }
@@ -88,6 +92,9 @@ export async function edgeRoutes(
       } catch (err) {
         if (err instanceof EdgeNotFoundError) {
           return reply.status(404).send({ error: err.message });
+        }
+        if (err instanceof LockedByRouteError) {
+          return reply.status(409).send({ error: err.message, routeId: err.routeId });
         }
         throw err;
       }

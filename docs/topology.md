@@ -861,6 +861,11 @@ in tests, no real `ReservationService` needed).
   cannot be traversed into reserved track because the target block is
   already locked.
 
+Every one of those refusals is a **409 carrying `{ error, routeId }`** on the
+wire. That is now true of the block and point deletes as well, which named the
+error here and mapped it in neither route — the refusal reached Fastify's
+default handler as a 500. See `docs/route-locking.md` D10.
+
 The interaction with the "edge writes stay permitted during Safe-Stop"
 rule above still holds, but a *suspended* reservation (not just `active`)
 still blocks the write, since `IRouteLockView` reports both. The operator
