@@ -458,30 +458,20 @@ export type GridDiagnostic =
       edge: TileEdge;
       against: { x: number; y: number };
     }
+  /**
+   * The only end-related diagnostic left (#103 PR 7). `end-unfinished`,
+   * `end-not-on-diagram`, `pinned-end-not-on-diagram` and
+   * `end-label-collision` were all findings about a stored `block_ends` row and
+   * cannot occur now; `block-without-detection` moved to the compile gaps,
+   * where it gates `auto` instead of merely advising.
+   */
   | {
       kind: 'buffer-contradicted-by-edge';
       severity: 'warning';
       blockId: string;
       label: string;
       edgeIds: string[];
-    }
-  | {
-      kind: 'end-unfinished';
-      severity: 'info';
-      blockId: string;
-      label: string;
-      at: { x: number; y: number };
-    }
-  | { kind: 'end-not-on-diagram'; severity: 'warning'; blockId: string; label: string }
-  | { kind: 'pinned-end-not-on-diagram'; severity: 'info'; blockId: string; label: string }
-  | {
-      kind: 'end-label-collision';
-      severity: 'warning';
-      blockId: string;
-      label: string;
-      at: Array<{ x: number; y: number }>;
-    }
-  | { kind: 'block-without-detection'; severity: 'info'; blockId: string };
+    };
 
 // ─── Compiled openings (#103, D-H) ─────────────────────────────────────────────
 

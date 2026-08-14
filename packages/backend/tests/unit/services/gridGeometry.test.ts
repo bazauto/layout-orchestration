@@ -15,7 +15,6 @@ import {
   compileOpenings,
   findBlockRuns,
   findUnjoinedEdges,
-  generateBlockEnds,
 } from '../../../src/services/gridGeometry';
 import { GridTileMetadata, TileType } from '../../../src/domain/types';
 
@@ -139,7 +138,7 @@ describe('findBlockRuns', () => {
  * along their whole length and connect nowhere, and before the fix every tile
  * of both read as an opening toward the other.
  */
-describe('generateBlockEnds — touching is not connecting (#91)', () => {
+describe('compileOpenings — touching is not connecting (#91)', () => {
   /** Two parallel single-row blocks, as ordinary as a layout gets: a two-road fiddle yard. */
   const parallelRoads = (): GeometryTile[] => [
     tile(0, 0, inBlock('b1')),
@@ -150,7 +149,7 @@ describe('generateBlockEnds — touching is not connecting (#91)', () => {
     tile(2, 1, inBlock('b2')),
   ];
 
-  const endsOf = (openings: ReturnType<typeof generateBlockEnds>['openings'], blockId: string) =>
+  const endsOf = (openings: ReturnType<typeof compileOpenings>, blockId: string) =>
     openings
       .filter((o) => o.blockId === blockId)
       .map((o) => ({ label: o.label, at: o.at }))
@@ -159,7 +158,7 @@ describe('generateBlockEnds — touching is not connecting (#91)', () => {
   it('gives each of two parallel roads its own two ends', () => {
     // Before the fix: one end per block, labelled `south`/`north`, sitting at
     // (1,0)/(1,1) — the middle of the siding — and the two real ends absent.
-    const { openings, collisions } = generateBlockEnds(parallelRoads());
+    const openings = compileOpenings(parallelRoads());
 
     expect(endsOf(openings, 'b1')).toEqual([
       { label: 'east', at: { x: 2, y: 0 } },
@@ -169,11 +168,12 @@ describe('generateBlockEnds — touching is not connecting (#91)', () => {
       { label: 'east', at: { x: 2, y: 1 } },
       { label: 'west', at: { x: 0, y: 1 } },
     ]);
-    expect(collisions).toEqual([]);
+    // Bare cardinals, not suffixed: each block has exactly one opening facing
+    // each way, so there is nothing to disambiguate.
   });
 
   it('does not open a block toward one it merely runs alongside', () => {
-    const { openings } = generateBlockEnds(parallelRoads());
+    const openings = compileOpenings(parallelRoads());
 
     // No drawn track crosses between the two rows, so neither block opens
     // north or south at all. This is the assertion the whole issue reduces to.
@@ -192,7 +192,7 @@ describe('generateBlockEnds — touching is not connecting (#91)', () => {
       tile(2, 1, inBlock('b2')),
     ];
 
-    const { openings } = generateBlockEnds(tiles);
+    const openings = compileOpenings(tiles);
     const b1 = openings.filter((o) => o.blockId === 'b1');
 
     expect(b1.find((o) => o.label === 'west')).toMatchObject({
@@ -212,7 +212,7 @@ describe('generateBlockEnds — touching is not connecting (#91)', () => {
       tile(0, 2, { blockId: 'b1', rotation: 90 }),
     ];
 
-    expect(endsOf(generateBlockEnds(tiles).openings, 'b1')).toEqual([
+    expect(endsOf(compileOpenings(tiles), 'b1')).toEqual([
       { label: 'north', at: { x: 0, y: 0 } },
       { label: 'south', at: { x: 0, y: 2 } },
     ]);
@@ -227,7 +227,7 @@ describe('generateBlockEnds — touching is not connecting (#91)', () => {
       tile(2, 0, { blockId: 'b2', rotation: 90 }),
     ];
 
-    const { openings } = generateBlockEnds(tiles);
+    const openings = compileOpenings(tiles);
 
     expect(openings.find((o) => o.blockId === 'b1' && o.label === 'east')).toBeDefined();
     expect(openings.some((o) => o.blockId === 'b2' && o.label === 'west')).toBe(false);
@@ -247,7 +247,7 @@ describe('generateBlockEnds — touching is not connecting (#91)', () => {
       tile(0, 1, inBlock('b2')),
     ];
 
-    const { openings } = generateBlockEnds(tiles);
+    const openings = compileOpenings(tiles);
 
     // The point tile opens toward the tile below it, and that tile opens back.
     expect(openings.some((o) => o.blockId === 'b1' && o.at.x === 2 && o.at.y === 0)).toBe(true);
@@ -255,7 +255,7 @@ describe('generateBlockEnds — touching is not connecting (#91)', () => {
   });
 
   it('never marks an open-air end as terminated', () => {
-    const { openings } = generateBlockEnds(parallelRoads());
+    const openings = compileOpenings(parallelRoads());
     expect(openings.every((o) => o.terminated === false)).toBe(true);
   });
 
@@ -265,7 +265,7 @@ describe('generateBlockEnds — touching is not connecting (#91)', () => {
     // suppresses `end-unfinished`, and once the b1→b2 edge is authored raises a
     // false `buffer-contradicted-by-edge`. It is unfinished until that edge
     // exists, and that is what it now says.
-    const { openings } = generateBlockEnds([
+    const openings = compileOpenings([
       tile(0, 0, inBlock('b1'), 'buffer'),
       tile(0, 1, inBlock('b1')),
       tile(1, 1, inBlock('b2')),
@@ -277,15 +277,14 @@ describe('generateBlockEnds — touching is not connecting (#91)', () => {
   });
 });
 
-describe('generateBlockEnds', () => {
+describe('compileOpenings — naming and clustering', () => {
   it('names the two ends of a straight block west and east', () => {
-    const { openings, collisions } = generateBlockEnds([
+    const openings = compileOpenings([
       tile(0, 0, inBlock('b1')),
       tile(1, 0, inBlock('b1')),
       tile(2, 0, inBlock('b1')),
     ]);
 
-    expect(collisions).toEqual([]);
     expect(openings.map((o) => o.label).sort()).toEqual(['east', 'west']);
     // The label lands on a tile of the block, so the editor can draw it
     // somewhere real rather than in the gap next to it.
@@ -294,7 +293,7 @@ describe('generateBlockEnds', () => {
   });
 
   it('finds an opening where one block hands over to another', () => {
-    const { openings } = generateBlockEnds([
+    const openings = compileOpenings([
       tile(0, 0, inBlock('b1')),
       tile(1, 0, inBlock('b1')),
       tile(2, 0, inBlock('b2')),
@@ -314,7 +313,7 @@ describe('generateBlockEnds', () => {
   it('finds an opening onto decorative track, which is where a block hands over to undetected rails', () => {
     // The Westgate Hollow entry feeder: plain track the system neither detects
     // nor reserves. The block still has an end there.
-    const { openings } = generateBlockEnds([
+    const openings = compileOpenings([
       tile(0, 0, inBlock('b1')),
       tile(1, 0, inBlock('b1')),
       tile(2, 0, { trackRole: 'decorative' }),
@@ -324,7 +323,7 @@ describe('generateBlockEnds', () => {
   });
 
   it('marks an end terminated when a buffer tile sits at it', () => {
-    const { openings } = generateBlockEnds([
+    const openings = compileOpenings([
       tile(0, 0, inBlock('b1')),
       tile(1, 0, inBlock('b1')),
       tile(2, 0, inBlock('b1'), 'buffer'),
@@ -338,10 +337,16 @@ describe('generateBlockEnds', () => {
     expect(openings.find((o) => o.label === 'west')!.terminated).toBe(false);
   });
 
-  it('refuses to name two separate openings that face the same way', () => {
+  it('suffixes two separate openings that face the same way, rather than refusing both', () => {
     // One block drawn as two parallel roads — each opens west to the throat
     // and east to its buffer, from two different places.
-    const { openings, collisions } = generateBlockEnds([
+    //
+    // `generateBlockEnds` named **neither**, because the label was an
+    // identifier a later edge would be typed against and a guessed `east_2`
+    // gets typed wrong. The cost was that a real, drawn, trafficable opening
+    // became unreferenceable: naming failure was routing failure, which is the
+    // whole of #103. A disposable label may be guessed at freely.
+    const openings = compileOpenings([
       tile(0, 0, inBlock('b1')),
       tile(1, 0, inBlock('b1')),
       tile(2, 0, inBlock('b1'), 'buffer'),
@@ -350,18 +355,23 @@ describe('generateBlockEnds', () => {
       tile(2, 4, inBlock('b1'), 'buffer'),
     ]);
 
-    // Refusing beats suffixing: `east_2` is exactly the kind of name that gets
-    // typed wrong later in an edge, and the manual override exists for this.
-    expect(collisions.map((c) => c.label).sort()).toEqual(['east', 'west']);
-    expect(collisions.find((c) => c.label === 'east')!.at).toHaveLength(2);
-    expect(openings).toEqual([]);
+    expect(openings.map((o) => o.label).sort()).toEqual([
+      'east-1',
+      'east-2',
+      'west-1',
+      'west-2',
+    ]);
+    // Ordered by the cluster's own (y, x), so a redraw that does not move these
+    // openings does not renumber them either.
+    expect(openings.find((o) => o.label === 'west-1')!.at).toEqual({ x: 0, y: 0 });
+    expect(openings.find((o) => o.label === 'west-2')!.at).toEqual({ x: 0, y: 4 });
   });
 
   it('collapses a multi-cell handover face into a single end', () => {
     // b1 meets b2 along three cells. The railway has one opening there; three
     // generated labels for it would be worse than none, because an edge would
     // then reference a name for a place that does not exist.
-    const { openings, collisions } = generateBlockEnds([
+    const openings = compileOpenings([
       tile(0, 0, inBlock('b1')),
       tile(0, 1, inBlock('b1')),
       tile(0, 2, inBlock('b1')),
@@ -369,8 +379,6 @@ describe('generateBlockEnds', () => {
       tile(1, 1, inBlock('b2')),
       tile(1, 2, inBlock('b2')),
     ]);
-
-    expect(collisions).toEqual([]);
 
     // The single-end-per-face rule is what this test is for, and it holds: one
     // `east` on b1 and one `west` on b2, not three of each.
@@ -414,21 +422,6 @@ describe('generateBlockEnds', () => {
     ).toEqual([]);
   });
 
-  it('produces nothing for a layout with no block-tagged tiles', () => {
-    expect(generateBlockEnds([tile(0, 0, {}), tile(1, 0, { trackRole: 'decorative' })])).toEqual({
-      openings: [],
-      collisions: [],
-    });
-  });
-
-  it('is deterministic across input order, so labels do not shuffle between reloads', () => {
-    const tiles = [
-      tile(0, 0, inBlock('b1')),
-      tile(1, 0, inBlock('b1')),
-      tile(2, 0, inBlock('b2')),
-    ];
-    expect(generateBlockEnds(tiles)).toEqual(generateBlockEnds([...tiles].reverse()));
-  });
 });
 
 /**
@@ -490,15 +483,14 @@ describe('compileOpenings', () => {
   };
 
   it('names Westgate Hollow’s colliding pair southeast-1 / southeast-2, ordered by (y, x)', () => {
-    // Under generateBlockEnds this pair is a collision and neither is named
-    // at all — the whole reason #103 exists. Confirm the old refusal is still
-    // there (this is the fixture #72's own test suite would raise it on)
-    // before confirming the new function resolves it.
-    const { collisions } = generateBlockEnds(engineGoodsTransfer());
-    expect(collisions).toContainEqual(
-      expect.objectContaining({ label: 'southeast' }),
-    );
-
+    // Two openings at 118.5° and 134.7° from the run's centroid, both rounding
+    // to `southeast`. `generateBlockEnds` named **neither** — a collision — so
+    // no edge could reference either, and the block's whole south-east face was
+    // unroutable. That is the failure #103 is named after, and this is the
+    // fixture it happened on, not a stand-in.
+    //
+    // Both are named now, and the applied live graph routes through both:
+    // `southeast-1` to the engine sheds, `southeast-2` to the goods shed.
     const openings = compileOpenings(engineGoodsTransfer());
     const blockId = 'aedae611-310e-4f43-96e9-b07f3a6d9e87';
     const southeast = openings.filter((o) => o.blockId === blockId && o.label.startsWith('southeast'));
@@ -532,11 +524,10 @@ describe('compileOpenings', () => {
       tile(1, 1, inBlock('b1')),
     ];
 
-    // Confirm the premise: generateBlockEnds' bearingLabel path really does
-    // return null here, i.e. this fixture is not accidentally testing
-    // something else. bearingLabel(0, 0) === null is covered above; here the
-    // whole opening — the one whose cluster mean lands exactly on centroid —
-    // must survive compileOpenings when it would not survive the old walk.
+    // The premise is `bearingLabel(0, 0) === null`, covered in its own describe
+    // above. What matters here is that the opening whose cluster mean lands
+    // exactly on the centroid **survives**: the old walk dropped it, so a real
+    // opening was invisible for want of a bearing.
     const openings = compileOpenings(tiles);
     expect(openings).toHaveLength(4); // one per raw directional cluster — none merged away
 
@@ -546,7 +537,7 @@ describe('compileOpenings', () => {
     expect(fromZeroBearing).toMatchObject({ label: 'south', at: { x: 0, y: 0 } });
   });
 
-  it('is stable across input permutation, like generateBlockEnds', () => {
+  it('is stable across input permutation, so labels do not shuffle between reloads', () => {
     const tiles = engineGoodsTransfer();
     expect(compileOpenings(tiles)).toEqual(compileOpenings([...tiles].reverse()));
   });

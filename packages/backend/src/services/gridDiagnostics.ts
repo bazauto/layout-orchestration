@@ -35,7 +35,6 @@
 import {
   AnnotationEntityType,
   BlockEdge,
-  BlockEnd,
   BlockId,
   PointId,
   TileEdge,
@@ -43,9 +42,8 @@ import {
   depictsPoint,
 } from '../domain/types';
 import {
-  BlockOpening,
+  CompiledOpening,
   Coordinate,
-  EndLabelCollision,
   GeometryTile,
   UnjoinedEdge,
 } from './gridGeometry';
@@ -85,30 +83,28 @@ export type GridDiagnostic =
       edge: TileEdge;
       against: Coordinate;
     }
-  /** #84 — a buffer says this end is finished; an edge says track continues. One of them is wrong. */
+  /**
+   * #84 — a buffer says this opening is finished; a live edge says track
+   * continues through it. One of them is wrong (OQ3).
+   *
+   * The **only** end-related diagnostic left, and the only one that could
+   * survive #103: it compares two representations that still both exist — the
+   * drawing, and the `block_edges` a past compile wrote. Everything else in
+   * this family compared the drawing against `block_ends`, which is gone.
+   *
+   * Note what it now catches that it could not before. The graph is a snapshot
+   * of some earlier compile; drawing a buffer across an opening that graph
+   * routes through is exactly the drift a stale graph produces, and it is
+   * visible here before anyone recompiles. `docs/topology.md`'s staleness
+   * warning says the graph is behind; this says where.
+   */
   | {
       kind: 'buffer-contradicted-by-edge';
       severity: 'warning';
       blockId: BlockId;
       label: string;
       edgeIds: string[];
-    }
-  /** #84 — no edges and no buffer: an edge nobody has authored yet, now distinguishable from a deliberate dead end. */
-  | { kind: 'end-unfinished'; severity: 'info'; blockId: BlockId; label: string; at: Coordinate }
-  /** #72 — an end an edge references, with no opening on the drawing to put it at. */
-  | { kind: 'end-not-on-diagram'; severity: 'warning'; blockId: BlockId; label: string }
-  /** #92 — a *pinned* end with no opening and nothing referencing it yet. Authored deliberately, so its absence from the drawing is worth saying before an edge depends on it. */
-  | { kind: 'pinned-end-not-on-diagram'; severity: 'info'; blockId: BlockId; label: string }
-  /** #72 — two openings of one block face the same way, so the generator refused to name either. */
-  | {
-      kind: 'end-label-collision';
-      severity: 'warning';
-      blockId: BlockId;
-      label: string;
-      at: Coordinate[];
-    }
-  /** #74 — a block no sensor reports on. Its occupancy can only ever be `unknown`. */
-  | { kind: 'block-without-detection'; severity: 'info'; blockId: BlockId };
+    };
 
 export interface DiagnosticsInput {
   tiles: readonly GeometryTile[];
@@ -118,9 +114,8 @@ export interface DiagnosticsInput {
   points: readonly { id: string }[];
   sensors: readonly { id: string; blockId: string | null; inService: boolean }[];
   edges: readonly BlockEdge[];
-  ends: readonly BlockEnd[];
-  openings: readonly BlockOpening[];
-  collisions: readonly EndLabelCollision[];
+  /** Compiler output (D8), not stored rows: every drawn opening, named, none refused. */
+  openings: readonly CompiledOpening[];
   /** #91 — places one tile's drawn track runs into another that draws nothing back. */
   unjoined: readonly UnjoinedEdge[];
 }
@@ -138,8 +133,7 @@ export function runGridDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
   out.push(...tileDiagnostics(input));
   out.push(...unjoinedDiagnostics(input));
   out.push(...annotationDiagnostics(input));
-  out.push(...endDiagnostics(input));
-  out.push(...detectionDiagnostics(input));
+  out.push(...openingDiagnostics(input));
 
   return out.sort(
     (a, b) =>
@@ -284,16 +278,39 @@ function annotationDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
 }
 
 /**
- * The #84 checks, plus #72's two visibility ones.
+ * #84's one surviving check, re-expressed over compiled openings (OQ3).
  *
- * The useful direction is the reverse of the obvious one. A block end with no
- * outgoing edges is ambiguous today: either a deliberate dead end or an edge
- * nobody has authored. A buffer resolves it — "this end is finished" versus
- * "this end is still to do" — and the buffers are already drawn.
+ * ## What went, and why it is not a loss
+ *
+ * `end-not-on-diagram`, `pinned-end-not-on-diagram` and `end-label-collision`
+ * were all findings about `block_ends`: a stored name with no drawn opening, a
+ * deliberately pinned one likewise, and two openings the generator refused to
+ * name. None of those states can exist now. A label is derived from the drawing
+ * on every compile, so it cannot outlive the geometry it describes, cannot be
+ * pinned, and cannot be refused — `compileOpenings` disambiguates by suffix
+ * (D8/D-I).
+ *
+ * `end-unfinished` — an opening with no edge and no buffer — is the one whose
+ * *check* mattered, and it was promoted rather than deleted (OQ4). It is the
+ * compile gap `opening-unresolved`, which is strictly stronger: a gap refuses
+ * `auto`, and an `info` diagnostic refused nothing.
+ *
+ * `block-without-detection` moved the same way, and had to. It was here as
+ * `info` and is a compile gap as well; two findings for one fact, with two
+ * severities and only one of them gating, is precisely the duplication this
+ * issue exists to end. The gap is the one that matters — D9's argument that an
+ * unverifiable point mapping is caught on first movement depends entirely on
+ * the wrong block being detected.
+ *
+ * ## What is left, and why it belongs here rather than in the compiler
+ *
+ * A buffer contradicted by a live edge is a **drawing-versus-graph**
+ * disagreement, and the compiler has no opinion about the stored graph — it
+ * emits a candidate. This is the last place those two artefacts are compared
+ * outside the diff, and it stays `warning` for the reason the severity rule
+ * gives: two representations disagree.
  */
-function endDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
-  const out: GridDiagnostic[] = [];
-
+function openingDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
   const edgesByEnd = new Map<string, string[]>();
   for (const edge of input.edges) {
     for (const k of [`${edge.fromBlockId} ${edge.fromEnd}`, `${edge.toBlockId} ${edge.toEnd}`]) {
@@ -303,106 +320,42 @@ function endDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
     }
   }
 
-  const openingByEnd = new Map(input.openings.map((o) => [`${o.blockId} ${o.label}`, o]));
+  const out: GridDiagnostic[] = [];
 
-  for (const end of input.ends) {
-    const k = `${end.blockId} ${end.label}`;
-    const edgeIds = edgesByEnd.get(k) ?? [];
-    const opening = openingByEnd.get(k);
+  for (const opening of input.openings) {
+    if (!opening.terminated) continue;
 
-    if (!opening) {
-      // An end an edge depends on, with nowhere on the drawing to sit: the two
-      // representations disagree about something load-bearing.
-      if (edgeIds.length > 0) {
-        out.push({
-          kind: 'end-not-on-diagram',
-          severity: 'warning',
-          blockId: end.blockId,
-          label: end.label,
-        });
-        continue;
-      }
+    // Keyed on `(blockId, label)` — the same tuple `block_edges` carries. A
+    // compiled label matches a stored edge only when the drawing has not moved
+    // since that edge was written, which is the point: a label that no longer
+    // matches produces no finding here, and staleness is reported as staleness
+    // rather than as a phantom contradiction.
+    const edgeIds = edgesByEnd.get(`${opening.blockId} ${opening.label}`) ?? [];
+    if (edgeIds.length === 0) continue;
 
-      // Nothing references it yet — but it was **pinned**, which is an explicit
-      // assertion that this end outranks geometry permanently (#72). That is a
-      // different thing from a generated end, which always has an opening by
-      // construction, and it is worth saying before an edge is authored against
-      // a name the drawing does not place anywhere (#92).
-      //
-      // `info`, not `warning`: authoring an end ahead of the track it names is a
-      // legitimate work order, and the whole severity rule here is that an
-      // unfinished layout is a normal state.
-      if (end.pinned) {
-        out.push({
-          kind: 'pinned-end-not-on-diagram',
-          severity: 'info',
-          blockId: end.blockId,
-          label: end.label,
-        });
-      }
-      continue;
-    }
-
-    if (opening.terminated && edgeIds.length > 0) {
-      out.push({
-        kind: 'buffer-contradicted-by-edge',
-        severity: 'warning',
-        blockId: end.blockId,
-        label: end.label,
-        edgeIds: [...edgeIds].sort(),
-      });
-    }
-
-    if (!opening.terminated && edgeIds.length === 0) {
-      out.push({
-        kind: 'end-unfinished',
-        severity: 'info',
-        blockId: end.blockId,
-        label: end.label,
-        at: opening.at,
-      });
-    }
-  }
-
-  for (const collision of input.collisions) {
     out.push({
-      kind: 'end-label-collision',
+      kind: 'buffer-contradicted-by-edge',
       severity: 'warning',
-      blockId: collision.blockId,
-      label: collision.label,
-      at: collision.at,
+      blockId: opening.blockId,
+      label: opening.label,
+      edgeIds: [...edgeIds].sort(),
     });
   }
 
   return out;
 }
 
-/**
- * #74's third stated goal: spot a block with no detection at all.
+/*
+ * `detectionDiagnostics` was here. `block-without-detection` is a **compile
+ * gap** now (D7/D9) and only there: it was reported in both places, as `info`
+ * here and as a gap that refuses `auto` there, which is one fact wearing two
+ * severities. The gap is the one that has to win — D9's argument that an
+ * unverifiable point mapping is caught on first movement rests entirely on the
+ * wrong block being detected, and an advisory `info` line never rested on
+ * anything.
  *
- * Out-of-service sensors do not count — an out-of-service sensor contributes
- * nothing to derived occupancy (`docs/sensor-fault-recovery.md` D3), so a
- * block covered only by one is, for occupancy purposes, uncovered.
+ * The reasoning it carried is not lost: out-of-service sensors do not count,
+ * because an out-of-service sensor contributes nothing to derived occupancy
+ * (`docs/sensor-fault-recovery.md` D3), so a block covered only by one is for
+ * occupancy purposes uncovered. `compileTrackGraph` applies exactly that test.
  */
-function detectionDiagnostics(input: DiagnosticsInput): GridDiagnostic[] {
-  const covered = new Set(
-    input.sensors.filter((s) => s.inService && s.blockId).map((s) => s.blockId!),
-  );
-
-  // Only blocks that are actually drawn: a block row created in the Configure
-  // screen and not yet placed on the diagram is unfinished authoring of a
-  // different kind, and #71's unclassified-tile list already covers that end
-  // of it.
-  const drawn = new Set(
-    input.tiles.map((t) => t.metadata.blockId).filter((id): id is string => id !== undefined),
-  );
-
-  return [...drawn]
-    .filter((blockId) => !covered.has(blockId))
-    .sort()
-    .map((blockId) => ({
-      kind: 'block-without-detection' as const,
-      severity: 'info' as const,
-      blockId,
-    }));
-}

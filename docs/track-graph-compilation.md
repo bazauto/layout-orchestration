@@ -11,12 +11,12 @@ label stopped being an identifier, so naming could no longer fail routing.
 |---|---|
 | D4, D5 — length on blocks, joints zero | **shipped** (#105) |
 | D6, D7 — partial graph, completeness contract | **shipped**, and now gating: a gap refuses `auto` **and `hybrid`**, and drops an automatic mode to `manual` when the graph changes underneath it. Staleness warns and never gates |
-| D8 — disposable end labels | **shipped** in `compileOpenings`; `block_ends` still exists alongside |
+| D8 — disposable end labels | **shipped**: `compileOpenings` is the only source of a label, and there is no longer a table for one to be stored in |
 | D9 — a compile cannot Safe-Stop | **shipped**: refuse-then-write in `replaceGraph`, asserted at unit, integration and scenario level |
 | D10 — fingerprint | **shipped**: `compiled_graphs`, `GET .../topology/compile`, and the apply's mismatch 409 |
 | D3 — the compiler owns the edge set | **shipped**, and now literally true: `POST`/`PUT`/`DELETE .../edges` and `TopologyService.createEdge`/`updateEdge`/`deleteEdge` are deleted (PR 5, OQ1), so `replaceGraph` is the only writer |
 | D1 — compile under operator review | **shipped**: `CompilePanel` on Configure → Edges — gaps first, then the diff, one `Apply`, and a 409 that says re-compile rather than retrying |
-| D2 — `block_ends` deleted | **started**: the Track Editor no longer reads or writes it (PR 6.2 — `Ends ⟳`, `Ends ✎`, `BlockEndsPanel` and `useBlockEnds` are gone). The table, `BlockEndService` and its routes are still there, called by nothing in the browser, and PR 7 removes them |
+| D2 — `block_ends` deleted | **shipped** (PR 7): the table (`0010_drop_block_ends.sql`), `BlockEndService`, its routes, six repository methods, `generateBlockEnds`, and four of the five end-related grid diagnostics. `buffer-contradicted-by-edge` survives, re-expressed over compiled openings (OQ3); `block-without-detection` became a compile gap |
 
 This document records a design decision. Most of it is now shipped behaviour;
 the table above says which parts. It supersedes #72 (block ends) and #78 (edge
@@ -39,8 +39,10 @@ duplicated `findBlockRuns` and `TILE_LEGS` — existed to keep those two
 descriptions in agreement. Forever. There was no end state in which that
 machinery was finished.
 
-(`edgeProposals` is gone as of PR 5 and its walk is the compiler's; the rest of
-that list is still standing. The point of the sentence is unchanged until PR 7.)
+(All of it is gone as of PR 7 except `gridGeometry`'s opening derivation, which
+is now the *only* derivation rather than one of two, and the duplicated
+`findBlockRuns`/`TILE_LEGS`, which #75 owns. There is one description of the
+railway's connectivity now, so there is nothing left to keep in agreement.)
 
 Underneath that sits a sharper fault. **`block_ends.label` does two
 incompatible jobs at once:**
@@ -91,7 +93,7 @@ are untouched — see D9.
 a human" is trivially auditable. It becomes "one process writes `block_edges`,
 only when an operator presses a button, having reviewed the diff, and only if
 the whole graph validates". That is weaker, and it is the same class of
-operation as `Ends ⟳`, which already bulk-writes `block_ends` today.
+operation as `Ends ⟳` was, which bulk-wrote `block_ends`.
 
 ## D2 — The edge is the durable object; an opening is compiler output
 

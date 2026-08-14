@@ -23,8 +23,6 @@ import { sensorRoutes } from './routes/sensors';
 import { gridRoutes } from './routes/grid';
 import { GridService } from '../../services/GridService';
 import { CompileService } from '../../services/CompileService';
-import { blockEndRoutes } from './routes/blockEnds';
-import { BlockEndService } from '../../services/BlockEndService';
 import { edgeRoutes } from './routes/edges';
 import { topologyRoutes } from './routes/topology';
 import { routeRoutes } from './routes/routes';
@@ -105,11 +103,6 @@ export async function buildServer(
   // referential checks a Zod schema cannot express live in a service rather
   // than in the route callback.
   await gridRoutes(fastify, new GridService(repo), compileService);
-  // Same reasoning as `GridService`: stateless, repository-only. `block_ends`
-  // is topology-adjacent but is not the graph — it names openings, and
-  // `TopologyService` is deliberately not involved so that an end label can
-  // never refuse an edge write (#72).
-  await blockEndRoutes(fastify, new BlockEndService(repo));
   await edgeRoutes(fastify, topologyService);
   await topologyRoutes(fastify, layoutService, topologyService, compileService);
   await routeRoutes(fastify, layoutService);

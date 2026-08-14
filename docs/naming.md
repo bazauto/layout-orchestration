@@ -166,6 +166,21 @@ not just the with-a-book path. The D7 wording fixes (plural/delimiter) are
 part of the degradation contract and apply whether or not a book is
 supplied.
 
+### An end label needs no book, by construction (#103)
+
+D8's degradation contract is about ids, which are UUIDs and unreadable without a
+book. An end label never was: `north`, `southeast-1`. It carried a name already.
+
+That is now guaranteed rather than incidental. Since #103 PR 7 a label is
+derived from the drawing by `compileOpenings` — an 8-point cardinal, suffixed
+`-1`…`-n` where a block opens the same way twice — so there is no id to resolve
+and no book to miss. `describeConnection` and the compile diff render
+`Fiddle Yard 1 : east` with the block id looked up and the label used verbatim.
+
+`BlockEndService` used to be the counter-example: a hand-authored label could be
+anything, including something meaningless. It is deleted, and the vocabulary is
+closed.
+
 ## D9 — Render time vs. generation time
 
 `reservation.reason`, `RouteFault.reason`, `SensorFault.reason`, and

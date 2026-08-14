@@ -8,7 +8,6 @@ import { z } from 'zod';
 import {
   ANNOTATION_ENTITY_TYPES,
   BlockEdge,
-  BlockEnd,
   GridTileMetadata,
   MAX_TILE_ANNOTATIONS,
   PointCondition,
@@ -606,83 +605,20 @@ export const gridTileCoordinateQuerySchema = z
   })
   .strict();
 
-// ─── Block Ends (#72, see docs/topology.md) ────────────────────────────────
-
-/**
- * Full-row schema for a `block_ends` DB row. Same posture as
- * `blockEdgeRowSchema`: no coercion, no defaults, no `.catch()`.
+/*
+ * `blockEndRowSchema`, `parseBlockEndRow`, `BlockEndRowInvalidError`,
+ * `blockEndCreateSchema` and `blockEndUpdateSchema` were here, and went with
+ * the table (#103 PR 7).
  *
- * `label` is checked against `blockEndLabelSchema` — the same pattern
- * `block_edges.from_end` is held to — because the whole value of this table is
- * that the two vocabularies are the same one. A row failing it did not come
- * through the API.
- */
-export const blockEndRowSchema = z.object({
-  id: z.string().min(1),
-  layoutId: z.string().min(1),
-  blockId: z.string().min(1),
-  label: blockEndLabelSchema,
-  pinned: z.boolean(),
-});
-
-/** Thrown by `parseBlockEndRow` when a `block_ends` row fails validation. */
-export class BlockEndRowInvalidError extends Error {
-  readonly rowId: string;
-  readonly issues: z.ZodIssue[];
-
-  constructor(rowId: string, issues: z.ZodIssue[]) {
-    super(`block_ends row ${rowId} failed validation: ${issues.map((i) => i.message).join('; ')}`);
-    this.name = 'BlockEndRowInvalidError';
-    this.rowId = rowId;
-    this.issues = issues;
-  }
-}
-
-/**
- * Parses a raw `block_ends` DB row into a domain `BlockEnd`.
+ * `blockEndLabelSchema` above **stays**. It is still the shape of
+ * `block_edges.fromEnd`/`toEnd` on read, `routeCreateSchema` still accepts a
+ * `startExitEnd`, and it is what makes the compiler's disambiguated
+ * `southeast-1` a legal label rather than a lucky one.
  *
- * Note what this being corruption does **not** mean here. A bad `block_edges`
- * row Safe-Stops the layout, because the pathfinder plans on it. A bad
- * `block_ends` row surfaces on an admin config screen, because nothing routes
- * on a name — the error propagates to the route handler as a 500 and the
- * layout keeps running. Same parsing posture, deliberately different blast
- * radius.
+ * Nothing replaces the row parser: there is no row. A label is produced by
+ * `compileOpenings` from the drawing, validated by the type system on the way
+ * into `replaceGraph`, and re-derived on the next compile.
  */
-export function parseBlockEndRow(row: unknown): BlockEnd {
-  const parsed = blockEndRowSchema.safeParse(row);
-  if (!parsed.success) {
-    throw new BlockEndRowInvalidError(extractRowId(row), parsed.error.issues);
-  }
-  return parsed.data;
-}
-
-/**
- * Write schema for creating a block end by hand (`POST .../block-ends`).
- *
- * A hand-created end is pinned by definition — you only reach this route to
- * name something the generator got wrong or cannot see — so there is no
- * `pinned` field to set. Same normalisation as `edgeCreateSchema`: trimmed and
- * lower-cased before the slug check, so `' North '` becomes `'north'` rather
- * than being rejected, and a block never ends up with `'north'` and `'North'`
- * as two distinct ends.
- */
-export const blockEndCreateSchema = z
-  .object({
-    blockId: z.string().min(1),
-    label: z.string().trim().toLowerCase().pipe(blockEndLabelSchema),
-  })
-  .strict();
-
-export type BlockEndCreateInput = z.infer<typeof blockEndCreateSchema>;
-
-/** Write schema for renaming a block end (`PUT .../block-ends/:endId`). Renaming pins it — see `BlockEndService`. */
-export const blockEndUpdateSchema = z
-  .object({
-    label: z.string().trim().toLowerCase().pipe(blockEndLabelSchema),
-  })
-  .strict();
-
-export type BlockEndUpdateInput = z.infer<typeof blockEndUpdateSchema>;
 
 // ─── Route Reservations ────────────────────────────────────────────────────
 //

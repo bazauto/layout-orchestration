@@ -36,8 +36,7 @@
 
 import { ILayoutRepository } from '../ports/ILayoutRepository';
 import { BlockEdge, LayoutId, PointCondition } from '../domain/types';
-import { parseTileMetadata } from './validation';
-import { Coordinate, CompiledOpening, GeometryTile, compileOpenings } from './gridGeometry';
+import { Coordinate, CompiledOpening, GeometryTile, compileOpenings, readDrawing } from './gridGeometry';
 import { LayoutNotFoundError } from './GridService';
 import { TopologyService } from './TopologyService';
 import {
@@ -249,30 +248,15 @@ export class CompileService {
     return { report: compileTrackGraph(input), live };
   }
 
+  /**
+   * Shared with `GridService.diagnose` since #103 PR 7 — see
+   * `gridGeometry.ts#readDrawing` for why the tolerant parse and the `raw`
+   * blob are both part of the contract.
+   */
   private async readDrawing(
     layoutId: LayoutId,
   ): Promise<{ tiles: GeometryTile[]; unreadable: { at: Coordinate; raw: string }[] }> {
-    const rows = await this.repo.listGridTiles(layoutId);
-
-    const tiles: GeometryTile[] = [];
-    const unreadable: { at: Coordinate; raw: string }[] = [];
-
-    for (const row of rows) {
-      const parsed = parseTileMetadata(row.metadata);
-      // `ok`, not a catch: `parseTileMetadata` degrades rather than throwing.
-      // The raw blob rides along so that repairing corruption moves the
-      // fingerprint like any other edit, and so two different corruptions do
-      // not hash identically (D-G).
-      if (!parsed.ok) unreadable.push({ at: { x: row.x, y: row.y }, raw: row.metadata });
-      tiles.push({
-        x: row.x,
-        y: row.y,
-        tileType: row.tileType as GeometryTile['tileType'],
-        metadata: parsed.metadata,
-      });
-    }
-
-    return { tiles, unreadable };
+    return readDrawing(await this.repo.listGridTiles(layoutId));
   }
 
   private async statusOf(

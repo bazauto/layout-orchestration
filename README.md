@@ -342,8 +342,10 @@ includes the two south-east openings of `Engine / Goods Transfer` that the old g
 refused to name and therefore left unroutable — the compiler disambiguates them by suffix
 and both carry edges. Distance is not compiled and never could be — length lives on the
 block (#105), edited in Configure → Blocks and left blank where nobody has run a tape over
-it. `block_ends` still exists alongside as a legacy table, read by nothing but its own
-diagnostics, and is deleted next.
+it. `block_ends` is deleted, along with its service, its routes and four of the five
+end-related diagnostics — an opening's name is derived from the drawing on every compile
+and referenced by nothing between compiles, so there is nothing to store and nothing to
+keep in agreement.
 A block's openings come from where its **drawn track leaves the run** — tile type and
 rotation — not from which cells sit next to each other, so two yard roads drawn side by
 side no longer read as opening into one another (#91). The advisory half of all of it is
@@ -410,9 +412,9 @@ safety preamble in `docs/sensor-simulation.md`.
 
 ## Next Milestones
 
-1. Finish #103: delete `block_ends`, `BlockEndService` and its routes, leaving the
-   compiler as the only description of the railway's connectivity
-2. Per-loco braking model (#6) and collision avoidance (#7)
-3. Point position confirmation (#25)
-4. Automation engine / schedules
+1. Per-loco braking model (#6) and collision avoidance (#7)
+2. Point position confirmation (#25)
+3. Automation engine / schedules
+4. One shared geometry renderer for the editor and the monitor view (#75), which is the
+   last hand-maintained duplication in this area
 5. Hardware validation and operator workflows

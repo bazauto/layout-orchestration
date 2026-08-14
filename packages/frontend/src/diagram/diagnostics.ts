@@ -68,22 +68,7 @@ export function describeDiagnostic(d: GridDiagnostic, names: DiagnosticNames): s
       return `Track at ${at(d.at)} is drawn leaving through its ${EDGE_NAMES[d.edge]} side, but the tile at ${at(d.against)} has nothing meeting it. The block ends at that edge.`;
 
     case 'buffer-contradicted-by-edge':
-      return `Block ${named(d.blockId, names.blocks)} end '${d.label}' has a buffer stop, but ${d.edgeIds.length} edge(s) leave it. The drawing and the track graph disagree.`;
-
-    case 'end-unfinished':
-      return `Block ${named(d.blockId, names.blocks)} end '${d.label}' at ${at(d.at)} has no edges and no buffer — an edge still to author, or a buffer still to draw.`;
-
-    case 'end-not-on-diagram':
-      return `Block ${named(d.blockId, names.blocks)} end '${d.label}' is referenced by edges but has nowhere on the drawing to sit.`;
-
-    case 'pinned-end-not-on-diagram':
-      return `Block ${named(d.blockId, names.blocks)} end '${d.label}' is pinned but has no opening on the drawing — draw the track it names, or delete it before an edge depends on it.`;
-
-    case 'end-label-collision':
-      return `Block ${named(d.blockId, names.blocks)} has two openings facing '${d.label}' (${atList(d.at)}). Name one of them by hand — the generator will not guess.`;
-
-    case 'block-without-detection':
-      return `Block ${named(d.blockId, names.blocks)} is drawn but no in-service sensor reports on it, so its occupancy can only ever be unknown.`;
+      return `Block ${named(d.blockId, names.blocks)} opening '${d.label}' has a buffer stop, but ${d.edgeIds.length} edge(s) in the track graph leave it. The drawing and the graph disagree — recompile in Configure → Edges, or redraw the buffer.`;
   }
 }
 
@@ -116,7 +101,6 @@ export function diagnosticCoordinate(d: GridDiagnostic): { x: number; y: number 
     case 'dangling-tile-reference':
     case 'point-tile-unmapped':
     case 'diamond-blind-spot':
-    case 'end-unfinished':
       return d.at;
 
     // Two cells, and the jump goes to `at` rather than `against`: `at` is the
@@ -128,13 +112,12 @@ export function diagnosticCoordinate(d: GridDiagnostic): { x: number; y: number 
     // A list of coordinates — the first is as good a place to jump to as any
     // of the others, since they are all the same duplicated placement.
     case 'duplicate-annotation':
-    case 'end-label-collision':
       return d.at[0] ?? null;
 
+    // Names a block opening, not a cell. The opening spans boundaries and the
+    // label sits wherever the compiler put it; jumping to one of those would be
+    // a button that lands somewhere arbitrary, which is worse than no button.
     case 'buffer-contradicted-by-edge':
-    case 'end-not-on-diagram':
-    case 'pinned-end-not-on-diagram':
-    case 'block-without-detection':
       return null;
   }
 }
