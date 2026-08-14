@@ -146,14 +146,23 @@ test('a 400 with Zod field errors renders the actionable message, not the generi
   await expect(page.getByText('Invalid user payload', { exact: true })).toHaveCount(0);
 });
 
-test('as operator, the Users tab is not rendered', async ({ page }) => {
+test('as operator, the Configure and Track Editor nav entries are absent (#61)', async ({ page }) => {
+  // Supersedes the old "Users tab is not rendered" case: that assertion
+  // walked past five authoring tabs (Blocks, Sensors, Points, Locos, Edges)
+  // an operator has no write access to just to reach Users. docs/auth.md's
+  // "Operator UI scope" decision hides the whole Configure and Track Editor
+  // nav entries for a non-admin, not just the Users tab within Configure —
+  // so `openConfigureScreen` (which clicks a "Configure" button) no longer
+  // applies here; there is nothing to click into.
   await installMockAuth(page, { role: 'operator' });
   await installMockWebSocket(page);
   await stubConfigApis(page);
 
-  await openConfigureScreen(page);
+  await page.goto('/');
 
-  await expect(page.getByRole('button', { name: /^Users/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Operate' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Configure' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Track Editor' })).toHaveCount(0);
 });
 
 test('as operator, the change-password control is reachable and a successful change returns to the login screen', async ({ page }) => {
