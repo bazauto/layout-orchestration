@@ -1,6 +1,11 @@
 # Compiling the track graph from the drawing
 
-**Status: accepted 2026-08-13. Part built.**
+**Status: accepted 2026-08-13. Mostly built, and applied to the live layout on
+2026-08-14** — Westgate Hollow's 90 tiles and 9 blocks compiled to 22 edges in
+one connected component with no gaps, reviewed as a diff and applied. The
+`end-label-collision` at `Engine / Goods Transfer` carries edges through both of
+its south-east openings, which is this document's central claim discharged: the
+label stopped being an identifier, so naming could no longer fail routing.
 
 | Decision | State |
 |---|---|

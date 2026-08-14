@@ -148,7 +148,16 @@ The interaction reasoning that panel established outlived it and is recorded in
 `docs/track-editor.md` D12: a list of ordinary controls rather than a click on a
 label drawn on a `role="application"` canvas, and one shared `jumpToCell`.
 
-### Known limit: an end the generator refused to name cannot be placed
+### Known limit (closed in the graph, open in `block_ends`): an end the generator refused to name
+
+> **Resolved where it mattered, 2026-08-14.** Everything below still describes
+> `generateBlockEnds` and `block_ends` accurately, and both still exist. It no
+> longer describes the **track graph**: the applied compile carries
+> `Engine / Goods Transfer:southeast-1 → Engine Shed 1/2` and
+> `southeast-2 → Goods Shed`, because `compileOpenings` disambiguates by suffix
+> and had nothing to refuse. The paragraphs below are kept as the record of why
+> the refusal existed and why neither obvious fix was taken; they die with
+> `block_ends`.
 
 Two openings of one block facing the same bearing are an `end-label-collision`:
 the generator names neither, because a silently suffixed `east_2` is exactly the
@@ -163,8 +172,11 @@ and becomes the warning `end-not-on-diagram` as soon as an edge references it.
 The walk also starts nothing from either opening, so that block gets no
 compiled edge through those ends.
 
-Westgate Hollow has exactly one today (`Engine / Goods Transfer`, two openings
-both bearing south-east from the run centroid at 118.5° and 134.7°).
+Westgate Hollow has exactly one (`Engine / Goods Transfer`, two openings both
+bearing south-east from the run centroid at 118.5° and 134.7°). It is the case
+this whole issue was named after, and the reason it was worth naming: a real,
+drawn, trafficable opening was unreferenceable, so **naming failure became
+routing failure**. It routes today.
 
 An anchor coordinate on `block_ends` — a pinned end naming a *specific opening*
 rather than a bearing — was the obvious fix and was **rejected** (#97). So was

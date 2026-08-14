@@ -336,12 +336,14 @@ drawn, which is a warning rather than a fix). **Edges are no longer authored by 
 all**: the drawing compiles to `block_edges` and an operator applies the whole graph after
 reading the diff (#103). The manual write routes and the older edge-proposal surface are
 both deleted, so there is exactly one writer, and the two representations cannot drift
-because there is only one of them. Distance is not compiled and never could be — length
-lives on the block (#105), edited in Configure → Blocks and left blank where nobody has run
-a tape over it. `block_ends` still exists alongside as a legacy table and is deleted next;
-one of its warts survives with it — where the generator refused to name two openings facing
-the same bearing (`end-label-collision`), a hand-created end never attaches to a cell on the
-drawing, which the compiler's own labels do not suffer because they disambiguate by suffix.
+because there is only one of them. Westgate Hollow's graph has been compiled and applied
+(2026-08-14): 90 tiles and 9 blocks to 22 edges, one connected component, no gaps. That
+includes the two south-east openings of `Engine / Goods Transfer` that the old generator
+refused to name and therefore left unroutable — the compiler disambiguates them by suffix
+and both carry edges. Distance is not compiled and never could be — length lives on the
+block (#105), edited in Configure → Blocks and left blank where nobody has run a tape over
+it. `block_ends` still exists alongside as a legacy table, read by nothing but its own
+diagnostics, and is deleted next.
 A block's openings come from where its **drawn track leaves the run** — tile type and
 rotation — not from which cells sit next to each other, so two yard roads drawn side by
 side no longer read as opening into one another (#91). The advisory half of all of it is
