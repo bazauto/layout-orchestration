@@ -138,17 +138,15 @@ one silently re-points every edge referencing it. `BlockEndService` therefore
 answers **409** to a rename or delete of a label any edge uses, rather than
 cascading. The operator edits the edges, or keeps the name.
 
-The **Track Editor** is where all of this is reached: `Ends ✎` opens a list of
-every stored end with its block, its label, whether it is pinned or generated,
-and the cell the drawing currently places it at (a jump-to button, the same one
-a diagnostic uses). Create, rename and delete are there, and the 409's message —
-which names the offending edges — is rendered verbatim, because "HTTP 409"
-leaves the operator with nothing to act on.
+The **Track Editor** used to be where all of this was reached, through `Ends ✎`.
+That panel is gone (#103 PR 6.2) along with `Ends ⟳`, so `BlockEndService`'s
+create, rename and delete are still routed and still refuse correctly, but
+nothing in the browser calls them. The 409 above is now unreachable in practice
+and dies with the table in PR 7.
 
-It is a list of ordinary controls rather than a click on the end label drawn on
-the canvas. The canvas is `role="application"` and a click there paints; making
-a label clickable would mean a mis-click silently draws a tile. A list is also
-the only version reachable from the keyboard.
+The interaction reasoning that panel established outlived it and is recorded in
+`docs/track-editor.md` D12: a list of ordinary controls rather than a click on a
+label drawn on a `role="application"` canvas, and one shared `jumpToCell`.
 
 ### Known limit: an end the generator refused to name cannot be placed
 

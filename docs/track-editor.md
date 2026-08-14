@@ -160,20 +160,26 @@ That is the editor's whole contribution to a piece of data nothing can validate
 
 ---
 
-## D8 — Regeneration of end labels is a button
+## D8 — Regeneration of end labels was a button, and is now nothing
 
-**Decision (#72).** `Ends ⟳` regenerates block end labels on demand and reports
-what it adopted, created, removed and refused to name.
+**Decision (#72), removed (#103 PR 6.2).** `Ends ⟳` regenerated block end labels
+on demand and reported what it adopted, created, removed and refused to name.
 
-**Why not on every grid write.** An end label is the only link between an edge
-and a block end, so regeneration renames things the track graph depends on.
-Doing that as a side effect of redrawing a corner of the layout would change the
-graph while the operator believed they were tidying the picture. Pinned labels
-are never touched, but the operator should still see the change happen.
+**Why it was a button and never automatic.** An end label was the only link
+between an edge and a block end, so regeneration renamed things the track graph
+depended on. Doing that as a side effect of redrawing a corner of the layout
+would change the graph while the operator believed they were tidying the
+picture.
 
-Generated labels are drawn plain; pinned ones are drawn in `[brackets]`, so you
-can see at a glance which names are load-bearing. A `⊣` marks an end a buffer
-terminates.
+That whole hazard is gone with the button. A compiled label is regenerated on
+every read and referenced by nothing between compiles (D8 in
+`docs/track-graph-compilation.md`), so renaming one changes no graph — and the
+graph itself only changes when an operator presses Apply on a diff they have
+read. Nothing renames anything behind them any more.
+
+The `[brackets]` that marked a pinned label went with it: pinned/generated was a
+distinction between "identifier" and "description", and compiled labels are only
+ever descriptions. A `⊣` still marks an opening a buffer terminates.
 
 ---
 
@@ -312,59 +318,61 @@ same tick maths marks every 5th gridline as major, so the two consumers of
 
 ---
 
-## D12 — Naming an end by hand is a list, not a click on the label
+## D12 — Naming an end by hand is gone, and the interaction reasoning is not
 
-> **Superseded in design (#103), still shipped.** `docs/track-graph-compilation.md`
-> deletes `block_ends`, so both this decision and D13 below go with it: an end
-> label becomes disposable compiler output that nothing references and nobody
-> edits, and there is nothing left to name by hand. The *interaction* reasoning
-> here — why a list of controls rather than a click on a `role="application"`
-> canvas, and why `jumpToCell` is one implementation — survives and applies to
-> whatever the compile-diff surface becomes.
+**Decision.** `Ends ⟳` and `Ends ✎` are removed from the Track Editor toolbar
+(#103 PR 6.2), along with `BlockEndsPanel` and `useBlockEnds`.
 
-**Decision.** `Ends ✎` toggles a panel listing every stored block end — block,
-label, pinned/generated, and the cell the drawing places it at — with create,
-rename and delete. It sits beside `Ends ⟳` (D8), which regenerates.
+D12 used to describe that panel: a list of every stored `block_ends` row —
+block, label, pinned/generated, and the cell the drawing placed it at — with
+create, rename and delete, beside a button that regenerated the lot from the
+drawing.
 
-`BlockEndService` has had all three writes since #72; nothing in the browser
-could reach any of them, so the editor's only end control was regeneration. That
-left the case the generator explicitly refuses — `end-label-collision`, two
-openings of a block facing the same bearing — with **no resolution at all**,
-since a collision emits no end row to rename.
+**Why both controls existed, and why neither does now.** They were the
+reconciliation between two copies of the same names: one derived from the
+drawing, one stored and referenced by `block_edges`. `Ends ⟳` refreshed the
+stored copy; `Ends ✎` patched what refreshing got wrong or refused. Opening
+names are now compiled from the drawing on every read and referenced by nothing
+between compiles (D8), so there is no second copy to reconcile, nothing for
+regeneration to overwrite, and no name for a hand to correct. Removing the
+controls removes the work, not a capability.
 
-**Why not a click on the drawn end label.** The canvas is `role="application"`
-(D11) and a click paints. Making a label clickable means a mis-click silently
-draws a tile, which is the failure per-stroke undo (D2) exists to soften and
-this would reintroduce somewhere with no gesture to undo. A list of ordinary
-controls is also the only version reachable from the keyboard, which the canvas
-deliberately is not.
+**The keyboard readout kept pace, deliberately.** The cursor announcement said
+`end [yard-3] (buffer)` from the stored row; it now says
+`opening yard-3 at the east boundary, buffered` from the compiled one, naming
+the boundary rather than merely the cell. That is the same move step 6.1 made
+visually — a tick at the boundary the opening occupies instead of a word at a
+nearby cell — and it had to be made in both places or the keyboard user would
+have been left with the version of the diagram that was wrong (#91's fused
+siding). `cursorAnnouncement.ts` is the one implementation of that sentence for
+both audiences, which is why there was one thing to change.
 
-**Why its own toggle rather than a section of the diagnostics panel.** The
-diagnostics are a read of what is wrong; this is a write surface. Both are tall,
-and stacking them under the canvas is how the canvas stops being visible.
+### What survives, because it was never about `block_ends`
 
-**"Rename" with the label unchanged is how you pin.** A no-op rename still pins,
-which is an operator saying *this generated name is the right one, stop
-regenerating it*. The button is therefore offered on every row, not only the
-ones whose name looks wrong.
+- **A list of controls, never a click on the drawn label.** The canvas is
+  `role="application"` (D11) and a click paints. Making a label clickable means
+  a mis-click silently draws a tile — the failure per-stroke undo (D2) exists to
+  soften, reintroduced somewhere with no gesture to undo. A list is also the only
+  version reachable from the keyboard, which the canvas deliberately is not.
+- **`jumpToCell` is one implementation.** It was extracted out of
+  `jumpToDiagnostic` for the ends panel and stays exported for the next surface
+  that says "go and look here". Two such surfaces landing the operator in
+  different places, or moving the cursor without centring the view, is a
+  genuinely confusing bug and an easy one to introduce twice.
+- **A refusal is rendered verbatim.** The 409 that named the offending edges is
+  gone with the rename it refused, but the posture is not: a backend message is
+  the entire value of a refusal, and it is held until the next successful write
+  rather than cleared by the reload that follows (#62).
 
-**A refusal is rendered verbatim.** Renaming or deleting an end an edge
-references is a 409 whose body names the edges. That message is the entire value
-of the refusal — an end label is the only link between an edge and a block end,
-so the operator has to know which edges to fix. It is held until the next
-successful write rather than cleared by the reload that follows (the #62
-posture), because a stale error is less misleading than none.
+### What went with it, and is no longer a limit
 
-**Jumping to an end's cell is the diagnostics panel's jump, not a second one.**
-`jumpToCell` was extracted out of `jumpToDiagnostic` for this. Two surfaces that
-both say "go and look here" landing the operator in different places, or moving
-the cursor without centring the view, is a genuinely confusing bug and an easy
-one to introduce twice.
-
-**What it still cannot do.** A hand-named collided end gets no geometry: it
-lists as "not placed" and stays there. The limitation, and what closing it would
-cost, is recorded in `docs/topology.md` — it is a `block_ends` schema question,
-not an editor one.
+A hand-named collided end got no geometry and stayed listed as "not placed"
+forever. That was a `block_ends` schema problem — an end could not name a
+*specific* opening — and it dissolves rather than being fixed:
+`compileOpenings` disambiguates two openings of one block facing the same way
+by suffix, so there is nothing for the generator to refuse and nothing for a
+hand to rescue. `block_ends` itself still exists on the backend and is deleted
+in PR 7; until then its diagnostics can still report the old shape.
 
 ---
 

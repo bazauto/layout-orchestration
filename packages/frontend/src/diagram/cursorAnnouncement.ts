@@ -11,7 +11,7 @@
  * where the id-to-name resolution already lives (`DiagnosticNames`).
  */
 
-import { GridTileMetadata, TileAnnotation, TileType, classifyTile } from '../types';
+import { GridTileMetadata, TileAnnotation, TileEdge, TileType, classifyTile } from '../types';
 import { DiagnosticNames } from './diagnostics';
 
 /**
@@ -35,18 +35,36 @@ const TILE_TYPE_LABEL: Record<TileType, string> = {
   crossing: 'Crossing tile',
 };
 
-/** A block end whose geometry sits at this cell — mirrors the shape `GridEditor` already builds for drawing them (#72). */
-export interface CursorEnd {
+/**
+ * A compiled opening (#103) touching this cell — the announceable half of the
+ * boundary marks and labels the canvas draws.
+ *
+ * This replaced `CursorEnd`, which described a `block_ends` row, when those
+ * controls were removed (#103 PR 6.2). The swap is not cosmetic: an end was a
+ * stored name that might or might not still match the drawing, and an opening
+ * *is* the drawing. There is no `pinned`, because a compiled label is never
+ * authored — it is regenerated on every compile and referenced by nothing (D8).
+ *
+ * `edges` is what keeps the readout level with what is drawn. Step 6.1 moved
+ * the visual from a word at a nearby cell to a tick at the boundary the opening
+ * occupies, precisely because the word could sit plausibly beside the wrong
+ * place (#91's fused siding). A readout that still said only "there is an
+ * opening here" would hand a keyboard user the version of the diagram that was
+ * wrong. **Empty means this cell carries the label and no boundary** — an
+ * opening several cells wide has one label cell and several boundary cells.
+ */
+export interface CursorOpening {
   label: string;
-  pinned: boolean;
   terminated: boolean;
+  /** Boundaries of *this* cell the opening crosses; empty when the cell only carries the label. */
+  edges: TileEdge[];
 }
 
 /** What sits at the cursor's cell, already resolved from the grid and its parsed metadata. */
 export interface CursorTile {
   tileType: TileType;
   metadata: GridTileMetadata;
-  ends: CursorEnd[];
+  openings: CursorOpening[];
 }
 
 /**
@@ -88,8 +106,8 @@ export function describeCursor(
     parts.push(describeAnnotations(tile.metadata.annotations, names));
   }
 
-  for (const end of tile.ends) {
-    parts.push(describeEnd(end));
+  for (const opening of tile.openings) {
+    parts.push(describeOpening(opening));
   }
 
   return `${where} ${parts.join(', ')}.`;
@@ -105,10 +123,31 @@ function describeAnnotations(annotations: TileAnnotation[], names: DiagnosticNam
     .join(', ');
 }
 
-function describeEnd(end: CursorEnd): string {
-  // Bracketed/plain mirrors exactly how the end label is drawn on the
-  // canvas (#72) — the readout must not imply a distinction the diagram
-  // does not also show, or say nothing about one it does.
-  const label = end.pinned ? `[${end.label}]` : end.label;
-  return `end ${label}${end.terminated ? ' (buffer)' : ''}`;
+/** Spelled out, matching `describeDiagnostic` — `nw` mid-sentence reads as a typo rather than a direction. */
+const EDGE_NAMES: Record<TileEdge, string> = {
+  n: 'north',
+  ne: 'north-east',
+  e: 'east',
+  se: 'south-east',
+  s: 'south',
+  sw: 'south-west',
+  w: 'west',
+  nw: 'north-west',
+};
+
+function describeOpening(opening: CursorOpening): string {
+  const buffered = opening.terminated ? ', buffered' : '';
+
+  // Two sentences for two different things the canvas draws, said apart on
+  // purpose: a tick on a boundary is *where the railway leaves*, and a label is
+  // only where the name happens to be written. Conflating them would announce
+  // one opening identically at cells that are not the same place, which is the
+  // failure mode step 6.1 removed from the visual.
+  if (opening.edges.length === 0) {
+    return `opening ${opening.label} labelled here${buffered}`;
+  }
+
+  const sides = opening.edges.map((e) => EDGE_NAMES[e]).join(' and ');
+  const noun = opening.edges.length === 1 ? 'boundary' : 'boundaries';
+  return `opening ${opening.label} at the ${sides} ${noun}${buffered}`;
 }

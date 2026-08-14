@@ -255,11 +255,10 @@ Current automated coverage includes:
     reference independent of the cursor readout; every 5th gridline is emphasised
   - Diagnostics-panel lines that carry a coordinate are click-to-jump buttons that move the
     cursor, centre the view, and pulse the cell
-- Block ends (`docs/track-editor.md` D12): `Ends ⟳` regenerates the labels from the
-  drawing; `Ends ✎` opens a list of every end — block, label, whether it is pinned or
-  generated, and the cell the drawing places it at — where you can add, rename (which also
-  pins) and delete one. A rename or delete of a label an edge references is refused, and
-  the refusal names the edges
+- Openings (`docs/track-editor.md` D12): drawn as a tick at each tile boundary the
+  opening occupies, with its name once alongside and a `⊣` where a buffer terminates it.
+  The names are compiled from the drawing on every read, so there is nothing to regenerate
+  and nothing to correct by hand — the `Ends ⟳` and `Ends ✎` controls are gone (#103)
 - Mouse controls:
   - left drag to paint
   - right click to erase
@@ -409,8 +408,8 @@ safety preamble in `docs/sensor-simulation.md`.
 
 ## Next Milestones
 
-1. Finish #103: remove the `Ends ⟳`/`Ends ✎` controls and delete `block_ends`, leaving
-   the compiler as the only description of the railway's connectivity
+1. Finish #103: delete `block_ends`, `BlockEndService` and its routes, leaving the
+   compiler as the only description of the railway's connectivity
 2. Per-loco braking model (#6) and collision avoidance (#7)
 3. Point position confirmation (#25)
 4. Automation engine / schedules

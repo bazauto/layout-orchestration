@@ -30,7 +30,7 @@ describe('describeCursor', () => {
     expect(
       describeCursor(
         { x: 2, y: 3 },
-        { tileType: 'straight-h', metadata: { blockId: 'b1' }, ends: [] },
+        { tileType: 'straight-h', metadata: { blockId: 'b1' }, openings: [] },
         NAMES,
       ),
     ).toBe('Column 2, row 3. Straight tile, block Fiddle Yard 1.');
@@ -42,7 +42,7 @@ describe('describeCursor', () => {
     expect(
       describeCursor(
         { x: 2, y: 3 },
-        { tileType: 'straight-h', metadata: { blockId: 'unknown-block' }, ends: [] },
+        { tileType: 'straight-h', metadata: { blockId: 'unknown-block' }, openings: [] },
         NAMES,
       ),
     ).toBe('Column 2, row 3. Straight tile, block unknown-block.');
@@ -52,7 +52,7 @@ describe('describeCursor', () => {
     expect(
       describeCursor(
         { x: 5, y: 3 },
-        { tileType: 'point-left', metadata: { blockId: 'b1', pointId: 'p1' }, ends: [] },
+        { tileType: 'point-left', metadata: { blockId: 'b1', pointId: 'p1' }, openings: [] },
         NAMES,
       ),
     ).toBe('Column 5, row 3. Point tile, Yard Throat, block Fiddle Yard 1.');
@@ -62,7 +62,7 @@ describe('describeCursor', () => {
     expect(
       describeCursor(
         { x: 6, y: 3 },
-        { tileType: 'straight-h', metadata: { trackRole: 'decorative' }, ends: [] },
+        { tileType: 'straight-h', metadata: { trackRole: 'decorative' }, openings: [] },
         NAMES,
       ),
     ).toBe('Column 6, row 3. Straight tile, decorative.');
@@ -73,7 +73,7 @@ describe('describeCursor', () => {
     // explicitly reviewed and found to need nothing — exactly the ambiguity
     // #71 exists to remove, and the cursor readout must not reintroduce it.
     expect(
-      describeCursor({ x: 7, y: 3 }, { tileType: 'straight-h', metadata: {}, ends: [] }, NAMES),
+      describeCursor({ x: 7, y: 3 }, { tileType: 'straight-h', metadata: {}, openings: [] }, NAMES),
     ).toBe('Column 7, row 3. Straight tile, not classified.');
   });
 
@@ -84,41 +84,78 @@ describe('describeCursor', () => {
         {
           tileType: 'straight-h',
           metadata: { blockId: 'b1', annotations: [{ entityType: 'sensor', entityId: 's1' }] },
-          ends: [],
+          openings: [],
         },
         NAMES,
       ),
     ).toBe('Column 8, row 3. Straight tile, block Fiddle Yard 1, sensor Platform Beam.');
   });
 
-  it('marks a pinned end in brackets, matching exactly how it is drawn on the tile (#72)', () => {
-    // The readout asserting a different pinned/generated state than the
-    // diagram draws would be worse than saying nothing — two disagreeing
-    // sources of truth for something the operator cannot verify by eye.
-    expect(
-      describeCursor(
-        { x: 9, y: 3 },
-        {
-          tileType: 'buffer',
-          metadata: { blockId: 'b1' },
-          ends: [{ label: 'yard-3', pinned: true, terminated: true }],
-        },
-        NAMES,
-      ),
-    ).toBe('Column 9, row 3. Buffer tile, block Fiddle Yard 1, end [yard-3] (buffer).');
-  });
-
-  it('reads an unpinned, non-terminated end plainly', () => {
+  it('names the boundary an opening crosses, not merely that one is here (#103)', () => {
+    // The readout has to say the same thing the canvas draws. Step 6.1 moved
+    // the visual from a word at a nearby cell to a tick on the boundary the
+    // opening occupies, because the word could sit plausibly beside the wrong
+    // place; a readout saying only "there is an opening here" would hand a
+    // keyboard user the version of the diagram that was wrong.
     expect(
       describeCursor(
         { x: 2, y: 3 },
         {
           tileType: 'straight-h',
           metadata: { blockId: 'b1' },
-          ends: [{ label: 'west', pinned: false, terminated: false }],
+          openings: [{ label: 'west', terminated: false, edges: ['w'] }],
         },
         NAMES,
       ),
-    ).toBe('Column 2, row 3. Straight tile, block Fiddle Yard 1, end west.');
+    ).toBe('Column 2, row 3. Straight tile, block Fiddle Yard 1, opening west at the west boundary.');
+  });
+
+  it('says a buffered opening is buffered', () => {
+    expect(
+      describeCursor(
+        { x: 9, y: 3 },
+        {
+          tileType: 'buffer',
+          metadata: { blockId: 'b1' },
+          openings: [{ label: 'yard-3', terminated: true, edges: ['e'] }],
+        },
+        NAMES,
+      ),
+    ).toBe(
+      'Column 9, row 3. Buffer tile, block Fiddle Yard 1, opening yard-3 at the east boundary, buffered.',
+    );
+  });
+
+  it('distinguishes the cell carrying the label from the cells carrying the boundary', () => {
+    // An opening several cells wide has one label cell and several boundary
+    // cells. Announcing them identically would tell a keyboard user that two
+    // different places are the same place.
+    expect(
+      describeCursor(
+        { x: 4, y: 3 },
+        {
+          tileType: 'straight-h',
+          metadata: { blockId: 'b1' },
+          openings: [{ label: 'north', terminated: false, edges: [] }],
+        },
+        NAMES,
+      ),
+    ).toBe('Column 4, row 3. Straight tile, block Fiddle Yard 1, opening north labelled here.');
+  });
+
+  it('pluralises when one opening crosses two of this cell’s boundaries', () => {
+    expect(
+      describeCursor(
+        { x: 5, y: 3 },
+        {
+          tileType: 'straight-45',
+          metadata: { blockId: 'b1' },
+          openings: [{ label: 'northeast', terminated: false, edges: ['n', 'ne'] }],
+        },
+        NAMES,
+      ),
+    ).toBe(
+      'Column 5, row 3. Corner tile, block Fiddle Yard 1, opening northeast at the north and north-east boundaries.',
+    );
   });
 });
