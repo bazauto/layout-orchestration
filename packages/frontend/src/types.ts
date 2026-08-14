@@ -354,49 +354,46 @@ export interface GenerateEndsSummary {
   collisions: Array<{ blockId: string; label: string; at: Array<{ x: number; y: number }> }>;
 }
 
-// ─── Edge proposals (#78) ─────────────────────────────────────────────────────
+// ─── Compiling the graph from the drawing (#103) ──────────────────────────────
 
 /**
- * Mirrors `EdgeProposalStatus`. Only `new` is acceptable; the other three each
- * mean something different about *why* not, and the panel says which.
- */
-export type EdgeProposalStatus = 'new' | 'needs-end-label' | 'existing' | 'conflicting';
-
-/**
- * Mirrors the backend's `EdgeProposal` — a candidate `block_edges` row the
- * drawing implies, never a written one.
+ * Mirrors `NamedCompiledEdge` — one directed connection the drawing implies.
  *
- * `lengthMm` is the literal `null` here as it is there: geometry can never
- * supply distance (`docs/braking.md` B4), and typing it as `number | null`
- * would invite a later change to compute one from tile count.
+ * No `id` and no `lengthMm`. It is a candidate, not a row, and distance lives
+ * on `blocks.length_mm` where an operator measured it (D4); there is no field
+ * here for geometry to guess into.
+ *
+ * `via` and `crossesDiamond` are review aids and are never persisted: `via`
+ * lets the operator find the connection on the drawing, `crossesDiamond` says
+ * the path runs through the #26 blind spot.
  */
-export interface EdgeProposal {
-  /** Stable within one response; pairs the two directions of one physical connection. */
-  pairId: string;
+export interface CompiledEdge {
   fromBlockId: string;
-  /** `null` when no `block_ends` row names this opening. Never a guessed label. */
-  fromEnd: string | null;
+  fromEnd: string;
   toBlockId: string;
-  toEnd: string | null;
+  toEnd: string;
   pointConditions: PointCondition[];
-  lengthMm: null;
-  /** Cells crossed between the two blocks, in walk order. */
   via: Array<{ x: number; y: number }>;
-  /** The path crosses a plain diamond, whose route conflicts are not detected (#26). */
   crossesDiamond: boolean;
-  status: EdgeProposalStatus;
-  existingEdgeId?: string;
 }
 
 /**
- * Mirrors `ProposalNote`. Why a connection that looks drawn produced no
- * proposal — each names a cell to go and look at, which is the whole
- * difference between a to-do and a mystery.
+ * Mirrors `CompileGap` — something the compiler is **not confident about**,
+ * recorded outside the graph rather than inside it wearing a badge (D6).
+ *
+ * The first three are D7's graph-level assertions and are the primary
+ * findings; the rest are per-cell walk notes carried through as supporting
+ * evidence. `diagram/compile.ts#gapRank` is what keeps that order on screen.
  */
-export type ProposalNote =
+export type CompileGap =
+  | { kind: 'block-not-in-graph'; blockId: string }
+  | { kind: 'block-without-detection'; blockId: string }
+  | { kind: 'opening-unresolved'; blockId: string; label: string; at: { x: number; y: number } }
+  | { kind: 'dangling-block-reference'; at: { x: number; y: number }; blockId: string }
+  | { kind: 'tile-metadata-unreadable'; at: { x: number; y: number } }
+  | { kind: 'opening-unnamed'; blockId: string; at: { x: number; y: number } }
   | { kind: 'blocked-by-unclassified'; at: { x: number; y: number } }
   | { kind: 'blocked-by-unmapped-point'; at: { x: number; y: number }; pointId: string }
-  | { kind: 'stopped-in-own-block'; blockId: string; at: { x: number; y: number } }
   | { kind: 'leg-not-covered-by-road'; at: { x: number; y: number }; edge: TileEdge }
   | {
       kind: 'no-road-out-of-block';
@@ -406,9 +403,37 @@ export type ProposalNote =
     }
   | { kind: 'search-truncated'; blockId: string; at: { x: number; y: number } };
 
-export interface EdgeProposalReport {
-  proposals: EdgeProposal[];
-  notes: ProposalNote[];
+/** Mirrors `CompileReport`. `components.length > 1` is reported, never gated (D-B). */
+export interface CompileReport {
+  fingerprint: string;
+  edges: CompiledEdge[];
+  gaps: CompileGap[];
+  components: string[][];
+}
+
+/**
+ * Mirrors `CompileDiff` — how the candidate graph differs from the live one,
+ * matched in two passes (D-J).
+ *
+ * `changed` is the safety-relevant bucket: the same two openings, now needing
+ * different blades. `relabelled` is the same physical connection under a new
+ * disposable name, and exists so a redraw that renumbers ends does not read as
+ * "every edge removed, every edge added" — which would make the diff useless
+ * for review, and review is the whole safety argument for compiling (D1).
+ */
+export interface CompileDiff {
+  added: CompiledEdge[];
+  removed: BlockEdgeRecord[];
+  unchanged: BlockEdgeRecord[];
+  changed: Array<{ live: BlockEdgeRecord; proposed: CompiledEdge }>;
+  relabelled: Array<{ live: BlockEdgeRecord; proposed: CompiledEdge }>;
+}
+
+/** Mirrors `CompileView` — the whole body of `GET .../topology/compile`. */
+export interface CompileView {
+  report: CompileReport;
+  status: CompiledGraphStatus;
+  diff: CompileDiff;
 }
 
 // ─── Grid diagnostics ─────────────────────────────────────────────────────────

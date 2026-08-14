@@ -18,13 +18,6 @@ import { GridTileMetadata, LayoutId } from '../domain/types';
 import { GridTileWriteInput, parseTileMetadata } from './validation';
 import { Coordinate, GeometryTile, findUnjoinedEdges, generateBlockEnds } from './gridGeometry';
 import { GridDiagnostic, runGridDiagnostics } from './gridDiagnostics';
-// Aliased: the pure walk and this service's method would otherwise share a name,
-// which compiles fine and reads as a recursive call.
-import {
-  EdgeProposalReport,
-  proposeEdges as walkForProposals,
-  reconcileProposals,
-} from './edgeProposals';
 
 /** Thrown when `:layoutId` does not resolve to a layout. Mapped to 404. */
 export class LayoutNotFoundError extends Error {
@@ -163,42 +156,6 @@ export class GridService {
       // visits (#91).
       unjoined: findUnjoinedEdges(tiles),
     });
-  }
-
-  /**
-   * Candidate `block_edges` the drawing implies (#78).
-   *
-   * Read-only, and assembled exactly like `diagnose`: the two callees are pure,
-   * and this owns no policy. It never writes — accepting a proposal is an
-   * ordinary `POST .../edges` through `TopologyService`, so there is no second
-   * write path for the track graph to be authored through.
-   */
-  async proposeEdges(layoutId: LayoutId): Promise<EdgeProposalReport> {
-    await this.assertLayoutExists(layoutId);
-
-    const [rows, edges, ends] = await Promise.all([
-      this.repo.listGridTiles(layoutId),
-      this.repo.listBlockEdges(layoutId),
-      this.repo.listBlockEnds(layoutId),
-    ]);
-
-    const tiles: GeometryTile[] = rows.map((row) => ({
-      x: row.x,
-      y: row.y,
-      tileType: row.tileType as GeometryTile['tileType'],
-      // Tolerant, like every other read of this blob: a tile that will not parse
-      // still draws, and still takes part in the walk as far as its type allows
-      // (`docs/track-grid.md` D10).
-      metadata: parseTileMetadata(row.metadata).metadata,
-    }));
-
-    const { openings } = generateBlockEnds(tiles);
-    const report = walkForProposals({ tiles, openings });
-
-    return {
-      proposals: reconcileProposals(report.proposals, edges, ends),
-      notes: report.notes,
-    };
   }
 
   async clearGrid(layoutId: LayoutId): Promise<{ removed: number }> {

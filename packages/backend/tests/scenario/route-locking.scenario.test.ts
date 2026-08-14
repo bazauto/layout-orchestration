@@ -423,7 +423,12 @@ describe('scenario: route locking', () => {
     await h.service.stop();
   });
 
-  it('7. topology guard: deleting an edge held by an active route is refused; cancelling the route lets the same delete succeed', async () => {
+  it('7. topology guard: deleting a block held by an active route is refused; cancelling the route lets the same delete succeed', async () => {
+    // This was the per-edge delete until #103 PR 5 removed it. The guard is the
+    // same one and the property under test is unchanged — a write against
+    // anything a live route holds is refused, and cancelling is the ordering
+    // that unblocks it — but the surviving write paths are the block cascade
+    // (here) and `replaceGraph` (`compile-apply.scenario.test.ts`).
     const h = createScenarioHarness();
     await seedAndStart(h);
     await h.sensorReports('s1', 'occupied');
@@ -439,11 +444,15 @@ describe('scenario: route locking', () => {
     expect(grant.granted).toBe(true);
     if (!grant.granted) throw new Error('expected grant');
 
-    await expect(h.topologyService.deleteEdge(LAYOUT_ID, e1)).rejects.toThrow(LockedByRouteError);
+    await expect(h.topologyService.deleteBlockWithEdges(LAYOUT_ID, 'b2')).rejects.toThrow(
+      LockedByRouteError,
+    );
 
     await h.service.cancelRoute(grant.reservation.id, 'operator cancel to edit topology');
 
-    await expect(h.topologyService.deleteEdge(LAYOUT_ID, e1)).resolves.toBeUndefined();
+    await expect(h.topologyService.deleteBlockWithEdges(LAYOUT_ID, 'b2')).resolves.toMatchObject({
+      removedEdges: expect.any(Number),
+    });
 
     await h.service.stop();
   });

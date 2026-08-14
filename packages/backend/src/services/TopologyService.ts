@@ -1,16 +1,29 @@
 /**
  * TopologyService
  *
- * The write path for block edges. Validates every create/update against the
- * rest of the layout with `validateEdgeAgainstLayout` before persisting, and
- * notifies the caller (via the injected `onTopologyChanged` callback) so the
- * running `LayoutService` can reload and re-validate its `TrackGraph` and
- * apply Safe-Stop if needed. The callback is injected rather than a direct
- * `LayoutService` reference so this service stays testable without a full
- * running layout.
+ * The write path for block edges, and since #103 PR 5 there is exactly **one**
+ * of them: `replaceGraph`, which takes a whole compiled graph and swaps it in.
+ * The per-row `createEdge`/`updateEdge`/`deleteEdge` are gone along with the
+ * `POST`/`PUT`/`DELETE .../edges` routes and the Edges tab's form (OQ1).
+ *
+ * Why they had to go rather than merely fall out of use: D3 makes a recompile a
+ * **replace**, so a hand-authored edge the drawing does not imply is silently
+ * deleted by the next apply. Leaving the routes in place would keep exactly the
+ * two-representations problem #103 exists to end, at a new seam — one an
+ * operator would meet as "the edge I authored yesterday has vanished". The
+ * compiler wins by being the only writer, not by guarding against the other one.
+ *
+ * `deleteBlockWithEdges` stays: deleting a block must still remove its edges
+ * atomically, and that is a cascade, not authoring.
+ *
+ * Every write notifies the caller through the injected `onTopologyChanged`
+ * callback, so the running `LayoutService` reloads and re-validates its
+ * `TrackGraph` and applies Safe-Stop if needed. The callback is injected rather
+ * than a direct `LayoutService` reference so this service stays testable
+ * without a full running layout.
  */
 
-import { MAX_EDGES_PER_LAYOUT, describeViolations, validateEdgeAgainstLayout, validateTopology } from '../domain/topology';
+import { MAX_EDGES_PER_LAYOUT, describeViolations, validateTopology } from '../domain/topology';
 import { BlockEdge, BlockEdgeId, LayoutId, PointId, TopologyViolation } from '../domain/types';
 import { blockLabel, edgeLabel, layoutLabel, pluralise, pointLabel } from '../domain/naming';
 import { ILayoutRepository, PointRecord } from '../ports/ILayoutRepository';
@@ -42,11 +55,15 @@ export class TopologyRejectedError extends Error {
 }
 
 /**
- * Thrown when a create would push a layout's edge count past
+ * Thrown when a compiled graph would push a layout's edge count past
  * `MAX_EDGES_PER_LAYOUT`. This is admission control, not a topology
- * violation — the candidate edge itself may be perfectly valid — so it is a
+ * violation — every candidate edge may be perfectly valid — so it is a
  * distinct type from `TopologyRejectedError` rather than a fabricated
  * violation. See `docs/topology.md` for why the cap is service-level only.
+ *
+ * It is a check on the **whole candidate set** since #103 PR 5, which is where
+ * it always belonged: a cap on how much graph exists is a statement about the
+ * graph, not about whichever row happened to arrive last.
  */
 export class EdgeLimitExceededError extends Error {
   constructor(
@@ -57,17 +74,6 @@ export class EdgeLimitExceededError extends Error {
   ) {
     super(`Layout ${layoutLabelText ?? layoutId} already has ${current} edges (limit ${limit})`);
     this.name = 'EdgeLimitExceededError';
-  }
-}
-
-/** Thrown when an edge id does not resolve to an edge in the given layout. */
-export class EdgeNotFoundError extends Error {
-  constructor(
-    readonly edgeId: BlockEdgeId,
-    edgeLabelText?: string,
-  ) {
-    super(`Edge ${edgeLabelText ?? edgeId} not found`);
-    this.name = 'EdgeNotFoundError';
   }
 }
 
@@ -117,8 +123,12 @@ export class LockedByRouteError extends Error {
   }
 }
 
+/**
+ * One row of a compiled graph, as `replaceGraph` takes it. Named for what it
+ * used to be — the body of `POST .../edges` — and kept because the shape is
+ * still exactly right: an edge minus the two fields the writer owns.
+ */
 export type EdgeCreateData = Omit<BlockEdge, 'id' | 'layoutId'>;
-export type EdgeUpdateData = Partial<Omit<BlockEdge, 'id' | 'layoutId'>>;
 export type PointUpdateData = Partial<Omit<PointRecord, 'id' | 'layoutId'>>;
 
 export class TopologyService {
@@ -150,58 +160,6 @@ export class TopologyService {
     // would Safe-Stop on — see docs/topology.md (#21).
     const violations = validateTopology(layoutId, edges, context);
     return { valid: violations.length === 0, violations, edgeCount: edges.length };
-  }
-
-  /**
-   * `createEdge` is deliberately NOT guarded against held routes (D10). A
-   * new edge moves no train, and it cannot be traversed into reserved track
-   * because the target block is already locked — the block/point locks
-   * themselves are what protect a live route, not an admission check on
-   * every new edge.
-   */
-  async createEdge(layoutId: LayoutId, data: EdgeCreateData): Promise<BlockEdge> {
-    const existingEdges = await this.repo.listBlockEdges(layoutId);
-
-    // Admission control, not a topology invariant (see docs/topology.md).
-    // Checked here because createEdge already fetched existingEdges for
-    // the duplicate-connection check below, so this is free — no extra
-    // query. The await between this count and the repo.createBlockEdge
-    // call below permits a small overshoot under concurrent requests; that
-    // is acceptable for a policy cap and is not worth adding locking for.
-    if (existingEdges.length >= MAX_EDGES_PER_LAYOUT) {
-      this.log.warn('[TopologyService] Rejected edge create — layout at edge cap', {
-        layoutId,
-        layoutName: this.names.get().layouts.get(layoutId),
-        limit: MAX_EDGES_PER_LAYOUT,
-        current: existingEdges.length,
-      });
-      throw new EdgeLimitExceededError(
-        layoutId,
-        MAX_EDGES_PER_LAYOUT,
-        existingEdges.length,
-        layoutLabel(layoutId, this.names.get()),
-      );
-    }
-
-    const context = await this.buildContext(layoutId);
-
-    // A synthetic id (never persisted) lets validateEdgeAgainstLayout's
-    // duplicate-connection check run before the real id exists.
-    const candidate: BlockEdge = { id: '__pending__', layoutId, ...data };
-    const violations = validateEdgeAgainstLayout(candidate, layoutId, context, existingEdges);
-    if (violations.length > 0) {
-      this.log.warn('[TopologyService] Rejected edge create', { layoutId, violations });
-      throw new TopologyRejectedError(violations, describeViolations(violations, this.names.get()));
-    }
-
-    const created = await this.repo.createBlockEdge({ layoutId, ...data });
-    this.log.info('[TopologyService] Edge created', {
-      layoutId,
-      edgeId: created.id,
-      edgeLabel: edgeLabel(created.id, this.names.get()),
-    });
-    await this.onTopologyChanged();
-    return created;
   }
 
   /**
@@ -307,54 +265,6 @@ export class TopologyService {
 
     await this.onTopologyChanged();
     return written;
-  }
-
-  async updateEdge(layoutId: LayoutId, id: BlockEdgeId, patch: EdgeUpdateData): Promise<BlockEdge> {
-    const existing = await this.repo.getBlockEdge(id);
-    if (!existing || existing.layoutId !== layoutId) {
-      throw new EdgeNotFoundError(id, edgeLabel(id, this.names.get()));
-    }
-    this.assertEdgeUnlocked(layoutId, id);
-
-    const existingEdges = await this.repo.listBlockEdges(layoutId);
-    const context = await this.buildContext(layoutId);
-
-    const merged: BlockEdge = { ...existing, ...patch };
-    const violations = validateEdgeAgainstLayout(merged, layoutId, context, existingEdges);
-    if (violations.length > 0) {
-      this.log.warn('[TopologyService] Rejected edge update', {
-        layoutId,
-        edgeId: id,
-        edgeLabel: edgeLabel(id, this.names.get()),
-        violations,
-      });
-      throw new TopologyRejectedError(violations, describeViolations(violations, this.names.get()));
-    }
-
-    const updated = await this.repo.updateBlockEdge(id, patch);
-    this.log.info('[TopologyService] Edge updated', {
-      layoutId,
-      edgeId: id,
-      edgeLabel: edgeLabel(id, this.names.get()),
-    });
-    await this.onTopologyChanged();
-    return updated;
-  }
-
-  async deleteEdge(layoutId: LayoutId, id: BlockEdgeId): Promise<void> {
-    const existing = await this.repo.getBlockEdge(id);
-    if (!existing || existing.layoutId !== layoutId) {
-      throw new EdgeNotFoundError(id, edgeLabel(id, this.names.get()));
-    }
-    this.assertEdgeUnlocked(layoutId, id);
-
-    await this.repo.deleteBlockEdge(id);
-    this.log.info('[TopologyService] Edge deleted', {
-      layoutId,
-      edgeId: id,
-      edgeLabel: edgeLabel(id, this.names.get()),
-    });
-    await this.onTopologyChanged();
   }
 
   /**

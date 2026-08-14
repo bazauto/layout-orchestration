@@ -3,8 +3,6 @@ import {
   parsePointConditions,
   parseBlockEdgeRow,
   BlockEdgeRowInvalidError,
-  edgeCreateSchema,
-  edgeUpdateSchema,
   blockCreateSchema,
   blockUpdateSchema,
   parseUserRow,
@@ -98,41 +96,6 @@ describe('parseBlockEdgeRow', () => {
   });
 });
 
-describe('edgeCreateSchema', () => {
-  const validInput = {
-    fromBlockId: 'b1',
-    fromEnd: 'north',
-    toBlockId: 'b2',
-    toEnd: 'south',
-  };
-
-  it('accepts a minimal valid input, defaulting pointConditions to []', () => {
-    const result = edgeCreateSchema.parse(validInput);
-    expect(result.pointConditions).toEqual([]);
-  });
-
-  it('trims and lower-cases fromEnd/toEnd', () => {
-    const result = edgeCreateSchema.parse({ ...validInput, fromEnd: '  North ', toEnd: 'SOUTH' });
-    expect(result.fromEnd).toBe('north');
-    expect(result.toEnd).toBe('south');
-  });
-
-  it('rejects an unknown key such as layoutId (.strict())', () => {
-    expect(() => edgeCreateSchema.parse({ ...validInput, layoutId: 'sneaky' })).toThrow();
-  });
-
-  it('rejects an unknown key such as id (.strict())', () => {
-    expect(() => edgeCreateSchema.parse({ ...validInput, id: 'sneaky' })).toThrow();
-  });
-
-  it('rejects lengthMm, which now belongs to the block (D4)', () => {
-    // `.strict()` doing its job: a client still sending the old field gets a
-    // 400 naming it, rather than having a measurement silently dropped on the
-    // floor and believing the edge is measured.
-    expect(() => edgeCreateSchema.parse({ ...validInput, lengthMm: 500 })).toThrow();
-  });
-});
-
 describe('blockCreateSchema', () => {
   it('defaults lengthMm to null, because unmeasured is not zero', () => {
     // The distinction the braking model turns on: `null` refuses a braked run,
@@ -155,20 +118,6 @@ describe('blockUpdateSchema', () => {
   it('can clear a length back to unmeasured, and can leave it alone', () => {
     expect(blockUpdateSchema.parse({ lengthMm: null })).toEqual({ lengthMm: null });
     expect(blockUpdateSchema.parse({ name: 'renamed' })).toEqual({ name: 'renamed' });
-  });
-});
-
-describe('edgeUpdateSchema', () => {
-  it('accepts a partial patch with a single field', () => {
-    expect(edgeUpdateSchema.parse({ toEnd: 'east' })).toEqual({ toEnd: 'east' });
-  });
-
-  it('accepts an empty patch', () => {
-    expect(edgeUpdateSchema.parse({})).toEqual({});
-  });
-
-  it('rejects an unknown key (.strict())', () => {
-    expect(() => edgeUpdateSchema.parse({ layoutId: 'sneaky' })).toThrow();
   });
 });
 

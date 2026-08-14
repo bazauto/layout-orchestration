@@ -1,13 +1,21 @@
+/**
+ * The Edges tab as a **read** (#103 PR 5).
+ *
+ * The three authoring specs that used to live here — filling the form, the
+ * "also create reverse edge" shortcut, and a 422 leaving the form populated —
+ * went with the form. `block_edges` is written by the compile apply and by
+ * nothing else, and `POST .../edges` no longer exists; `compile.spec.ts` covers
+ * the surface that replaced them.
+ *
+ * What survives is the violation banner, which is about *reading* a graph that
+ * is already wrong. That case is worth keeping precisely because a compiled
+ * apply cannot produce it — `replaceGraph` validates before writing — so the
+ * only way to see it is a graph that went invalid underneath the UI, which is
+ * exactly when the banner has to work.
+ */
+
 import { expect, test, Page } from '@playwright/test';
 import { installMockAuth, installMockWebSocket } from './helpers';
-
-interface EdgeBody {
-  fromBlockId: string;
-  fromEnd: string;
-  toBlockId: string;
-  toEnd: string;
-  pointConditions: Array<{ pointId: string; requiredPosition: string }>;
-}
 
 const BLOCKS = [
   { id: 'block-a', layoutId: 'layout-1', name: 'Block A', lengthMm: null },
@@ -18,20 +26,13 @@ const POINTS = [{ id: 'point-1', layoutId: 'layout-1', name: 'Point 1', dccAddre
 
 /**
  * Stubs the layout list and the config-fetching endpoints `useLayoutConfig`
- * calls on every `refresh()`. `edges` and `topology` are backed by a mutable
- * array/status object so POST/DELETE against `/edges` are reflected on the
- * next `GET` — the same way the real API behaves.
+ * calls on every `refresh()`.
  */
 async function stubApis(
   page: Page,
-  options: {
-    initialEdges?: unknown[];
-    topologyOverride?: unknown;
-    onCreateEdge?: (route: import('@playwright/test').Route, body: EdgeBody) => Promise<boolean>;
-  } = {},
+  options: { initialEdges?: unknown[]; topologyOverride?: unknown } = {},
 ) {
   const edges: unknown[] = [...(options.initialEdges ?? [])];
-  let nextId = 1;
 
   await page.route('**://localhost:3000/api/layouts', (r) =>
     r.fulfill({
@@ -58,40 +59,15 @@ async function stubApis(
     r.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(options.topologyOverride ?? { valid: true, violations: [], edgeCount: edges.length }),
+      body: JSON.stringify(
+        options.topologyOverride ?? { valid: true, violations: [], edgeCount: edges.length },
+      ),
     }),
   );
 
-  // The Edges tab reads `block_ends` to fill the end-label datalist — the set
-  // of names the drawing generated is the set that will match, and deriving it
-  // from existing edges alone left it empty on a layout with none. Stubbed
-  // empty here: these specs are about the form, and an unstubbed route would
-  // just be an unexplained failed request in the trace.
-  await page.route('**://localhost:3000/api/layouts/layout-1/block-ends', (r) =>
-    r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
+  await page.route('**://localhost:3000/api/layouts/layout-1/edges', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(edges) }),
   );
-
-  await page.route('**://localhost:3000/api/layouts/layout-1/edges', async (route) => {
-    const req = route.request();
-    if (req.method() === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(edges) });
-      return;
-    }
-    if (req.method() === 'POST') {
-      const body = req.postDataJSON() as EdgeBody;
-      if (options.onCreateEdge) {
-        const handled = await options.onCreateEdge(route, body);
-        if (handled) return;
-      }
-      const created = { id: `edge-${nextId++}`, layoutId: 'layout-1', ...body };
-      edges.push(created);
-      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
-      return;
-    }
-    await route.continue();
-  });
-
-  return { edges };
 }
 
 async function openEdgesTab(page: Page) {
@@ -103,114 +79,6 @@ async function openEdgesTab(page: Page) {
   await page.getByRole('button', { name: 'Configure' }).click();
   await page.getByRole('button', { name: /^Edges/ }).click();
 }
-
-test('authors a two-block edge with one point condition end to end', async ({ page }) => {
-  await installMockWebSocket(page);
-  const posted: EdgeBody[] = [];
-  await stubApis(page, {
-    onCreateEdge: async (route, body) => {
-      posted.push(body);
-      return false; // let the default handler fulfill and push into `edges`
-    },
-  });
-
-  await openEdgesTab(page);
-
-  await page.getByLabel('From block').selectOption('block-a');
-  await page.getByPlaceholder('From end').fill('North');
-  await page.getByLabel('To block').selectOption('block-b');
-  await page.getByPlaceholder('To end').fill('South');
-
-  await page.getByText('+ point condition').click();
-  await page.getByLabel('Point').selectOption('point-1');
-  await page.getByLabel('Required position').selectOption('reverse');
-
-  await page.getByRole('button', { name: 'Add' }).click();
-
-  await expect.poll(() => posted.length).toBe(1);
-  expect(posted[0]).toEqual({
-    fromBlockId: 'block-a',
-    fromEnd: 'north',
-    toBlockId: 'block-b',
-    toEnd: 'south',
-    pointConditions: [{ pointId: 'point-1', requiredPosition: 'reverse' }],
-  });
-
-  await expect(page.getByText('Block A:north → Block B:south')).toBeVisible();
-  await expect(page.getByText('Point 1=reverse')).toBeVisible();
-});
-
-test('the "also create reverse edge" checkbox issues a second POST with ends swapped', async ({ page }) => {
-  await installMockWebSocket(page);
-  const posted: EdgeBody[] = [];
-  await stubApis(page, {
-    onCreateEdge: async (_route, body) => {
-      posted.push(body);
-      return false;
-    },
-  });
-
-  await openEdgesTab(page);
-
-  await page.getByLabel('From block').selectOption('block-a');
-  await page.getByPlaceholder('From end').fill('north');
-  await page.getByLabel('To block').selectOption('block-b');
-  await page.getByPlaceholder('To end').fill('south');
-
-  await page.getByRole('checkbox', { name: 'also create reverse edge' }).check();
-  await page.getByRole('button', { name: 'Add' }).click();
-
-  await expect.poll(() => posted.length).toBe(2);
-  expect(posted[0].fromBlockId).toBe('block-a');
-  expect(posted[0].fromEnd).toBe('north');
-  expect(posted[0].toBlockId).toBe('block-b');
-  expect(posted[0].toEnd).toBe('south');
-
-  expect(posted[1].fromBlockId).toBe('block-b');
-  expect(posted[1].fromEnd).toBe('south');
-  expect(posted[1].toBlockId).toBe('block-a');
-  expect(posted[1].toEnd).toBe('north');
-});
-
-test('a stubbed 422 renders the violation and leaves the form populated', async ({ page }) => {
-  await installMockWebSocket(page);
-  await stubApis(page, {
-    onCreateEdge: async (route) => {
-      await route.fulfill({
-        status: 422,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          // #54/Q1: TopologyRejectedError's default message is now the
-          // rendered describeViolations output, not the old bare count.
-          // Inert for this test (violations is non-empty, so EdgesTab
-          // renders the structured list, not this fallback string) but
-          // kept realistic.
-          error: 'Topology invalid: 1 violation — edge __pending__ is a self-loop on block block-a',
-          violations: [{ kind: 'self-loop', edgeId: '__pending__', blockId: 'block-a' }],
-        }),
-      });
-      return true;
-    },
-  });
-
-  await openEdgesTab(page);
-
-  await page.getByLabel('From block').selectOption('block-a');
-  await page.getByPlaceholder('From end').fill('north');
-  await page.getByLabel('To block').selectOption('block-b');
-  await page.getByPlaceholder('To end').fill('south');
-
-  await page.getByRole('button', { name: 'Add' }).click();
-
-  // #54: block-a has a name in the BLOCKS fixture, so the banner renders it.
-  await expect(page.getByText(/self-loop on block "Block A" \(block-a\)/)).toBeVisible();
-
-  // The operator's input must survive the rejection.
-  await expect(page.getByLabel('From block')).toHaveValue('block-a');
-  await expect(page.getByPlaceholder('From end')).toHaveValue('north');
-  await expect(page.getByLabel('To block')).toHaveValue('block-b');
-  await expect(page.getByPlaceholder('To end')).toHaveValue('south');
-});
 
 test('a stubbed invalid topology renders the violation banner', async ({ page }) => {
   await installMockWebSocket(page);
@@ -241,5 +109,40 @@ test('a stubbed invalid topology renders the violation banner', async ({ page })
 
   await expect(
     page.getByText(/edge "Block A:east → block-ghost:west" \(edge-x\) references unknown block block-ghost/),
+  ).toBeVisible();
+});
+
+test('the tab offers no way to author an edge by hand', async ({ page }) => {
+  // The structural claim of #103 PR 5, asserted at the surface an operator
+  // actually touches: there is no form, no delete button, and no second way
+  // into `block_edges`. The compile panel is the only write.
+  await installMockWebSocket(page);
+  await stubApis(page, {
+    initialEdges: [
+      {
+        id: 'edge-1',
+        layoutId: 'layout-1',
+        fromBlockId: 'block-a',
+        fromEnd: 'east',
+        toBlockId: 'block-b',
+        toEnd: 'west',
+        pointConditions: [],
+      },
+    ],
+  });
+
+  await openEdgesTab(page);
+
+  await expect(page.getByText('Block A:east → Block B:west')).toBeVisible();
+
+  await expect(page.getByPlaceholder('From end')).toHaveCount(0);
+  await expect(page.getByPlaceholder('To end')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add' })).toHaveCount(0);
+  await expect(page.getByText('+ point condition')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: 'also create reverse edge' })).toHaveCount(0);
+
+  // And the one control that is offered.
+  await expect(
+    page.getByRole('button', { name: /Compile the graph from the drawing/ }),
   ).toBeVisible();
 });

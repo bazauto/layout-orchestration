@@ -30,18 +30,18 @@ to a loco's direction of travel.
 
 `fromEnd`/`toEnd` are free-text labels ('north', 'yard-3', ...) naming a
 physical opening of a block. They only need to be used consistently for a
-given block. On write, `edgeCreateSchema`/`edgeUpdateSchema` trim and
-lower-case them before checking them against `blockEndLabelSchema`:
+given block. They are checked against `blockEndLabelSchema`:
 
 ```
 /^[a-z0-9][a-z0-9_-]*$/, length 1–64
 ```
 
-so `' North '` normalises to `'north'` rather than being rejected, and a
-block never ends up with both `'north'` and `'North'` as distinct ends by
-accident. A `block_edges` row that fails this pattern (e.g. `'North'`,
-un-normalised) did not come through the API and is treated as DB corruption —
-see "Safe-Stop on invalid topology" below.
+There is no longer a write schema to normalise operator input against it:
+`edgeCreateSchema` and `edgeUpdateSchema` went with the manual edge routes
+(#103 PR 5), and the compiler generates labels from `CARDINAL_END_LABELS`, which
+satisfy the pattern by construction. A `block_edges` row that fails it (e.g.
+`'North'`, un-normalised) is therefore DB corruption — see "Safe-Stop on invalid
+topology" below.
 
 Since #72 the labels are also **generated and stored** in a `block_ends` table
 — see the next section. The contract above is unchanged: `fromEnd`/`toEnd` stay
@@ -49,14 +49,18 @@ free text, stay un-FK'd, and an end label with no other referent stays legal.
 
 ## Block ends: derived by default, authored by exception (#72)
 
-> **Superseded in design, not yet in code.** Everything in this section and in
-> "Proposing candidate edges from the drawing" below describes what ships today
-> and is accurate. It is replaced by `docs/track-graph-compilation.md`
-> (accepted 2026-08-13, tracking issue **#103**), which deletes `block_ends`
-> entirely: the drawing compiles to `block_edges` under operator review, an end
-> label becomes disposable compiler output that nothing references and nobody
-> edits. (D4/D5 of that document — moving length to `blocks` — has **shipped**;
-> the rest has not.)
+> **Superseded in design; the code is most of the way there.** This section
+> describes `block_ends`, which still exists and still works. It is replaced by
+> `docs/track-graph-compilation.md` (accepted 2026-08-13, tracking issue
+> **#103**), which deletes it entirely: the drawing compiles to `block_edges`
+> under operator review, and an end label becomes disposable compiler output that
+> nothing references and nobody edits.
+>
+> **Shipped:** D4/D5 (length on blocks), the compiler, both read surfaces, the
+> apply, the `auto` gate, and — since PR 5 — the review UI, the deletion of the
+> edge-proposal surface, and the deletion of the manual edge write path. The
+> compiler is now the **only** writer of `block_edges`. Still to come: PR 6.2/6.3
+> and PR 7, which delete `block_ends` itself and everything below.
 >
 > The root fault it fixes: **`block_ends.label` is simultaneously the join key
 > `block_edges` references and a geometry-derived description.** An identifier
@@ -158,8 +162,8 @@ and nothing else. What it does not get is *geometry*. `generateBlockEnds` drops
 both colliding clusters from `openings`, so nothing ever matches the new row
 back to a cell: it lists as "not placed", reports as `pinned-end-not-on-diagram`,
 and becomes the warning `end-not-on-diagram` as soon as an edge references it.
-`proposeEdges` also starts no walk from either opening and arrives at them with
-`toEnd: null`, so that block gets no proposals through those ends.
+The walk also starts nothing from either opening, so that block gets no
+compiled edge through those ends.
 
 Westgate Hollow has exactly one today (`Engine / Goods Transfer`, two openings
 both bearing south-east from the run centroid at 118.5° and 134.7°).
@@ -239,35 +243,24 @@ resolves it by hand-creating two pinned ends. Such an end has no geometry to sit
 on and does not draw on the diagram — #97 is the anchor coordinate that would
 fix that.
 
-### Proposing candidate edges from the drawing (#78)
+### What the walk derives, and what it refuses to guess (#78, #91, #104)
 
-> **Superseded by "Compiling the graph from the drawing (#103)" below, and still
-> live.** The proposal surface and the compile surface both ship today and both
-> walk the same ports. The compiler is the one being built on; this one is
-> deleted with the manual edge form (#103 PR 5). Do not extend it.
-
-`GET /api/layouts/:layoutId/grid/edge-proposals` walks the drawing and returns
-the connections it implies, as candidate `block_edges` rows for an operator to
-accept or reject. It **writes nothing**, and there is deliberately no accept
-endpoint: accepting a proposal is an ordinary `POST .../edges`, validated by
-`TopologyService` exactly as a hand-authored edge is. No bypass can exist,
-because there is no second write path to bypass through.
-
-This does not make the track graph derived. `block_edges` stays authored; what
-stops is the *transcription*. The drawing already describes the railway, and
-typing it out again by hand is where the two representations drift apart.
+> The `GET .../grid/edge-proposals` surface and the per-row accept panel that
+> read it are **deleted** (#103 PR 5). The walk they were built on is not: it
+> moved to `services/trackGraphCompiler.ts#compileConnections` (D-A) and is what
+> the compiler runs. Everything below is a property of that walk, and survives
+> the surface that first exposed it.
 
 **The walk is over tile ports, not cells**, which is why it could only be built
 after #91. Two yard roads drawn on adjacent rows touch along their whole length,
-so a cell-based walk would propose an edge between every pair of parallel
-sidings on the layout.
+so a cell-based walk would connect every pair of parallel sidings on the layout.
 
 **Point conditions come from the drawn `pointRoads`, at both ends of the walk.**
 A throat tile is tagged to the block it serves, so a block's opening frequently
 sits *on* a point — and crossing it costs whatever the road using that leg
 requires. In every case a road only counts if it **uses the leg the walk is
 crossing by**: without that test a point reads as "any leg reaches any other",
-and Westgate Hollow proposed `Fiddle Yard 1 ↔ Fiddle Yard 2`, a connection P1
+and Westgate Hollow produced `Fiddle Yard 1 ↔ Fiddle Yard 2`, a connection P1
 cannot make since both yards hang off its diverging legs and meet only at the
 toe.
 
@@ -287,78 +280,41 @@ each block's own opening. Ordinary track is symmetric and yields the pair for
 free; where it does not, the asymmetry is real and synthesising the missing half
 authors an edge the drawing refuses. Mirroring the Fiddle Yard 2 → Fiddle Yard 1
 arrival above produces a `Fiddle Yard 1 → Fiddle Yard 2` departure that trails
-through P1's blades set against it. **A one-way proposal is therefore a
-statement, not a gap in the search**, and the note beside it says which
-direction is missing and why.
+through P1's blades set against it. **A one-way connection is therefore a
+statement, not a gap in the search**, and the gap beside it says which direction
+is missing and why.
 
-**It under-proposes, audibly.** An unclassified tile, a point with no leg mapping
+This matters more now than it did under #78. There, a bad row sat in a review
+list with an operator's eye on it and an Accept button they could decline. Since
+#103 PR 5 the compiler owns the whole edge set, so nothing stands between a
+mirrored false edge and the graph the pathfinder plans on but the diff.
+
+**It under-derives, audibly.** An unclassified tile, a point with no leg mapping
 at all (`blocked-by-unmapped-point`), a drawn leg the mapping does not cover
 (`leg-not-covered-by-road`), and a block with no road out through a boundary
-(`no-road-out-of-block`) each stop the walk and leave a note naming the cell. A
-missing candidate costs a minute of typing; a wrong one is a route granted over
+(`no-road-out-of-block`) each stop the walk and leave a gap naming the cell. A
+missing connection costs a minute of drawing; a wrong one is a route granted over
 track that is not there. Silence and refusal are indistinguishable from outside,
-so the notes are the whole difference between a to-do list and a mystery.
+so those gaps are the whole difference between a to-do list and a mystery.
 
 **What it cannot check.** A point's leg mapping is unverifiable authored data
-(`docs/track-grid.md` D9), and a proposal inherits that uncertainty exactly. This
-does not make point wiring checkable; it makes the drawing and the graph state
-the same thing instead of two different things.
+(`docs/track-grid.md` D9), and a compiled edge inherits that uncertainty exactly.
+Compiling does not make point wiring checkable; it makes the drawing and the
+graph the same thing instead of two different things.
 
-**Refusing to render is a 409, not a 500.** `MAX_EDGE_PROPOSALS` (200) is
-admission control in the spirit of `MAX_EDGES_PER_LAYOUT`: a drawing producing
-more candidates than that is not one an operator can review, so the honest
-answer is to refuse. The refusal mirrors `EdgeLimitExceededError` on
-`POST .../edges` — 409 carrying `limit` and `found` — because the request was
-well-formed and it is the state of the drawing that conflicts. It reached
-Fastify's default handler as a bare 500 until the review surface was built,
-which is the one outcome the rest of this section argues against.
-
-#### Reviewing and accepting proposals (Configure → Edges)
-
-The review panel sits at the top of the Edges tab, collapsed, and **does not
-walk the drawing until it is opened** — the walk is over the whole grid from
-every opening, and it is only wanted while somebody is authoring.
-
-Accepting is `ops.createEdge`, the identical call the manual form beneath it
-makes. The client keeps the server's structural guarantee by having no write of
-its own: there is nothing else for an accepted proposal to travel through.
-
-Four things the panel does deliberately:
-
-- **Both directions are separate rows.** A connection is bidirectional track and
-  `block_edges` is directional, so each pairing is offered twice and either may
-  be declined. Collapsing them would make "accept one way only" unsayable — and
-  since #104 the walk itself sometimes offers only one, which the panel must be
-  able to render as the answer rather than as a missing row.
-- **`existing` is shown, not filtered out.** On a part-authored layout, "the
-  graph already agrees with the drawing" is the most valuable thing this surface
-  can say, and silence is indistinguishable from "not found".
-- **A proposal with an unnamed end has no Accept button.** `fromEnd`/`toEnd` are
-  `string | null`, and posting a `null` is a 400 the operator cannot act on. The
-  check is a *type guard* narrowing both fields, so the call does not compile
-  rather than failing at runtime.
-- **Accept-all does not stop at the first refusal.** Each edge is validated
-  independently; stopping would leave a partly applied batch with no indication
-  of which rows were even attempted. Every row gets its own outcome and the
-  summary counts both sides.
-
-A posted body carries no `lengthMm` at all, and `edgeCreateSchema` is
-`.strict()`, so one that did would be a 400 rather than a silently discarded
-field.
-
-### Geometry can propose connectivity; it can never supply length
+### Geometry can derive connectivity; it can never supply length
 
 `services/gridGeometry.ts` derives openings from drawn connectivity. It does
 not, and must not, derive distance. Tile count bears no relation to physical
 extent — the Westgate Hollow entry feeder is drawn long, is short in reality,
 and is not a block at all.
 
-This is now stronger than it was: length is not on the edge for a proposal to
-leave blank, it is on `blocks.length_mm`, which the drawing never touches
-(D4/#105). Whatever the compiler ends up owning (#103), the one operator-owned
-measurement on the railway sits on an authored row no walk can overwrite.
-`NULL` still means unmeasured and still refuses a braked run
-(`docs/braking.md` B4).
+This is now stronger than it was: length is not a field on the edge for a
+compile to leave blank, it is on `blocks.length_mm`, which the drawing never
+touches (D4/#105). The compiler owns the whole of `block_edges` and still cannot
+touch the one operator-owned measurement on the railway, because it sits on an
+authored row no walk writes. `NULL` still means unmeasured and still refuses a
+braked run (`docs/braking.md` B4).
 
 ## Compiling the graph from the drawing (#103)
 
@@ -368,9 +324,13 @@ and nothing here re-litigates it. What follows is what exists in the code.
 Shipped so far: the compiler and its completeness assertions
 (`services/trackGraphCompiler.ts`), the openings generator
 (`gridGeometry.ts#compileOpenings`), the `compiled_graphs` provenance row, the
-two read surfaces below, and **the apply**. Still to come: the `auto` gate on
-gaps and the review UI. `block_ends` and the manual edge write path are both
-still live and are deleted later in #103.
+three surfaces below, the `auto` gate on gaps, and **the review UI**.
+
+Since PR 5 the compiler is the **only** writer of `block_edges`:
+`POST`/`PUT`/`DELETE .../edges` are gone, `TopologyService.createEdge` /
+`updateEdge` / `deleteEdge` are gone, and so is `GET .../grid/edge-proposals`
+with the panel that read it. `GET .../edges` stays, and the Edges tab still
+lists what it returns. `block_ends` is still live and is deleted in PR 7.
 
 ### The three surfaces
 
@@ -384,15 +344,15 @@ The two reads are separate because they answer different questions at different
 prices (D-H). "Where does this block open" is a question about the drawing and
 the Track Editor asks it on every stroke, the way it already asks for grid
 diagnostics; "what edges does that imply" is a review action taken when the
-panel is opened. Neither read is admin-gated, matching `grid/diagnostics` and
-`grid/edge-proposals`: the **write** is what is gated, and an operator being
-able to see why the layout will not go into `auto` is the point of the surface.
+panel is opened. Neither read is admin-gated, matching `grid/diagnostics`: the
+**write** is what is gated, and an operator being able to see why the layout will
+not go into `auto` is the point of the surface.
 
 A layout that does not exist is a 404 on all three. A drawing that compiles to
 more edges than the review surface will render is a 409 carrying
-`{ limit, found }`, mirroring `EdgeLimitExceededError` on `POST .../edges` —
-never a bare 500, because "no connections found" and "I gave up" must not look
-the same from outside. **Nothing here can Safe-Stop**, however many gaps it
+`{ limit, found }`, matching the shape `EdgeLimitExceededError` uses on the
+apply — never a bare 500, because "no connections found" and "I gave up" must
+not look the same from outside. **Nothing here can Safe-Stop**, however many gaps it
 reports and whichever way the apply goes (D9).
 
 ### What the compiler asserts, and why over its own output
@@ -641,11 +601,13 @@ The tolerance in `isFatalViolation` exists for defence in depth — data
 predating that check, or written outside the API — not as the primary
 guard rail.
 
-Note the asymmetry with the *write* path: `TopologyService#createEdge` and
-`#updateEdge` reject on **any** violation, including `unknown-point` — you
-should never be able to *create* an edge with a dangling point reference
-through the API, even though the system tolerates one it finds already
-sitting in the database.
+Note the asymmetry with the *write* path: `TopologyService#replaceGraph`
+rejects on **any** violation, including `unknown-point` — a compiled graph
+carrying a dangling point reference is never written, even though the system
+tolerates one it finds already sitting in the database. (It cannot arise from a
+compile anyway: the walk reads `pointRoads` off tiles whose `pointId` the grid
+write path resolved in this layout. The check is defence in depth against a
+point deleted between the drawing and the apply.)
 
 ## Validation cost, the edge cap, and why the full pass stays
 
@@ -706,28 +668,37 @@ in `tests/unit/domain/topology.test.ts` and by construction in
 array or a prebuilt `EdgeIndex`, discriminated by `Array.isArray` (true for a
 plain array and for a `Proxy` over one, so the complexity benchmark below can
 wrap the array transparently). `validateTopology` builds the index once
-before its loop, making the full pass O(n); a single-edge check
-(`TopologyService.createEdge`/`updateEdge`) still passes the raw array, which
-costs one O(n) index build for one O(n) check — the same cost it paid before
-#21.
+before its loop, making the full pass O(n). Since #103 PR 5 the full pass is
+the *only* caller in the write path — `replaceGraph` validates the whole
+candidate set — so the single-edge shape, which paid one O(n) index build for
+one O(n) check, no longer runs anywhere outside the exported function's own
+tests.
 
 ### The edge cap: admission control, not an invariant
 
 `domain/topology.ts` exports `MAX_EDGES_PER_LAYOUT = 2000`. It exists because
-making the full pass O(n) doesn't bound `n` — `POST
-/api/layouts/:layoutId/edges` has no auth (#20) and no rate limit, so nothing
-stops it being called far more than a physical layout could ever need. The
+making the full pass O(n) doesn't bound `n`, and nothing else does: the graph
+now arrives in one piece from a compile, and a drawing can be as large as
+somebody has patience to paint. The
 seeded Westgate Hollow layout is ~40 edges; a large club-scale layout (~200
 blocks) is on the order of 1,200. 2,000 is roughly 50x that, chosen so the
 *bounded* worst case stays defensible even if a future change reintroduces a
 quadratic path somewhere: 2,000^2 comparisons is tens of milliseconds — bad,
 but finite and detectable, not an indefinite event-loop stall.
 
-The cap is enforced by `TopologyService.createEdge` only, checked against the
-`existingEdges` list that call already fetches for duplicate-connection
-checking — no extra query. It is **not** enforced elsewhere:
+The cap is enforced by `TopologyService.replaceGraph` only, against the whole
+candidate set — which is where it always belonged, and where it moved when the
+per-row create was deleted (#103 PR 5, OQ1). A cap on how much graph exists is a
+statement about the graph, not about whichever row happened to arrive last.
 
-- Not `updateEdge` or any delete — they don't grow the count.
+There is a second, tighter cap upstream: `MAX_COMPILED_EDGES` (200) refuses to
+*render* a diff nobody could review, which is a statement about the review, not
+about storage. A drawing between the two compiles and applies fine; it just
+cannot be reviewed through this surface, and D1's safety argument rests on the
+diff being reviewable.
+
+The layout cap is **not** enforced elsewhere:
+
 - **Not the load path.** `loadTopology`/`reloadTopology` must still load a
   layout that somehow exceeds the cap — data written outside the API, or a
   cap lowered later — or the system Safe-Stops on a *policy* limit with no
@@ -817,9 +788,10 @@ complexity on its own.
 ## An id is not authority to delete
 
 Every delete in `TopologyService` verifies the record belongs to the `layoutId`
-in the request path before touching it. `deleteEdge`, `deleteBlockWithEdges`,
-and `deletePointIfUnreferenced` all resolve the record first and throw
-(`EdgeNotFoundError` / `RecordNotFoundError` → 404) on a mismatch. The
+in the request path before touching it. `deleteBlockWithEdges` and
+`deletePointIfUnreferenced` both resolve the record first and throw
+(`RecordNotFoundError` → 404) on a mismatch; `replaceGraph` is scoped to one
+layout by construction, since it takes a layout and rewrites the whole of it. The
 repository methods are scoped by `layoutId` in their `WHERE` clauses too, so a
 mismatched layout deletes zero rows rather than another layout's records.
 
@@ -852,14 +824,17 @@ injection style as the existing `onTopologyChanged` callback, so
 `TopologyService` stays testable standalone (a hand-rolled `IRouteLockView`
 in tests, no real `ReservationService` needed).
 
-- `updateEdge` / `deleteEdge`: refused (`LockedByRouteError` -> HTTP 409)
-  when the edge is held by an `active` or `suspended` reservation.
 - `deleteBlockWithEdges`: refused when the block itself, or any edge
   referencing it, is held.
 - `deletePointIfUnreferenced`: refused when the point is held.
-- `createEdge` stays **permitted** — a new edge moves no train, and it
-  cannot be traversed into reserved track because the target block is
-  already locked.
+- `replaceGraph`: refused when **any** route holds **anything** in the layout —
+  `findAnyHeldRoute`, not a per-target lookup, because every row is about to be
+  deleted and every label regenerated (D-E).
+
+`updateEdge` / `deleteEdge` were on this list and are gone with the manual write
+path (#103 PR 5). `createEdge` was the one deliberate exemption — a new edge
+moves no train — and that exemption has no subject any more: `replaceGraph` is
+never purely additive.
 
 Every one of those refusals is a **409 carrying `{ error, routeId }`** on the
 wire. That is now true of the block and point deletes as well, which named the

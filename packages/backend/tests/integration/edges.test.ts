@@ -23,7 +23,6 @@ import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapt
 import { ILayoutRepository, BlockRecord, PointRecord } from '../../src/ports/ILayoutRepository';
 import { IRouteLockView } from '../../src/ports/IRouteLockView';
 import { BlockEdge } from '../../src/domain/types';
-import { MAX_EDGES_PER_LAYOUT } from '../../src/domain/topology';
 import {
   authenticateAsAdmin,
   authenticateAsOperator,
@@ -171,35 +170,8 @@ describe('Edge routes', () => {
     expect(JSON.parse(res.body)).toEqual([]);
   });
 
-  it('POST with a malformed payload (missing required field) returns 400 with details', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1' },
-    });
-    expect(res.statusCode).toBe(400);
-    const body = JSON.parse(res.body);
-    expect(body.details).toBeDefined();
-  });
-
-  it('POST with an unknown key (id) returns 400 (.strict())', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { id: 'sneaky', fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
-    });
-    expect(res.statusCode).toBe(400);
-  });
-
-  it('POST with a valid payload returns 201', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
-    });
-    expect(res.statusCode).toBe(201);
-    const body = JSON.parse(res.body);
-    expect(body).toMatchObject({
+  it('lists what the graph actually holds, whoever wrote it', async () => {
+    await repo.createBlockEdge({
       layoutId: LAYOUT_ID,
       fromBlockId: 'b1',
       fromEnd: 'east',
@@ -207,179 +179,57 @@ describe('Edge routes', () => {
       toEnd: 'west',
       pointConditions: [],
     });
-    // Distance moved to the block (D4); an edge no longer carries one at all.
-    expect(body).not.toHaveProperty('lengthMm');
-  });
 
-  it('POST carrying the retired lengthMm is a 400, not a silently dropped field', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west', lengthMm: 500 },
-    });
-    expect(res.statusCode).toBe(400);
-  });
-
-  it('POST with a fromBlockId belonging to another layout returns 422 with a violations[0].kind of unknown-block', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b-other', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
-    });
-    expect(res.statusCode).toBe(422);
-    const body = JSON.parse(res.body);
-    expect(body.violations[0].kind).toBe('unknown-block');
-  });
-
-  it('POST with fromEnd "  North " normalises to "north" and returns 201', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1', fromEnd: '  North ', toBlockId: 'b3', toEnd: 'south' },
-    });
-    expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body).fromEnd).toBe('north');
-  });
-
-  it('PUT updates an existing edge and returns 200', async () => {
-    const createRes = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
-    });
-    const created = JSON.parse(createRes.body);
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: `/api/layouts/${LAYOUT_ID}/edges/${created.id}`,
-      payload: { toEnd: 'north' },
-    });
+    const res = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).toEnd).toBe('north');
+    expect(JSON.parse(res.body)).toHaveLength(1);
   });
 
-  it('PUT on a nonexistent edge returns 404', async () => {
+  it('an operator may still read edges', async () => {
+    await authenticateAsOperator(app);
+    const res = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it.each([
+    ['POST', `/api/layouts/${LAYOUT_ID}/edges`],
+    ['PUT', `/api/layouts/${LAYOUT_ID}/edges/e1`],
+    ['DELETE', `/api/layouts/${LAYOUT_ID}/edges/e1`],
+  ])('%s is a 404 — the write path does not exist (#103 PR 5, OQ1)', async (method, url) => {
+    // **404, not 403 or 405.** The same posture `sensorSimulation` takes for an
+    // absent capability: a route that exists and refuses invites "under what
+    // conditions would it accept", and the answer here is never. `block_edges`
+    // is written by `POST .../topology/compile/apply` and by nothing else, so a
+    // second write path would reintroduce at a new seam the two-representations
+    // problem #103 exists to end — D3 makes a recompile a replace, and a
+    // hand-authored edge would simply vanish at the next apply.
     const res = await app.inject({
-      method: 'PUT',
-      url: `/api/layouts/${LAYOUT_ID}/edges/does-not-exist`,
-      payload: { toEnd: 'north' },
+      method: method as 'POST' | 'PUT' | 'DELETE',
+      url,
+      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
     });
+
     expect(res.statusCode).toBe(404);
+    // Nothing reached the repository — this is an absent route, not a handler
+    // that read the body and thought better of it.
+    expect(repo.createBlockEdge).not.toHaveBeenCalled();
+    expect(repo.updateBlockEdge).not.toHaveBeenCalled();
+    expect(repo.deleteBlockEdge).not.toHaveBeenCalled();
   });
 
-  it('PUT that would create a self-loop returns 422', async () => {
-    const createRes = await app.inject({
+  it('answers an unauthenticated caller 401 first — the auth hook precedes routing', async () => {
+    // Not 404, and that is the auth hook doing its job rather than an
+    // inconsistency: it is a global `onRequest` and runs before Fastify has
+    // matched a route, so "this path does not exist" is only ever visible to
+    // someone with a session. Pinned because the case above asserts 404 and
+    // the difference between the two is worth being deliberate about.
+    const anon = await buildTestServer(makeRepo(), { skipLogin: true });
+    const res = await anon.inject({
       method: 'POST',
       url: `/api/layouts/${LAYOUT_ID}/edges`,
       payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
     });
-    const created = JSON.parse(createRes.body);
-
-    const res = await app.inject({
-      method: 'PUT',
-      url: `/api/layouts/${LAYOUT_ID}/edges/${created.id}`,
-      payload: { toBlockId: 'b1' },
-    });
-    expect(res.statusCode).toBe(422);
-    const body = JSON.parse(res.body);
-    expect(body.violations.some((v: { kind: string }) => v.kind === 'self-loop')).toBe(true);
-  });
-
-  it('DELETE removes an existing edge and returns 204', async () => {
-    const createRes = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
-    });
-    const created = JSON.parse(createRes.body);
-
-    const res = await app.inject({
-      method: 'DELETE',
-      url: `/api/layouts/${LAYOUT_ID}/edges/${created.id}`,
-    });
-    expect(res.statusCode).toBe(204);
-
-    const listRes = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
-    expect(JSON.parse(listRes.body)).toEqual([]);
-  });
-
-  it('DELETE on a nonexistent edge returns 404', async () => {
-    const res = await app.inject({
-      method: 'DELETE',
-      url: `/api/layouts/${LAYOUT_ID}/edges/does-not-exist`,
-    });
-    expect(res.statusCode).toBe(404);
-  });
-
-  it('POST at the edge cap returns 409 with limit/current, and a rejected create does not partially apply', async () => {
-    // Filled through the repo fake directly, not one HTTP POST per edge — a
-    // capped bulk insert through the API would itself be O(N^2) and would
-    // dominate the test runtime for no benefit (see the Step 6 plan note).
-    for (let i = 0; i < MAX_EDGES_PER_LAYOUT; i++) {
-      await repo.createBlockEdge({
-        layoutId: LAYOUT_ID,
-        fromBlockId: 'b1',
-        fromEnd: `east-${i}`,
-        toBlockId: 'b2',
-        toEnd: `west-${i}`,
-        pointConditions: [],
-      });
-    }
-
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1', fromEnd: 'north', toBlockId: 'b2', toEnd: 'south' },
-    });
-
-    expect(res.statusCode).toBe(409);
-    const body = JSON.parse(res.body);
-    expect(body.limit).toBe(MAX_EDGES_PER_LAYOUT);
-    expect(body.current).toBe(MAX_EDGES_PER_LAYOUT);
-
-    const listRes = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
-    expect(JSON.parse(listRes.body)).toHaveLength(MAX_EDGES_PER_LAYOUT);
-  });
-
-  it('PUT and DELETE against an edge a route holds are 409s naming the route, not 500s', async () => {
-    // D10's write-guard reaching the wire. `LockedByRouteError` matched no
-    // `catch` here, so a refusal that the service performs correctly came back
-    // as a bare 500 — the server reporting itself broken for doing its job.
-    const created = JSON.parse(
-      (
-        await app.inject({
-          method: 'POST',
-          url: `/api/layouts/${LAYOUT_ID}/edges`,
-          payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
-        })
-      ).body,
-    );
-
-    const held: IRouteLockView = {
-      findRouteHoldingBlock: () => null,
-      findRouteHoldingPoint: () => null,
-      findRouteHoldingEdge: () => 'route-42',
-      findAnyHeldRoute: () => 'route-42',
-    };
-    const guarded = await buildTestServer(repo, { lockView: held });
-
-    const put = await guarded.inject({
-      method: 'PUT',
-      url: `/api/layouts/${LAYOUT_ID}/edges/${created.id}`,
-      payload: { toEnd: 'north' },
-    });
-    expect(put.statusCode).toBe(409);
-    expect(JSON.parse(put.body)).toMatchObject({ routeId: 'route-42' });
-
-    const del = await guarded.inject({
-      method: 'DELETE',
-      url: `/api/layouts/${LAYOUT_ID}/edges/${created.id}`,
-    });
-    expect(del.statusCode).toBe(409);
-
-    // Neither refusal touched the graph.
-    const listRes = await guarded.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
-    expect(JSON.parse(listRes.body)).toHaveLength(1);
+    expect(res.statusCode).toBe(401);
   });
 });
 
@@ -399,10 +249,16 @@ describe('Topology routes', () => {
   });
 
   it('POST /api/layouts/:layoutId/topology/revalidate reloads and reports the current edge count', async () => {
-    await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
+    // Seeded through the repository rather than the API: there is no edge write
+    // route any more, and what this asserts is that revalidate re-reads the
+    // stored graph — not how the graph got there.
+    await repo.createBlockEdge({
+      layoutId: LAYOUT_ID,
+      fromBlockId: 'b1',
+      fromEnd: 'east',
+      toBlockId: 'b2',
+      toEnd: 'west',
+      pointConditions: [],
     });
 
     const res = await app.inject({
@@ -416,60 +272,3 @@ describe('Topology routes', () => {
   });
 });
 
-// ─── Role enforcement ────────────────────────────────────────────────────────
-//
-// The plan's acceptance criterion, verbatim: "Roles enforced: operator
-// cannot write topology or config." Edges are the sharpest case since
-// they're purely topology, no driving angle at all.
-
-describe('Edge routes — role enforcement', () => {
-  let repo: ILayoutRepository;
-  let app: Awaited<ReturnType<typeof buildTestServer>>;
-
-  beforeEach(async () => {
-    repo = makeRepo();
-    app = await buildTestServer(repo, { skipLogin: true });
-  });
-
-  it('an operator creating an edge is refused with 403', async () => {
-    await authenticateAsOperator(app);
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
-    });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it('an operator may still read edges', async () => {
-    await authenticateAsOperator(app);
-    const res = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/edges` });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it('an operator deleting an edge is refused with 403', async () => {
-    await authenticateAsAdmin(app);
-    const createRes = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
-    });
-    const created = JSON.parse(createRes.body);
-
-    await authenticateAsOperator(app);
-    const res = await app.inject({
-      method: 'DELETE',
-      url: `/api/layouts/${LAYOUT_ID}/edges/${created.id}`,
-    });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it('an unauthenticated edge create is rejected with 401, not 403', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/layouts/${LAYOUT_ID}/edges`,
-      payload: { fromBlockId: 'b1', fromEnd: 'east', toBlockId: 'b2', toEnd: 'west' },
-    });
-    expect(res.statusCode).toBe(401);
-  });
-});

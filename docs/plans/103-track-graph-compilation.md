@@ -1170,6 +1170,43 @@ Library, or a Playwright assertion in the compile spec from PR 5).
 
 ### PR 5 — The compile-diff review UI; the manual edge form goes
 
+> **Shipped**, with four notes:
+>
+> 1. **The walk's unit coverage was moved, not deleted.** Step 5.1 says to delete
+>    `tests/unit/services/edgeProposals.test.ts`. Two thirds of that file tests
+>    `compileConnections` — the port walk, which D-A *moved* rather than removed
+>    — and `trackGraphCompiler.test.ts` says in its own header that the walk is
+>    covered there. Deleting it as written would have removed the only coverage
+>    of rotation handling, condition accumulation across two points in series,
+>    the diamond blind spot, and the buffered-end guarantee. Those 15 cases are
+>    now `tests/unit/services/compileConnections.test.ts`, rewritten against
+>    `compileConnections` and `compileOpenings` directly; the `reconcileProposals`
+>    half went with #78.
+> 2. **`Apply` is disabled on a diff that is empty *or only relabelling*.** The
+>    plan says "disabled while `diff` is empty". A relabel-only diff is not
+>    empty, but a label is disposable compiler output naming no physical
+>    difference (D8) — offering Apply for one asks the operator to approve a
+>    graph that means exactly what the current one means.
+>    `hasSubstantiveChange` is the predicate, and it is pure.
+> 3. **Three scenario/unit tests were re-pointed rather than deleted**, because
+>    they test properties that outlive the write path they used. `deleteEdge` was
+>    the D10 route-lock scenario (now `deleteBlockWithEdges`, the surviving
+>    cascade) and the Safe-Stop healing path in `topology-invalid.scenario`
+>    (now `replaceGraph`, which is what an apply of a repaired drawing does).
+>    `useLayoutConfig.test.ts`'s violations case now exercises `mutate` directly:
+>    the 422-carries-violations behaviour it defended is what `CompilePanel`
+>    renders.
+> 4. **An unauthenticated `POST .../edges` is a 401, not the 404 step 5.2
+>    specifies.** The auth hook is a global `onRequest` and runs before Fastify
+>    matches a route, so route absence is only ever visible to a caller with a
+>    session. Both are pinned by tests; the 404 holds for every authenticated
+>    caller, which is the assertion that matters.
+>
+> **Step 5.4 (rollout on Westgate Hollow) was not performed.** It is an operator
+> action against the live layout — press Apply and write 22 edges — and this
+> agent does not press it. The runbook is below, unchanged and now executable
+> through the UI.
+
 This is where the operator finally compiles Westgate Hollow.
 
 #### Step 5.1 — Delete the proposal surface
