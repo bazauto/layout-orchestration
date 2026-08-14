@@ -257,24 +257,26 @@ Recorded rather than closed — do not treat any of these as bugs to fix in pass
 - **A point tile's leg mapping is unverifiable authored data.** Nothing can check which
   way round a physical point is wired, and `pointConditions` carries no geometry to check
   it against (`docs/track-grid.md` D9).
-- **An end the generator refused to name cannot be placed on the drawing.** An
-  `end-label-collision` drops *both* openings from `generateBlockEnds`. It no longer
-  affects the graph (`compileOpenings` disambiguates by suffix and names every opening)
-  and since PR 6.2 there is no editor surface that shows it either — it survives only as a
-  grid diagnostic over a table nothing else reads, and dies with `block_ends` in PR 7. Westgate Hollow has exactly one (`Engine / Goods Transfer`, two openings both
-  bearing south-east). **Both obvious fixes are rejected** — an anchor coordinate (#97)
-  and a 16-point bearing, which separates these two angles by coincidence and breaks the
-  correspondence with `TileEdge`. #103 dissolves it instead: a disposable label may be
-  disambiguated freely, so the refusal has no reason to exist.
+- **`end-label-collision` is closed on the live layout, and is now only a `block_ends`
+  artefact.** Westgate Hollow's one collision (`Engine / Goods Transfer`, two openings
+  both bearing south-east) is the case #103 was named after: `generateBlockEnds` dropped
+  *both*, so a real, drawn, trafficable opening was unreferenceable and **naming failure
+  became routing failure**. The applied graph carries
+  `southeast-1 → Engine Shed 1/2` and `southeast-2 → Goods Shed` — `compileOpenings`
+  disambiguates by suffix, so there was nothing to refuse. The old refusal survives only
+  as a grid diagnostic over a table nothing else reads and dies with `block_ends` in
+  PR 7. **Both obvious fixes stay rejected** — an anchor coordinate (#97) and a 16-point
+  bearing, which separates these two angles by coincidence and breaks the correspondence
+  with `TileEdge`. Neither was needed: a disposable label may be disambiguated freely.
 - **Westgate Hollow's classification pass is done** — 0 unclassified tiles, every block
   with in-service sensors — so `unclassified-tile` and `block-without-detection` are both
   silent on the live layout. That is a finished authoring pass, not a broken check. The
-  drawing now compiles to a **single connected component with no gaps** — 90 tiles and 9
-  blocks to 22 edges and 19 openings, measured through the wired
-  `GET .../topology/compile` against a copy of the live DB taken with its `-wal`. The
-  geometry is complete; `block_edges` is nevertheless still **empty**, because nobody has
-  pressed apply on the live layout yet. Since #103 PR 5 that is a button in Configure →
-  Edges, so it is a decision waiting on an operator, not a missing capability.
+  drawing compiles to a **single connected component with no gaps** — 90 tiles and 9
+  blocks to 22 edges and 19 openings. **The operator has applied it** (2026-08-14): the
+  live `block_edges` holds those 22 rows and `compiled_graphs` carries the matching
+  fingerprint, so the graph is no longer stale and the layout no longer refuses `auto`
+  for want of one. Counts measured against a copy of the live DB taken with its `-wal`;
+  prefer a fresh measurement over any quoted here.
 - **Read the live DB with its `-wal`, or you will read a stale layout.** `data/layout.db`
   is in WAL mode and the log runs to megabytes, so copying the `.db` alone silently drops
   recent drawing edits. It cost a round of wrong conclusions here: tiles the operator had
