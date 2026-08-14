@@ -324,19 +324,33 @@ them:
 **Shipped.** `App.tsx` derives one `visibleTabs` list from `role`, which the
 nav and the panel render guards both read.
 
-**A `monitor` currently gets this same non-admin nav** — `visibleTabs` reads
-`role === 'admin' ? [...] : ['operate']`, so a monitor sees the Operate
-screen, throttle/point controls included, exactly as an operator does. Every
-one of those controls is refused server-side per "The monitor role" above
-(D2/D3), so nothing a monitor does through them actually moves anything —
-but the screen does not yet *say* that, which is the "greyed-out control"
-problem this very section argues against for the wrong role. That is #63's
-frontend half, not a regression introduced here: `visibleTabs` was written
-for a two-role world and is deliberately not being widened to a three-way
-branch in this PR, since the destination for `monitor` is the purpose-built
-view named below, not a corrected `visibleTabs`.
+**The nav is now a table, not a branch** (`TABS_BY_ROLE` in `App.tsx`):
 
-**An operator sees the Operate screen and nothing else.** The Track Editor
+| Role | Tabs |
+|---|---|
+| `admin` | Operate, Monitor, Track Editor, Configure |
+| `operator` | Operate, Monitor |
+| `monitor` | Monitor |
+
+A `monitor` briefly shared the operator's nav — every control on it refused
+server-side by "The monitor role" above (D2/D3), but with the screen not
+saying so, which is exactly the greyed-out-control problem this section argues
+against. That gap is closed: a monitor is offered the purpose-built view and
+nothing else, and `appTab` initialises to the role's *first* visible tab
+rather than the constant `'operate'`, so the role cannot land on a screen its
+nav has no way back to.
+
+**An operator gets the Monitor view as well**, which "an operator sees the
+Operate screen and nothing else" below does not literally allow. That sentence
+predates the view. This same section rejects a read-only Configure and a
+read-only track view on the grounds that what an operator actually wants is
+"a purpose-built situational-awareness view … tracked separately as the
+`monitor` role, issue #63" — this is that view, and withholding it would
+honour the letter of the sentence against its own argument. The sentence is
+kept as written because the rest of it still holds exactly: what an operator
+does *not* get is the authoring UI.
+
+**An operator sees no authoring UI.** The Track Editor
 and Configure entries are absent from the nav for a non-admin, and their
 panels are not rendered. Absent, not disabled: a greyed-out control still
 poses a question ("why can't I?") whose honest answer is "you may not", and a

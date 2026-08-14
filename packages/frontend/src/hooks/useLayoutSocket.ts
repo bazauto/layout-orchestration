@@ -51,6 +51,20 @@ const MAX_RECONNECT_MS = 30000;
 export function useLayoutSocket() {
   const [snapshot, setSnapshot] = useState<StateSnapshot>(INITIAL_SNAPSHOT);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
+  /**
+   * When this client last heard *anything* from the server (#82).
+   *
+   * Every inbound frame counts, not just `HEARTBEAT`: a layout busy enough to
+   * be emitting state changes is self-evidently live, and requiring a
+   * heartbeat specifically would report a stale connection on a socket
+   * delivering events. The heartbeat exists to cover the *quiet* case, which
+   * is the one a mimic cannot otherwise distinguish from a frozen socket.
+   *
+   * `null` until the first frame arrives — distinct from "a long time ago",
+   * because a connection that has not yet delivered its opening
+   * `STATE_SNAPSHOT` has nothing on screen to have gone stale.
+   */
+  const [lastMessageAt, setLastMessageAt] = useState<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectDelay = useRef(BASE_RECONNECT_MS);
   const unmounted = useRef(false);
@@ -72,15 +86,24 @@ export function useLayoutSocket() {
       try {
         msg = JSON.parse(evt.data) as ServerMessage;
       } catch {
+        // Deliberately does NOT stamp liveness: a frame this client cannot
+        // parse proves the socket is open, not that the two ends still agree
+        // about what is on it. Treating it as a sign of life would be the
+        // display reassuring itself.
         return;
       }
 
+      setLastMessageAt(Date.now());
       setSnapshot((prev) => applyMessage(prev, msg));
     };
 
     ws.onclose = () => {
       if (unmounted.current) return;
       setConnectionState('disconnected');
+      // Liveness restarts from nothing on a drop. Carrying the old stamp over
+      // would let a reconnect that has not yet delivered its snapshot read as
+      // `live` for up to one stale-window, showing pre-drop state as current.
+      setLastMessageAt(null);
       // Deliberately spread `s` rather than reset to INITIAL_SNAPSHOT: a
       // sensor fault (#34) or route fault (#4) is latched on the backend, not
       // on this connection, so a drop must not clear `sensorFaults` /
@@ -113,7 +136,7 @@ export function useLayoutSocket() {
     }
   }, []);
 
-  return { snapshot, connectionState, send };
+  return { snapshot, connectionState, lastMessageAt, send };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useAuth } from './hooks/useAuth';
 import { useCapabilities } from './hooks/useCapabilities';
 import { useLayoutSocket } from './hooks/useLayoutSocket';
+import { useConnectionHealth } from './hooks/useConnectionHealth';
 import { useLayoutConfig } from './hooks/useLayoutConfig';
 import { StatusBar } from './components/StatusBar';
 import { LoginScreen } from './components/LoginScreen';
@@ -11,12 +12,54 @@ import { RoutesPanel } from './components/RoutesPanel';
 import { SensorSimulationPanel } from './components/SensorSimulationPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { GridEditor } from './components/GridEditor';
+import { MonitorView } from './components/MonitorView';
 import { SensorFaultBanner } from './components/SensorFaultBanner';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { apiFetch, API_BASE } from './api';
 import { ClientMessage, Role, SystemMode } from './types';
 
-type AppTab = 'operate' | 'configure' | 'grid';
+type AppTab = 'operate' | 'monitor' | 'configure' | 'grid';
+
+/**
+ * Which tabs a role is offered (#61, #63).
+ *
+ * | role       | tabs                                   |
+ * |------------|----------------------------------------|
+ * | `admin`    | Operate, Monitor, Track Editor, Configure |
+ * | `operator` | Operate, Monitor                       |
+ * | `monitor`  | Monitor                                |
+ *
+ * Two decisions are encoded here, both recorded in `docs/auth.md`:
+ *
+ * **The authoring screens are absent for a non-admin, not disabled** (#61). A
+ * greyed-out control still poses a question whose honest answer is "you may
+ * not", and a nav entry says that better by not existing.
+ *
+ * **An operator gets the Monitor view too**, which "an operator sees the
+ * Operate screen and nothing else" does not literally allow — that sentence
+ * predates this view. The same section rejects a read-only Configure and a
+ * read-only track view on the grounds that what an operator actually wants is
+ * "a purpose-built situational-awareness view … tracked separately as the
+ * `monitor` role, issue #63". This is that view. Withholding it would honour
+ * the letter of the sentence against its own argument.
+ *
+ * This is affordance, not authorisation. Hiding a tab does nothing to `curl`,
+ * a stale browser tab or a second client — `requireAdmin` on the write routes
+ * and the WebSocket's per-connection role gate are the enforcement, and stay
+ * load-bearing.
+ */
+const TABS_BY_ROLE: Record<Role, AppTab[]> = {
+  admin: ['operate', 'monitor', 'grid', 'configure'],
+  operator: ['operate', 'monitor'],
+  monitor: ['monitor'],
+};
+
+const TAB_LABELS: Record<AppTab, string> = {
+  operate: 'Operate',
+  monitor: 'Monitor',
+  grid: 'Track Editor',
+  configure: 'Configure',
+};
 
 export default function App() {
   const auth = useAuth();
@@ -46,19 +89,27 @@ function AuthenticatedApp({
   // (Q3, docs/auth.md) — this is the client-side mirror, resetting local
   // auth state back to LoginScreen the same way a deliberate "Log out" does.
   const capabilities = useCapabilities();
-  const { snapshot, connectionState, send } = useLayoutSocket();
+  const { snapshot, connectionState, lastMessageAt, send } = useLayoutSocket();
   const { systemStatus, systemMode, safeStopReason, blocks, points, locos, routes, sensorFaults, routeFaults } =
     snapshot;
-  const [appTab, setAppTab] = useState<AppTab>('operate');
+
+  // One derived list feeds both the nav and the render guards below, rather
+  // than scattering role checks — a panel must not render even if `appTab`
+  // somehow held a tab this role cannot see (a future state-restore or deep
+  // link).
+  const visibleTabs = TABS_BY_ROLE[role];
+  // A `monitor` has no Operate screen to default to. Falls back to the first
+  // tab the role actually has rather than to a constant.
+  const [appTab, setAppTab] = useState<AppTab>(() => visibleTabs[0]);
   const [layoutId, setLayoutId] = useState<string | null>(null);
 
-  // #61: an operator sees the Operate screen and nothing else — the Track
-  // Editor and Configure nav entries are absent, not disabled, and the
-  // panels behind them must not render even if `appTab` somehow held
-  // 'grid'/'configure' (a future state-restore or deep link). One derived
-  // list feeds both the nav and the render guards below, rather than
-  // scattering `role === 'admin'` checks (docs/auth.md, "Operator UI scope").
-  const visibleTabs: AppTab[] = role === 'admin' ? ['operate', 'grid', 'configure'] : ['operate'];
+  /**
+   * #82: whether what is on screen can still be trusted as current. Derived
+   * once here and handed down, so the status bar and the mimic cannot
+   * disagree about it — a display whose two liveness indicators differ is
+   * worse than one that has none.
+   */
+  const freshness = useConnectionHealth(connectionState, lastMessageAt);
 
   useEffect(() => {
     if (connectionState !== 'connected' || layoutId) return;
@@ -115,7 +166,7 @@ function AuthenticatedApp({
             onClick={() => setAppTab(t)}
             style={{ ...styles.navBtn, ...(appTab === t ? styles.navBtnActive : {}) }}
           >
-            {t === 'operate' ? 'Operate' : t === 'grid' ? 'Track Editor' : 'Configure'}
+            {TAB_LABELS[t]}
           </button>
         ))}
         <div style={styles.session}>
@@ -191,6 +242,19 @@ function AuthenticatedApp({
               );
             })()}
           </>
+        )}
+        {appTab === 'monitor' && visibleTabs.includes('monitor') && (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <MonitorView
+              layoutId={layoutId}
+              blocks={layoutConfig.config.blocks}
+              points={layoutConfig.config.points}
+              sensors={layoutConfig.config.sensors}
+              locos={layoutConfig.config.locos}
+              snapshot={snapshot}
+              freshness={freshness}
+            />
+          </div>
         )}
         {appTab === 'grid' && visibleTabs.includes('grid') && (
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>

@@ -27,16 +27,14 @@ visitor at an open day is exactly where a silently frozen diagram goes
 unnoticed for longest, and where the viewer is least equipped to notice on
 their own.
 
-## Scope: this PR is the backend half
+## Scope
 
-This document covers what #82 asks for in its "What to do" list only insofar
-as the backend has to move: the heartbeat itself (item 3), and the
-verification that a reconnect resynchronises correctly (open question 2). The
-frontend consumer — a visible connection-state indicator, per-item staleness
-dimming derived from it, and Safe-Stop made unmissable on the diagram (items
-1, 2 and 4) — lands in a later PR, once #75's shared renderer exists for the
-editor and monitor views to degrade identically. Nothing here is blocked on
-that; the wire contract (D5–D7 below) is stable and frontend-independent.
+**Complete.** The backend half — the heartbeat itself (#82 item 3) and the
+verification that a reconnect resynchronises correctly (open question 2) —
+is D5–D7 below. The frontend half is M1–M5 at the end of this document: the
+connection-state indicator (item 1), the treatment of staleness (item 2, and
+see D6 for why it is not what the issue asked for), and Safe-Stop made
+unmissable on the diagram (item 4).
 
 ## D5 — The heartbeat is an application-level `ServerMessage`, not a protocol-level ping
 
@@ -137,6 +135,101 @@ connection's view is current, not stale-then-corrected.
 This was not a bug. It is recorded here, verified rather than left as an open
 question, because #82 explicitly asked for the check rather than the
 assumption.
+
+## The frontend half (#63, #75)
+
+### M1 — Liveness is derived once, at the top, and handed down
+
+`useLayoutSocket` records `lastMessageAt` on **every** inbound frame, not just
+`HEARTBEAT`: a layout busy enough to be emitting state changes is
+self-evidently live, and requiring a heartbeat specifically would report a
+stale connection on a socket delivering events. The heartbeat covers the
+*quiet* case, which is the only one a mimic cannot otherwise tell from a
+frozen socket.
+
+`useConnectionHealth` turns that into one word — `live` / `stale` /
+`disconnected` — in `App`, which passes it down. Two indicators computing
+their own answer could disagree, and a display whose two liveness indicators
+differ is worse than one with none.
+
+Two details that are decisions rather than mechanics:
+
+- **A frame that fails to parse does not stamp liveness.** It proves the
+  socket is open, not that the two ends still agree about what is on it.
+- **A drop resets `lastMessageAt` to `null`.** Carrying the old stamp across a
+  reconnect would let a socket that has reopened but not yet delivered its
+  snapshot read as `live` for up to one stale-window, showing pre-drop state
+  as current.
+
+### M2 — The health check needs a timer, and that timer is the whole feature
+
+Staleness is the *absence* of messages, and an absence produces no React
+render. Without a tick, a socket that froze at 12:00 keeps reporting `live`
+for ever — the component simply never re-evaluates. `useConnectionHealth`
+therefore re-checks on a `HEARTBEAT_INTERVAL_MS` interval. The worst case is
+one interval of over-reporting freshness past the threshold (20s against a 15s
+threshold), which is why the threshold is three missed heartbeats rather than
+one: it is already sized not to trip on jitter.
+
+### M3 — Degradation covers the canvas; it is never a badge
+
+When `freshness` is anything but `live`, the mimic is overlaid with a wash, a
+glyph and a sentence saying the diagram is showing the last state received and
+is not a picture of the layout now. Not a corner badge: the failure this
+addresses is that a frozen mimic looks *completely normal*, so the marking has
+to be impossible to read past. Per #81 it carries a word and a glyph, never a
+tint alone.
+
+The overlay is `pointer-events: none` so pan and zoom still work. Someone
+investigating a frozen display should not also find the diagram unresponsive.
+
+Safe-Stop gets the same treatment for the same reason (#82 item 4) and the two
+**stack** rather than competing — a stale Safe-Stop is still a Safe-Stop.
+
+### M4 — The status strip stays mounted with no layout loaded
+
+`MonitorView` renders its strip above the canvas whether or not a drawing
+loaded. An unattended display that failed to fetch a layout would otherwise
+show a bare "No layout selected" with nothing saying whether it is even still
+connected — the same "looks fine, is not" failure as a frozen mimic, reached
+from a different direction. A unit test pins it.
+
+### M5 — What the overlay draws, and what it refuses to
+
+Drawn, all through the one shared `TrackDiagram` (#75) so the editor and the
+monitor cannot drift:
+
+| Fact | Treatment | Why that channel |
+|---|---|---|
+| Block occupancy | Fill + hatch pattern | Areas; three states must survive greyscale (#81) |
+| Block lock | Dashed outline **around the run** | Composes with the fill — a block can be locked and clear |
+| Commanded point road | Solid where set, dimmed where not, dashed where indeterminate | `docs/diagram-encoding.md` says a set/dimmed pair is already a non-colour encoding |
+| Occupants | Words beside the block label | The only naming channel left once state takes the colour |
+
+**Block identity gives up the colour channel.** A tile cannot carry two
+independent colour systems and stay readable, so where live state is drawn the
+`BLOCK_TINTS` wash is not. That is the standing rule
+`docs/diagram-encoding.md` already recorded, and it is why one-label-per-run
+(#68) matters beyond tidiness: on the monitor the label is the *only* thing
+naming a block.
+
+Refused, each for a recorded reason:
+
+- **No separate route layer.** Every block on a granted route carries
+  `lockedByRoute`, so a route highlight would be a second mark for one fact,
+  competing for tiles that already carry occupancy and the lock outline.
+- **No train placed at a spot, and nothing animated between blocks.** Position
+  is block-granular and always will be (`docs/braking.md` B7 — open-loop dead
+  reckoning, no loco feedback). Interpolation would assert a precision the
+  system does not have.
+- **No per-point commanded/confirmed qualifier.** Until #25 *every* position
+  is commanded, so the view says so once in the status strip. A distinction
+  drawn before there is anything to distinguish would be a lie, and per-point
+  noise besides.
+- **An occupied block with no identified occupant says nothing**, rather than
+  implying it is empty of vehicles. Rolling stock is not modelled (#39); the
+  occupant model is a list precisely so #39 populates it rather than reshaping
+  every consumer.
 
 ## Related
 
