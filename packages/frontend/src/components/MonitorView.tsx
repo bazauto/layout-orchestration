@@ -135,8 +135,6 @@ export function MonitorView({
             runs={model.runs}
             tintOf={model.tintOf}
             pointLabelAt={model.pointLabelAt}
-            portsAtCell={model.portsAtCell}
-            openingsAtCell={model.openingsAtCell}
             points={points}
             blocks={blocks}
             sensorNames={sensorNames}

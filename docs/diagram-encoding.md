@@ -1,13 +1,15 @@
 # Diagram encoding: colour is never the sole carrier
 
 Decision record for #81, landed with #68. A standing constraint on every layer
-of the track diagram — the Track Editor now, the mimic and monitor view when
-#75, #82 and #63 land, and signal aspects when #79 does.
+of the track diagram — the Track Editor, the monitor view (#75, #82, #63), and
+signal aspects when #79 lands.
 
 Implementation: `packages/frontend/src/diagram/encoding.ts` (the encodings),
 `packages/frontend/src/diagram/blockRuns.ts` (run detection and tint
-assignment), and `packages/frontend/src/diagram/openings.ts` (the port→tick
-geometry behind D7's opening mark).
+assignment), `packages/frontend/src/diagram/patterns.tsx` (the hatches, and the
+alignment rule in `docs/track-editor.md` D18), and
+`packages/frontend/src/diagram/trackGeometry.ts` (the one description of what
+shape a drawn leg is — D16 there).
 
 ---
 
@@ -158,35 +160,32 @@ unreadable diagram look tidy.
 
 ---
 
-## D7 — An opening mark is a position, plus a label; never a colour alone
+## D7 — Withdrawn: openings are not drawn at all
 
-**Decision (#103 step 6.1).** `OPENING` in `diagram/encoding.ts` is a
-`StateEncoding` like the others, but it is neither identity nor live state: it
-marks where a compiled opening's ports sit on the tile grid. The Track Editor
-draws it as a short tick, in `OPENING.colour`, crossing the tile boundary the
-port names, plus the block's existing `⊣` stop glyph on a terminated
-opening's closed side, plus the opening's label once, at the tile the compiler
-chose to carry it.
+**Decided #103 step 6.1, withdrawn on operator feedback.** D7 used to specify
+an opening mark: a short tick in `OPENING.colour` crossing the boundary a port
+names, the `⊣` stop glyph on a terminated opening's closed side, and the
+opening's label once at the tile the compiler chose. All three are gone, and
+`OPENING` is deleted from `diagram/encoding.ts` with them.
+`docs/track-editor.md` D15 is the record.
 
-**Why this replaces a word at a nearby cell.** `docs/track-editor.md` D12
-(superseded by #103) drew an end's label at whichever tile the geometry
-happened to pick — a *plausible* cell near the opening, not the boundary it
-actually is. #91's fused-siding bug is the argument against that model: two
-yard roads drawn side by side produced a perfectly reasonable-looking label
-while being wrongly connected, and nothing about the rendering made that
-visible. A mark drawn at the *wrong* boundary, by contrast, is not
-plausible — it is visibly wrong, which is checkable by looking at the
-drawing rather than by trusting the label.
+**What was right about it, and why it lapsed anyway.** The reasoning held: a
+label at a *plausible* nearby cell hid #91's fused siding, while a mark at the
+wrong boundary is visibly wrong. But that argument is about **authoring** — it
+buys a check while the graph is being got right. Westgate Hollow's graph is
+compiled and applied, the check now happens in the compile diff under review
+before an apply, and an opening's name is disposable output nobody reads off
+the diagram. Three permanent marks per opening, on cells that also carry
+occupancy, locks, block names, point names and road letters, stopped being
+worth their space.
 
-**Why the position itself is the non-colour carrier, and #81 still holds.**
-The tick's location — which boundary, on which tile — is what distinguishes
-one opening from another; `OPENING.colour` only makes it findable against the
-track colour. That is the same posture the cursor crosshair takes ("A
-position, not a colour: #81 forbids colour as the sole carrier of a
-distinction, and this carries none"). `OPENING.glyph`/`label` exist so the
-module stays the single source of every track-diagram glyph, not only the
-ones with a colour to reinforce, and are available to a consumer such as a
-tooltip without inventing a second encoding elsewhere.
+**What this says about the rest of this document.** Nothing here weakens D1–D6.
+Those govern **state** — what the layout is doing — which is the thing a mimic
+exists to show and which earns its place on every cell it touches. D7 was the
+one entry about a *derived description* rather than a state, and that is
+exactly the category that has to justify its cell against everything else
+competing for it. The test to apply to the next candidate: does an operator act
+on this, and does it change?
 
 ---
 

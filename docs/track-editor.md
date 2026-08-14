@@ -179,7 +179,8 @@ read. Nothing renames anything behind them any more.
 
 The `[brackets]` that marked a pinned label went with it: pinned/generated was a
 distinction between "identifier" and "description", and compiled labels are only
-ever descriptions. A `⊣` still marks an opening a buffer terminates.
+ever descriptions. (The `⊣` that marked a buffer-terminated opening survived this
+decision and was removed later — D15.)
 
 ---
 
@@ -450,4 +451,120 @@ CLAUDE.md's "Open limits" (`findBlockRuns` vs `diagram/blockRuns.ts`,
 `TILE_LEGS` vs `DRAWN_LEGS`, `EDGE_OFFSET` mirrored in `diagram/openings.ts`)
 are **not** touched here. They are backend↔frontend duplicates, not
 editor↔monitor ones — unifying them needs a shared workspace package, a
-different and riskier change than this seam. The limit stays open.
+different and riskier change than this seam. The limit stays open. (Two of
+those three have since changed shape — see D15 and D16.)
+
+## D15 — Nothing about an opening is drawn on the canvas
+
+**Removed:** the boundary tick, the `⊣` stop glyph and the opening label — all
+three of the marks #103 step 6.1 introduced under D-H. `diagram/openings.ts`
+and `portMarkGeometry` are deleted with them, along with `computePortsAtCell`
+and `computeOpeningsAtCell`.
+
+**Kept:** the keyboard readout (D11), which still says `opening yard-3 at the
+east boundary, buffered`; the Edges tab; and the compile diff. Those are the
+places an end label is either asked for or load-bearing.
+
+### Why the argument for drawing them stopped applying
+
+D-H's case was that a label at a *nearby* cell is plausible when it is wrong —
+#91's fused siding read as a perfectly reasonable end name right up until
+someone checked it against the drawing — whereas a mark at the *wrong
+boundary* is visibly wrong. That reasoning was about **authoring**. It made a
+compile mistake catchable by eye while the graph was being got right.
+
+Westgate Hollow's graph is compiled and applied. An opening's name is now
+disposable output, regenerated on every compile, referenced by nothing between
+compiles (D8), and named after a compass bearing rather than after anything an
+operator says out loud. Three marks per opening — nineteen openings on the live
+layout — were being spent on a fact nobody reads, on cells that also carry
+occupancy fills, lock marks, block names, point names and road letters.
+
+The check those marks provided has not gone anywhere; it moved. The compile
+diff and its gaps are where a wrong connection surfaces now, under review and
+before an apply, which is a stronger place to catch it than a tick someone has
+to notice.
+
+### What this is not
+
+It is not "openings do not matter". It is that the **diagram** is not where
+they are read. The keyboard readout keeps them precisely because a readout is
+asked a question about one cell, so it costs nothing until it is wanted — the
+opposite trade from a mark that is always on screen.
+
+### The rule that survives
+
+Anything proposing to draw a *derived* fact on the canvas has to justify the
+cell it occupies against everything already competing for it. D-H's own
+formulation — a mark says *where*, a label says *which* — still holds for
+**state**, which is what `docs/diagram-encoding.md` governs. It stopped
+applying to openings because an opening is not state.
+
+## D16 — One table describes what shape a drawn leg is
+
+`diagram/trackGeometry.ts` owns the SVG path of every leg of every tile type.
+`TilePath` renders from it, the live point-road overlay strokes along it, and
+anything later that highlights track — a route line — reads the same table.
+
+### The bug that forced it
+
+`TilePath` drew a `point-left`'s divergent leg as a straight diagonal from the
+west edge to the north edge. The live road overlay in `TrackDiagram` drew *the
+same leg* as a polyline through the tile centre: a 90° corner over a diagonal.
+Two drawings of one leg, disagreeing, inside the one component #75 created so
+that the editor and the monitor could not disagree. The seam #75 closed was
+between *surfaces*; this one was between *the drawing and the overlay*, and it
+was invisible until someone watched a point throw on the live mimic.
+
+### Why a table and not a formula
+
+A chord between the two edge anchors fixes the point tiles and nothing else.
+`w`↔`s` is a straight line on `straight-45` and a quarter-arc on `curve` — one
+edge pair, two shapes — so any rule keyed on the edge pair alone has to be
+wrong for one of them. Only a per-tile-type table can answer "what shape is
+this leg".
+
+### What it also cleaned up
+
+`DRAWN_LEGS` in `diagram/pointRoads.ts` held two rows of the backend's
+`TILE_LEGS` — a *fragment* of a table, free to drift from both the backend it
+mirrored and the paths `TilePath` drew. It is gone; `pointLegs` derives from
+here. The frontend's half of that duplicate is now complete and in one file,
+and `trackGeometry.test.ts` asserts the full pair list literally so a backend
+change surfaces as a failing test rather than as a diagram that quietly
+disagrees with the compiler. The duplicate itself stays open — closing it needs
+the shared workspace package D14 describes.
+
+`EDGE_OFFSET`'s frontend mirror went with `diagram/openings.ts` (D15), so that
+duplicate is closed outright rather than merely reshaped.
+
+## D17 — The `N`/`R` road letters are placed by rotation but never turned by it
+
+A point tile rotated 180° drew an upside-down `N`. The letters sit inside the
+tile's rotation group, which is correct for *where* they go — the anchor has to
+follow the leg — and wrong for how they are oriented. Each letter now carries a
+counter-rotation about its own anchor.
+
+`⊣` deliberately did **not** get this treatment while it existed (D15 has since
+removed it): it pointed at the closed side of a terminated opening, so turning
+with the tile was the whole of its meaning. The distinction is the rule — a
+glyph that encodes a *direction* rotates, a glyph that is a *symbol* stays
+upright.
+
+## D18 — Every hatch is drawn corner to corner, and its period divides the tile
+
+The occupied hatch was a vertical line under `patternTransform="rotate(45)"`.
+`patternUnits="userSpaceOnUse"` anchors a pattern in the user space of the
+element referencing it, and every occupancy wash rect sits inside its own
+tile's `translate(x*40, y*40)` — so each tile re-anchors the pattern at its own
+origin. Shifting 40px along a 45° axis is 28.28, and `28.28 mod 8` left every
+tile offset by half a stripe: on a multi-tile block the hatch read as a ragged
+seam at every tile boundary, because it had genuinely been drawn per cell.
+
+No pattern carries a `patternTransform` now. The 45° comes from drawing the
+line corner to corner in a square cell, which tiles seamlessly under any
+translation that is a multiple of the pattern period, and the period divides
+`TILE_SIZE`. The `unknown` cross-hatch never had the bug because it was always
+drawn that way — so the fix was to draw the other two like that one, not to
+invent anything. `patterns.test.ts` asserts the divisibility rather than
+trusting the comment.

@@ -10,7 +10,7 @@
  */
 
 import { useMemo } from 'react';
-import { CompiledOpening, GridTileMetadata, GridTileRecord, Port, TileEdge } from '../types';
+import { CompiledOpening, GridTileMetadata, GridTileRecord, TileEdge } from '../types';
 import { assignRunTints, BlockRun, findBlockRuns } from './blockRuns';
 import { BLOCK_TINTS } from './encoding';
 import { pointLabelAnchors } from './pointLabels';
@@ -128,43 +128,6 @@ export function computePointLabelAt(
 }
 
 /**
- * #103 (D-H) — every compiled opening's ports, keyed by the tile **the
- * boundary itself sits on**. An opening can span several tiles (a
- * multi-cell handover face is still one opening), so a port's own cell is
- * frequently not `opening.at` — the tile a label may be drawn at — and the
- * two must be looked up separately.
- */
-export function computePortsAtCell(
-  openings: readonly CompiledOpening[],
-): Map<string, { edge: Port['edge']; label: string }[]> {
-  const out = new Map<string, { edge: Port['edge']; label: string }[]>();
-  for (const o of openings) {
-    for (const p of o.ports) {
-      const k = `${p.x},${p.y}`;
-      const entry = { edge: p.edge, label: o.label };
-      const list = out.get(k);
-      if (list) list.push(entry);
-      else out.set(k, [entry]);
-    }
-  }
-  return out;
-}
-
-/** Compiled openings keyed by the tile the compiler chose to carry their label (`opening.at`). */
-export function computeOpeningsAtCell(
-  openings: readonly CompiledOpening[],
-): Map<string, CompiledOpening[]> {
-  const out = new Map<string, CompiledOpening[]>();
-  for (const o of openings) {
-    const k = `${o.at.x},${o.at.y}`;
-    const list = out.get(k);
-    if (list) list.push(o);
-    else out.set(k, [o]);
-  }
-  return out;
-}
-
-/**
  * Every compiled opening touching a cell, in the shape a readout wants: the
  * boundaries it crosses *here*, and separately the cell that carries its
  * label.
@@ -215,8 +178,12 @@ export interface DiagramModel {
   runs: BlockRun[];
   tintOf: Map<string, number>;
   pointLabelAt: Map<string, string>;
-  portsAtCell: Map<string, { edge: Port['edge']; label: string }[]>;
-  openingsAtCell: Map<string, CompiledOpening[]>;
+  /**
+   * Openings survive here for the **keyboard readout only**. Nothing draws
+   * them on the canvas any more — the ticks, the `⊣` and the label all went
+   * (`docs/track-editor.md` D15) — so this is the one remaining consumer, and
+   * `openings` stays an input to the model purely to feed it.
+   */
   openingsAtCursor: Map<string, CursorOpening[]>;
   extent: DiagramExtent;
 }
@@ -234,10 +201,8 @@ export function useDiagramModel(
   const parsedMeta = useMemo(() => parseTileMetadata(grid), [grid]);
   const { runs, tintOf } = useMemo(() => computeBlockRuns(grid, parsedMeta), [grid, parsedMeta]);
   const pointLabelAt = useMemo(() => computePointLabelAt(grid, parsedMeta), [grid, parsedMeta]);
-  const portsAtCell = useMemo(() => computePortsAtCell(openings), [openings]);
-  const openingsAtCell = useMemo(() => computeOpeningsAtCell(openings), [openings]);
   const openingsAtCursor = useMemo(() => computeOpeningsAtCursor(openings), [openings]);
   const extent = useMemo(() => computeExtent(grid), [grid]);
 
-  return { parsedMeta, runs, tintOf, pointLabelAt, portsAtCell, openingsAtCell, openingsAtCursor, extent };
+  return { parsedMeta, runs, tintOf, pointLabelAt, openingsAtCursor, extent };
 }

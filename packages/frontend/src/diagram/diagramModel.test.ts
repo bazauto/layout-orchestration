@@ -13,10 +13,8 @@ import {
   MAX_COORDINATE,
   computeBlockRuns,
   computeExtent,
-  computeOpeningsAtCell,
   computeOpeningsAtCursor,
   computePointLabelAt,
-  computePortsAtCell,
   parseTileMetadata,
 } from './diagramModel';
 
@@ -107,24 +105,10 @@ function opening(over: Partial<CompiledOpening>): CompiledOpening {
   };
 }
 
-describe('computePortsAtCell', () => {
-  it('keys every port by the cell its boundary sits on, not the label cell', () => {
-    const o = opening({ at: { x: 0, y: 0 }, ports: [{ x: 1, y: 0, edge: 'w' }] });
-    const out = computePortsAtCell([o]);
-
-    expect(out.get('1,0')).toEqual([{ edge: 'w', label: 'north-1' }]);
-    expect(out.has('0,0')).toBe(false);
-  });
-});
-
-describe('computeOpeningsAtCell', () => {
-  it('keys an opening by its label cell (opening.at)', () => {
-    const o = opening({ at: { x: 2, y: 3 } });
-    const out = computeOpeningsAtCell([o]);
-    expect(out.get('2,3')).toEqual([o]);
-  });
-});
-
+// `computePortsAtCell` and `computeOpeningsAtCell` are gone with the canvas
+// marks they fed (`docs/track-editor.md` D15). `computeOpeningsAtCursor`
+// below is the only per-cell opening view left, because the keyboard readout
+// is the only surface that still names an opening.
 describe('computeOpeningsAtCursor', () => {
   it('separates the boundary cells from the label cell when they differ', () => {
     const o = opening({

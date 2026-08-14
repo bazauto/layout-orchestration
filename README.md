@@ -274,10 +274,11 @@ Current automated coverage includes:
     reference independent of the cursor readout; every 5th gridline is emphasised
   - Diagnostics-panel lines that carry a coordinate are click-to-jump buttons that move the
     cursor, centre the view, and pulse the cell
-- Openings (`docs/track-editor.md` D12): drawn as a tick at each tile boundary the
-  opening occupies, with its name once alongside and a `⊣` where a buffer terminates it.
-  The names are compiled from the drawing on every read, so there is nothing to regenerate
-  and nothing to correct by hand — the `Ends ⟳` and `Ends ✎` controls are gone (#103)
+- Openings (`docs/track-editor.md` D15): **not drawn on the canvas**. Their names are
+  compiled from the drawing on every read, so there is nothing to regenerate and nothing to
+  correct by hand — the `Ends ⟳` and `Ends ✎` controls are gone (#103) — and with the graph
+  compiled and applied, a name nobody acts on stopped earning the cells it sat on. Still
+  spoken by the keyboard readout, and still listed in the Edges tab and the compile diff
 - Mouse controls:
   - left drag to paint
   - right click to erase
@@ -459,8 +460,9 @@ preamble in `docs/sensor-simulation.md`.
 1. Per-loco braking model (#6) and collision avoidance (#7)
 2. Point position confirmation (#25)
 3. Automation engine / schedules
-4. A shared workspace package for the three backend↔frontend duplicates (`findBlockRuns`,
-   `TILE_LEGS`/`DRAWN_LEGS`, `EDGE_OFFSET`, and now the heartbeat constants). #75 unified
-   the editor↔monitor seam *inside* the frontend and deliberately left these alone —
-   they span a CommonJS backend and an ESM frontend, which is a different problem
+4. A shared workspace package for the remaining backend↔frontend duplicates
+   (`findBlockRuns`, `TILE_LEGS` vs `diagram/trackGeometry.ts`, and the heartbeat
+   constants). #75 unified the editor↔monitor seam *inside* the frontend and deliberately
+   left these alone — they span a CommonJS backend and an ESM frontend, which is a different
+   problem. `EDGE_OFFSET`'s mirror is closed, having gone with the opening marks
 5. Hardware validation and operator workflows
