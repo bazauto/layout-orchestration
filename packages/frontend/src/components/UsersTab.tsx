@@ -66,6 +66,7 @@ export function UsersTab({ ops, currentUsername }: Props) {
         <select value={role} onChange={(e) => setRole(e.target.value as Role)} style={s.select}>
           <option value="operator">Operator</option>
           <option value="admin">Admin</option>
+          <option value="monitor">Monitor</option>
         </select>
         <button onClick={submit} style={s.addBtn}>Add</button>
       </div>
@@ -95,6 +96,7 @@ export function UsersTab({ ops, currentUsername }: Props) {
                   >
                     <option value="operator">Operator</option>
                     <option value="admin">Admin</option>
+                    <option value="monitor">Monitor</option>
                   </select>
                 </td>
                 <td style={s.tdMono}>{new Date(u.createdAt).toLocaleDateString()}</td>

@@ -10,7 +10,7 @@
 
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import Database from 'better-sqlite3';
-import { mkdtempSync, rmSync } from 'fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -149,9 +149,9 @@ describe('migrations', () => {
   describe('block_ends is gone (#103 PR 7)', () => {
     it('does not exist after migration', () => {
       const tables = (
-        sqlite
-          .prepare("select name from sqlite_master where type = 'table'")
-          .all() as Array<{ name: string }>
+        sqlite.prepare("select name from sqlite_master where type = 'table'").all() as Array<{
+          name: string;
+        }>
       ).map((t) => t.name);
 
       expect(tables).not.toContain('block_ends');
@@ -252,7 +252,9 @@ describe('migrations', () => {
       sqlite
         .prepare('INSERT INTO layouts (id, name, created_at) VALUES (?, ?, ?)')
         .run('layout-1', 'Test Layout', Date.now());
-      const insertBlock = sqlite.prepare('INSERT INTO blocks (id, layout_id, name) VALUES (?, ?, ?)');
+      const insertBlock = sqlite.prepare(
+        'INSERT INTO blocks (id, layout_id, name) VALUES (?, ?, ?)',
+      );
       for (const blockId of [
         'block-a',
         'block-b',
@@ -361,11 +363,14 @@ describe('migrations', () => {
       return id;
     }
 
-    function insertHold(routeId: string, overrides: {
-      kind?: string;
-      targetId?: string;
-      released?: number;
-    }): void {
+    function insertHold(
+      routeId: string,
+      overrides: {
+        kind?: string;
+        targetId?: string;
+        released?: number;
+      },
+    ): void {
       sqlite
         .prepare(
           `INSERT INTO route_holds (id, route_id, layout_id, kind, target_id, required_position, release_after_index, released)
@@ -404,7 +409,9 @@ describe('migrations', () => {
       const routeA = insertReservation({ locoAddress: 101 });
       const routeB = insertReservation({ locoAddress: 102 });
       insertHold(routeA, { kind: 'block', targetId: 'shared-block', released: 0 });
-      expect(() => insertHold(routeB, { kind: 'block', targetId: 'shared-block', released: 0 })).toThrow();
+      expect(() =>
+        insertHold(routeB, { kind: 'block', targetId: 'shared-block', released: 0 }),
+      ).toThrow();
     });
 
     it('allows the same block to be held again once the first hold is released', () => {
@@ -513,6 +520,128 @@ describe('migrations', () => {
         expect(() =>
           raw.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run('new-hash', admin),
         ).not.toThrow();
+      });
+    });
+
+    // ── users.role admits 'monitor' (#63) ─────────────────────────────────
+    //
+    // `0011_users_monitor_role.sql` widens `users_role_valid` by a table
+    // rebuild — the exact class of migration where `DROP TABLE users`
+    // silently takes the two last-admin triggers with it unless they are
+    // re-created in the same file. These assertions are the ones CLAUDE.md
+    // calls for: both triggers survive, they still actually abort, and the
+    // CHECK accepts the new value and still rejects junk. Nested in this
+    // describe, not a sibling of it, because it reuses `withFreshDb`/
+    // `insertUser`, which are scoped here.
+    describe('users.role admits monitor (#63)', () => {
+      it('both last-admin triggers still exist after the rebuild', () => {
+        const triggers = sqlite
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+          .all() as Array<{ name: string }>;
+        const names = triggers.map((t) => t.name);
+        expect(names).toContain('users_last_admin_no_demote');
+        expect(names).toContain('users_last_admin_no_delete');
+      });
+
+      it('the demote trigger still aborts demoting the sole admin, post-rebuild', () => {
+        withFreshDb((raw) => {
+          const admin = insertUser(raw, { role: 'admin' });
+          expect(() =>
+            raw.prepare("UPDATE users SET role = 'monitor' WHERE id = ?").run(admin),
+          ).toThrow();
+        });
+      });
+
+      it('the delete trigger still aborts deleting the sole admin, post-rebuild', () => {
+        withFreshDb((raw) => {
+          const admin = insertUser(raw, { role: 'admin' });
+          raw.prepare("UPDATE users SET role = 'operator' WHERE id = ?");
+          expect(() => raw.prepare('DELETE FROM users WHERE id = ?').run(admin)).toThrow();
+        });
+      });
+
+      it("the CHECK constraint accepts 'monitor' and still rejects a junk role", () => {
+        withFreshDb((raw) => {
+          insertUser(raw, { role: 'admin' }); // keep the trigger happy; not the row under test
+          const monitor = insertUser(raw, { role: 'operator' });
+          expect(() =>
+            raw.prepare("UPDATE users SET role = 'monitor' WHERE id = ?").run(monitor),
+          ).not.toThrow();
+          expect(
+            (raw.prepare('SELECT role FROM users WHERE id = ?').get(monitor) as { role: string })
+              .role,
+          ).toBe('monitor');
+
+          expect(() =>
+            raw.prepare("UPDATE users SET role = 'superadmin' WHERE id = ?").run(monitor),
+          ).toThrow();
+        });
+      });
+
+      // Copies journal entries with idx <= maxIdx (and their .sql files) into a
+      // fresh migrations folder, so `openDatabase` can apply the chain as it
+      // stood *before* 0011 — the state a live database was actually in the
+      // moment this migration ran. `readMigrationFiles` (drizzle-orm/migrator)
+      // reads only the journal and the .sql files it names, never the
+      // meta/*_snapshot.json files (those exist for `drizzle-kit generate`'s
+      // own diffing, not for applying migrations), so a snapshot-free partial
+      // folder is a faithful "database at this point in history", not a stub.
+      function copyMigrationsUpTo(destDir: string, maxIdx: number): void {
+        mkdirSync(join(destDir, 'meta'), { recursive: true });
+        const journal = JSON.parse(
+          readFileSync(join(MIGRATIONS_FOLDER, 'meta/_journal.json'), 'utf8'),
+        ) as { entries: Array<{ idx: number; tag: string }> };
+        const trimmed = { ...journal, entries: journal.entries.filter((e) => e.idx <= maxIdx) };
+        writeFileSync(join(destDir, 'meta/_journal.json'), JSON.stringify(trimmed));
+        for (const entry of trimmed.entries) {
+          copyFileSync(
+            join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+            join(destDir, `${entry.tag}.sql`),
+          );
+        }
+      }
+
+      it('existing rows survive the rebuild with their roles intact', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'layout-orchestrator-rebuild-'));
+        const dbPath = join(dir, `${randomUUID()}.db`);
+        const partialMigrations = join(dir, 'migrations-before-0011');
+        copyMigrationsUpTo(partialMigrations, 10); // everything up to 0010, i.e. before this migration existed
+
+        try {
+          // Apply only 0000–0010, then insert rows directly — the pre-rebuild
+          // state a live database was actually in.
+          openDatabase(dbPath, partialMigrations);
+          const before = new Database(dbPath);
+          const insert = before.prepare(
+            'INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
+          );
+          insert.run('rebuild-admin', 'rebuild-admin', 'x', 'admin', Date.now());
+          insert.run('rebuild-operator', 'rebuild-operator', 'x', 'operator', Date.now());
+          before.close();
+
+          // Now apply the full chain against the SAME file. Drizzle's migrator
+          // tracks applied migrations by content hash, so 0000–0010 are
+          // skipped and only 0011 (the rebuild) actually runs.
+          openDatabase(dbPath, MIGRATIONS_FOLDER);
+
+          const after = new Database(dbPath);
+          const rows = after.prepare('SELECT id, role FROM users ORDER BY id').all() as Array<{
+            id: string;
+            role: string;
+          }>;
+          after.close();
+
+          expect(rows).toEqual([
+            { id: 'rebuild-admin', role: 'admin' },
+            { id: 'rebuild-operator', role: 'operator' },
+          ]);
+        } finally {
+          try {
+            rmSync(dir, { recursive: true, force: true });
+          } catch {
+            // ignore — OS temp directory, cleaned up eventually regardless
+          }
+        }
       });
     });
   });

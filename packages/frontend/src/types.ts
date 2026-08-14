@@ -9,8 +9,12 @@ export type Direction = 'fwd' | 'rev' | 'stop';
 export type SystemStatus = 'online' | 'safe-stop' | 'offline';
 export type SystemMode = 'manual' | 'auto' | 'hybrid';
 
-/** Operator account role. 'admin' may edit topology and config; 'operator' may drive. */
-export type Role = 'admin' | 'operator';
+/**
+ * Operator account role. 'admin' may edit topology and config; 'operator' may
+ * drive; 'monitor' (#63) is situational awareness only — no authority to move
+ * anything. See `docs/auth.md` "Roles".
+ */
+export type Role = 'admin' | 'operator' | 'monitor';
 
 /**
  * Wire projection of the backend's `UserView` (#53, `domain/types.ts`).

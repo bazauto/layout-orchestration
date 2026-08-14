@@ -78,6 +78,13 @@
       "when": 1786689325999,
       "tag": "0010_drop_block_ends",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1786724253104,
+      "tag": "0011_users_monitor_role",
+      "breakpoints": true
     }
   ]
 }

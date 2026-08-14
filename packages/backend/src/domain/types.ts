@@ -61,8 +61,13 @@ export type SystemMode = 'manual' | 'auto' | 'hybrid';
 /** Current operating status of the orchestrator. */
 export type SystemStatus = 'online' | 'safe-stop' | 'offline';
 
-/** Operator account role. 'admin' may edit topology and config; 'operator' may drive. */
-export type Role = 'admin' | 'operator';
+/**
+ * Operator account role. 'admin' may edit topology and config; 'operator' may
+ * drive; 'monitor' (#63) is situational awareness only — it sees live layout
+ * state and nothing else, and carries no authority to move anything. See
+ * `docs/auth.md` "Roles" and `docs/liveness.md`.
+ */
+export type Role = 'admin' | 'operator' | 'monitor';
 
 // ─── Users (see docs/auth.md) ──────────────────────────────────────────────────
 
