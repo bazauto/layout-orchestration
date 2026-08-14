@@ -4,9 +4,11 @@
  * - Registers a /ws endpoint on the Fastify instance.
  * - Forwards LayoutEvents from LayoutService to all connected clients.
  * - Accepts ClientMessages from connected clients and dispatches to LayoutService.
+ * - Broadcasts a periodic HEARTBEAT (#82 D5) to every connected client.
+ * - Refuses a driving ClientMessage from a 'monitor' connection (#63 D2/D3).
  */
 
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest } from 'fastify';
 // Type-only: `@fastify/websocket` v11 exports `WebSocket` as a *type alias*
 // (`export type WebSocket = ws.WebSocket`) and nothing by that name at
 // runtime — its only runtime exports are `default` and `fastifyWebsocket`.
@@ -15,8 +17,22 @@ import { FastifyInstance } from 'fastify';
 // checked against the socket's own `OPEN` constant instead.
 import type { WebSocket } from '@fastify/websocket';
 import { LayoutService } from '../../services/LayoutService';
-import { LayoutEvent } from '../../domain/types';
+import { LayoutEvent, Role, ServerMessage } from '../../domain/types';
 import { clientMessageSchema } from '../../services/validation';
+import { HEARTBEAT_INTERVAL_MS } from '../../domain/liveness';
+
+/**
+ * `ClientMessage` kinds that move something. Everything else (today, nothing
+ * — every `ClientMessage` variant either drives or is `EMERGENCY_STOP`) is
+ * left unlisted rather than gated by exclusion, so a future read-only message
+ * type needs no change here.
+ */
+const DRIVING_MESSAGE_TYPES = new Set([
+  'THROTTLE_COMMAND',
+  'POINT_COMMAND',
+  'FUNCTION_COMMAND',
+  'SET_MODE',
+]);
 
 export async function registerWebSocket(
   fastify: FastifyInstance,
@@ -34,13 +50,46 @@ export async function registerWebSocket(
     }
   });
 
-  fastify.get('/ws', { websocket: true }, (socket) => {
+  // #82 D5/D7: an application-level ServerMessage, not a protocol-level `ws`
+  // ping — a ping is invisible to the browser WebSocket API, so a client
+  // could never use it to detect staleness. `unref()` and the `onClose` hook
+  // below are what stop this interval holding the process (or a test's
+  // Fastify instance) open.
+  const heartbeatInterval = setInterval(() => {
+    const heartbeat: ServerMessage = {
+      type: 'HEARTBEAT',
+      payload: { serverTime: new Date().toISOString() },
+    };
+    const serialized = JSON.stringify(heartbeat);
+    for (const client of clients) {
+      if (client.readyState === client.OPEN) {
+        client.send(serialized);
+      }
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeatInterval.unref();
+  fastify.addHook('onClose', async () => {
+    clearInterval(heartbeatInterval);
+  });
+
+  fastify.get('/ws', { websocket: true }, (socket, request: FastifyRequest) => {
+    // #63 D2: captured once, here, at the upgrade — never re-read from
+    // `request.user` inside the message handler below. `registerAuthHook`
+    // (transport/http/auth/hook.ts) has already rejected an unauthenticated
+    // upgrade before this handler ever runs, so `request.user` is always
+    // populated here; 'operator' is a fail-safe fallback only, never expected
+    // to be reached. This is what keeps auth enforcement at the connection
+    // edge (docs/auth.md "Enforcement") rather than adding a second,
+    // mid-connection lookup: the role a socket carries for its whole
+    // lifetime is fixed the moment it opens.
+    const role: Role = request.user?.role ?? 'operator';
+
     clients.add(socket);
     fastify.log.info({ total: clients.size }, '[WS] Client connected');
 
     // Send current full state snapshot on connect
     const state = layoutService.getAllState();
-    const snapshot = {
+    const snapshot: ServerMessage = {
       type: 'STATE_SNAPSHOT',
       payload: {
         systemStatus: state.systemStatus,
@@ -82,6 +131,25 @@ export async function registerWebSocket(
       }
 
       const msg = result.data;
+
+      // #63 D2/D3: an authorisation check at the transport edge, not a
+      // domain decision — it refuses the message before it reaches
+      // LayoutService, the same "parse, validate, delegate" shape as the Zod
+      // check just above. A refusal is an ERROR reply, never a socket close
+      // (D3), for the same reason auth itself is never enforced
+      // mid-connection: nothing tears a socket down while a train might be
+      // moving. EMERGENCY_STOP is deliberately absent from
+      // DRIVING_MESSAGE_TYPES (D4) — every role, including monitor, may send it.
+      if (role === 'monitor' && DRIVING_MESSAGE_TYPES.has(msg.type)) {
+        socket.send(
+          JSON.stringify({
+            type: 'ERROR',
+            payload: { message: `monitor role may not send ${msg.type}` },
+          }),
+        );
+        return;
+      }
+
       try {
         switch (msg.type) {
           case 'THROTTLE_COMMAND':

@@ -19,6 +19,8 @@ export const TEST_ADMIN_USERNAME = 'test-admin';
 export const TEST_ADMIN_PASSWORD = 'correct-horse-battery-staple';
 export const TEST_OPERATOR_USERNAME = 'test-operator';
 export const TEST_OPERATOR_PASSWORD = 'battery-staple-correct-horse';
+export const TEST_MONITOR_USERNAME = 'test-monitor';
+export const TEST_MONITOR_PASSWORD = 'staple-battery-horse-correct';
 
 export const TEST_AUTH_CONFIG: AuthTransportConfig = {
   cookieName: 'layout_session',
@@ -96,7 +98,7 @@ function makeTestAuthRepo(): IAuthRepository {
   };
 }
 
-/** Builds an AuthService backed by the in-memory repo, seeded with an admin and an operator account. */
+/** Builds an AuthService backed by the in-memory repo, seeded with an admin, an operator and a monitor account. */
 export async function makeTestAuthService(): Promise<AuthService> {
   const repo = makeTestAuthRepo();
   await repo.createUser({
@@ -108,6 +110,11 @@ export async function makeTestAuthService(): Promise<AuthService> {
     username: TEST_OPERATOR_USERNAME,
     passwordHash: await hashPassword(TEST_OPERATOR_PASSWORD),
     role: 'operator',
+  });
+  await repo.createUser({
+    username: TEST_MONITOR_USERNAME,
+    passwordHash: await hashPassword(TEST_MONITOR_PASSWORD),
+    role: 'monitor',
   });
   return new AuthService(repo, silentAuthLogger);
 }
@@ -145,6 +152,11 @@ export async function authenticateAsAdmin(app: FastifyInstance): Promise<void> {
 
 export async function authenticateAsOperator(app: FastifyInstance): Promise<void> {
   const cookie = await loginCookie(app, TEST_OPERATOR_USERNAME, TEST_OPERATOR_PASSWORD);
+  patchInjectWithCookie(app, cookie);
+}
+
+export async function authenticateAsMonitor(app: FastifyInstance): Promise<void> {
+  const cookie = await loginCookie(app, TEST_MONITOR_USERNAME, TEST_MONITOR_PASSWORD);
   patchInjectWithCookie(app, cookie);
 }
 

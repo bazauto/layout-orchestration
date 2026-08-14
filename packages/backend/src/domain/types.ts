@@ -837,6 +837,53 @@ export type LayoutEvent =
 
 // ─── WebSocket Message Shapes ─────────────────────────────────────────────────
 
+/**
+ * Wire payload of the WebSocket's initial `STATE_SNAPSHOT` — the full current
+ * state, sent once per connection before anything else (see
+ * `transport/websocket/index.ts`). Mirrors the frontend's `StateSnapshot`
+ * exactly; kept here so `ServerMessage` below can reference one real type
+ * rather than an inline object literal at every call site.
+ */
+export interface StateSnapshot {
+  systemStatus: SystemStatus;
+  systemMode: SystemMode;
+  safeStopReason: string | null;
+  blocks: Record<BlockId, BlockState>;
+  points: Record<PointId, PointState>;
+  locos: Record<LocoAddress, LocoState>;
+  routes: Record<RouteId, RouteReservation>;
+  sensorFaults: SensorFaultView[];
+  routeFaults: RouteFaultView[];
+}
+
+/**
+ * Messages sent FROM the backend TO the frontend over WebSocket. Distinct
+ * from `LayoutEvent` above: most of this union is a `LayoutEvent` forwarded
+ * near-verbatim by `transport/websocket/index.ts`, but `STATE_SNAPSHOT`,
+ * `ERROR` and `HEARTBEAT` have no domain-event equivalent — they exist only
+ * on the wire.
+ */
+export type ServerMessage =
+  | { type: 'STATE_SNAPSHOT'; payload: StateSnapshot }
+  | { type: 'BLOCK_STATE'; payload: BlockState }
+  | { type: 'POINT_STATE'; payload: PointState }
+  | { type: 'LOCO_STATE'; payload: LocoState }
+  | {
+      type: 'SYSTEM_STATUS';
+      payload: { status: SystemStatus; mode: SystemMode; reason: string | null };
+    }
+  | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
+  | { type: 'ROUTE_STATE'; payload: RouteReservation }
+  | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
+  | { type: 'ERROR'; payload: { message: string; details?: unknown } }
+  /**
+   * D5, docs/liveness.md: an application-level message, not a protocol-level
+   * `ws` ping — a `ws` ping is invisible to the browser `WebSocket` API, so a
+   * client could never use it to detect staleness. `serverTime` is the
+   * send time, ISO 8601.
+   */
+  | { type: 'HEARTBEAT'; payload: { serverTime: string } };
+
 /** Messages sent FROM the frontend TO the backend over WebSocket. */
 export type ClientMessage =
   | { type: 'THROTTLE_COMMAND'; payload: ThrottleCommand }

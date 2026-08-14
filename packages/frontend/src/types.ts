@@ -565,7 +565,32 @@ export type ServerMessage =
   | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
   | { type: 'ROUTE_STATE'; payload: RouteReservation }
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
-  | { type: 'ERROR'; payload: { message: string; details?: unknown } };
+  | { type: 'ERROR'; payload: { message: string; details?: unknown } }
+  /**
+   * #82 D5 (docs/liveness.md): an application-level message, not a
+   * protocol-level `ws` ping, which the browser `WebSocket` API cannot
+   * observe. `serverTime` is the send time, ISO 8601. The UI consumer
+   * (connection-health indicator, staleness treatment) lands in a later PR —
+   * this member exists so the type carries the message today.
+   */
+  | { type: 'HEARTBEAT'; payload: { serverTime: string } };
+
+// ─── Connection liveness (#82, see docs/liveness.md) ───────────────────────────
+//
+// Mirrors `HEARTBEAT_INTERVAL_MS`/`STALE_AFTER_MISSED_HEARTBEATS` in the
+// backend's `domain/liveness.ts`, which is authoritative — there is no shared
+// workspace package today (CLAUDE.md), so this is a plain mirrored constant
+// with a pointer comment, the same posture as every other type duplicated
+// across the wire in this file. Keep in step with the backend value by hand.
+
+/** How often the backend sends a HEARTBEAT `ServerMessage`. */
+export const HEARTBEAT_INTERVAL_MS = 5000;
+
+/** How many heartbeats a client may miss before treating the connection as stale. */
+export const STALE_AFTER_MISSED_HEARTBEATS = 3;
+
+/** Derived, not independently tuned (D6/D7) — one threshold, tied to the interval above. */
+export const STALE_AFTER_MS = HEARTBEAT_INTERVAL_MS * STALE_AFTER_MISSED_HEARTBEATS;
 
 // ─── Client → Server messages ─────────────────────────────────────────────────
 
