@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLiveBlocks, perimeterEdges, roadSelection } from './liveState';
+import { buildLiveBlocks, roadSelection } from './liveState';
 import { BlockState, LocoRecord, PointState, TilePointRoad } from '../types';
 
 function block(overrides: Partial<BlockState> & { blockId: string }): BlockState {
@@ -146,49 +146,5 @@ describe('roadSelection', () => {
   });
 });
 
-describe('perimeterEdges', () => {
-  it('gives a single cell all four sides', () => {
-    expect(perimeterEdges([{ x: 2, y: 3 }])).toHaveLength(4);
-  });
-
-  it('drops the shared side between two horizontally adjacent cells', () => {
-    const edges = perimeterEdges([
-      { x: 0, y: 0 },
-      { x: 1, y: 0 },
-    ]);
-    expect(edges).toHaveLength(6);
-    expect(edges).not.toContainEqual({ x: 0, y: 0, side: 'e' });
-    expect(edges).not.toContainEqual({ x: 1, y: 0, side: 'w' });
-  });
-
-  it('is 4-connected — a diagonal neighbour shares no edge and closes no gap', () => {
-    const edges = perimeterEdges([
-      { x: 0, y: 0 },
-      { x: 1, y: 1 },
-    ]);
-    expect(edges).toHaveLength(8);
-  });
-
-  it('outlines the hole in a ring rather than filling it', () => {
-    // A 3x3 block with its centre missing: 12 outer sides plus 4 inner ones.
-    const cells = [];
-    for (let x = 0; x < 3; x++) {
-      for (let y = 0; y < 3; y++) {
-        if (x === 1 && y === 1) continue;
-        cells.push({ x, y });
-      }
-    }
-    const edges = perimeterEdges(cells);
-    expect(edges).toHaveLength(16);
-    expect(edges).toContainEqual({ x: 1, y: 0, side: 's' });
-  });
-
-  it('tolerates a duplicated cell', () => {
-    expect(
-      perimeterEdges([
-        { x: 0, y: 0 },
-        { x: 0, y: 0 },
-      ]),
-    ).toHaveLength(4);
-  });
-});
+// `perimeterEdges` and its tests went with the lock outline it drew (#129).
+// A route is a line along the track now; nothing outlines a run.

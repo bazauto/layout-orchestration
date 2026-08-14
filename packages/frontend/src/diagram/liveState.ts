@@ -17,12 +17,22 @@
  * is frequently *shorter* than the truth. Shaping it as a list now costs
  * nothing and means #39 populates it rather than reshaping every consumer.
  *
- * **2. A route is drawn as the locks it holds, not as a fourth layer.** Every
- * block on a granted route carries `lockedByRoute`, so a separate route
- * highlight would be a second mark for one fact, competing for the same tiles
- * as occupancy and the lock outline. `docs/diagram-encoding.md` already
- * assigns occupancy the fill and the lock the outline; a third area treatment
- * would have nowhere legible to go.
+ * **2. A route is drawn as the locks it holds — and that drawing is a line
+ * along the track.** This rule used to end "not as a fourth layer", and
+ * forbade a route highlight outright: every block on a granted route carries
+ * `lockedByRoute`, so a separate highlight would be a second mark for one
+ * fact, competing for the same tiles as occupancy and the lock outline.
+ *
+ * The argument survives; the conclusion inverted (#129). The dashed outline
+ * around a locked run is **gone**, replaced by a coloured line along the road
+ * the route holds (`diagram/routePaths.ts`). Still one mark for one fact, and
+ * still read off `lockedByRoute` — a step is drawn only while its block
+ * reports this route's lock, so the new mark cannot disagree with the fact the
+ * old one carried. What it adds is the answer to "held by *which*", which two
+ * identical yellow outlines could never give.
+ *
+ * A route highlight drawn *in addition to* the outline would still be wrong,
+ * for exactly the reason the original rule gave.
  *
  * **3. Every point position on this diagram is commanded, not confirmed.**
  * There is no feedback channel until #25. `roadSelection` therefore reports
@@ -178,52 +188,11 @@ export function roadSelection(
   return sawUnknown ? 'indeterminate' : 'selected';
 }
 
-// ─── Run geometry ─────────────────────────────────────────────────────────────
-
-/** One side of one cell, in grid coordinates. */
-export interface PerimeterEdge {
-  x: number;
-  y: number;
-  side: 'n' | 'e' | 's' | 'w';
-}
-
-const SIDE_DELTAS: ReadonlyArray<{ side: PerimeterEdge['side']; dx: number; dy: number }> = [
-  { side: 'n', dx: 0, dy: -1 },
-  { side: 'e', dx: 1, dy: 0 },
-  { side: 's', dx: 0, dy: 1 },
-  { side: 'w', dx: -1, dy: 0 },
-];
-
-/**
- * The outline of a set of cells: every cell side whose neighbour is not also
- * in the set.
- *
- * Used to draw a block's lock as an outline **around the run** rather than
- * around each of its tiles. Per-tile boxes on a nine-tile block read as a
- * hatched region rather than as one locked block, which is precisely the
- * distinction the outline exists to make.
- *
- * 4-connected on purpose, unlike `findBlockRuns`'s 8-connected grouping: a
- * diagonal neighbour shares no *edge*, so it cannot close a gap in an outline.
- * A 45° run therefore draws a stepped outline, which is what it looks like.
+/*
+ * `perimeterEdges` used to live here — the 4-connected outline of a block run,
+ * which existed solely to draw a lock as a dashed box around the run. The lock
+ * is a line along the track now (#129, rule 2 above) and nothing outlines a
+ * run, so it is deleted rather than left as a helper nobody calls: a plausible
+ * pure function sitting unused is an invitation to draw the thing the diagram
+ * deliberately stopped drawing.
  */
-export function perimeterEdges(cells: Iterable<{ x: number; y: number }>): PerimeterEdge[] {
-  const present = new Set<string>();
-  const list: { x: number; y: number }[] = [];
-  for (const c of cells) {
-    const k = `${c.x},${c.y}`;
-    if (present.has(k)) continue;
-    present.add(k);
-    list.push(c);
-  }
-
-  const out: PerimeterEdge[] = [];
-  for (const c of list) {
-    for (const { side, dx, dy } of SIDE_DELTAS) {
-      if (!present.has(`${c.x + dx},${c.y + dy}`)) {
-        out.push({ x: c.x, y: c.y, side });
-      }
-    }
-  }
-  return out;
-}

@@ -28,18 +28,27 @@
  * the canvas is covered, not badged — see `docs/liveness.md` M5.
  */
 
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { TrackDiagram, RULER_SIZE } from './TrackDiagram';
 import { PointKeyPanel } from './PointKeyPanel';
 import { buildPointKey } from '../diagram/pointKey';
+import { buildRouteLines, routeSegmentsAtCell } from '../diagram/routePaths';
 import { useGridEditor } from '../hooks/useGridEditor';
 import { useOpenings } from '../hooks/useOpenings';
+import { useCompile } from '../hooks/useCompile';
 import { useDiagramModel } from '../diagram/diagramModel';
 import { useDiagramViewport } from '../hooks/useDiagramViewport';
 import { buildLiveDiagramState, Freshness } from '../diagram/liveState';
 import { TILE_SIZE } from '../diagram/tilePaths';
-import { FAULT, INK, LOCK, OCCUPANCY, SURFACE } from '../diagram/encoding';
-import { BlockRecord, LocoRecord, PointRecord, SensorRecord, StateSnapshot } from '../types';
+import { FAULT, INK, LOCK, OCCUPANCY, ROUTE_LINE, SURFACE, routeStyle } from '../diagram/encoding';
+import {
+  BlockEdgeRecord,
+  BlockRecord,
+  LocoRecord,
+  PointRecord,
+  SensorRecord,
+  StateSnapshot,
+} from '../types';
 
 interface Props {
   layoutId: string | null;
@@ -47,6 +56,8 @@ interface Props {
   points: PointRecord[];
   sensors: SensorRecord[];
   locos: LocoRecord[];
+  /** The applied graph — what a route's `RoutePathStep.edgeId` refers to (#129). */
+  edges: BlockEdgeRecord[];
   snapshot: StateSnapshot;
   freshness: Freshness;
 }
@@ -60,6 +71,7 @@ export function MonitorView({
   points,
   sensors,
   locos,
+  edges,
   snapshot,
   freshness,
 }: Props) {
@@ -91,6 +103,48 @@ export function MonitorView({
    */
   const pointKey = useMemo(() => buildPointKey(points, live.points), [points, live.points]);
 
+  /**
+   * The compiled graph, read **once** (#129).
+   *
+   * `CompiledEdge.via` is the only thing that carries the cells an edge crosses
+   * between two blocks — the decorative track a route runs over, which belongs
+   * to no block and would otherwise leave the route line broken at every join.
+   * `block_edges` does not store them; they are compile output.
+   *
+   * Once, on the same argument `useOpenings` above takes: the drawing is a
+   * config artefact that changes when somebody edits it in the Track Editor,
+   * and a monitor is not that somebody. This is the expensive read of the two
+   * (a branch search from every opening), so re-running it on a timer would be
+   * polling a config surface from a display.
+   *
+   * If the drawing has moved since, the join simply misses for the changed
+   * edges and those routes draw with a gap — never a guessed path. A dedicated
+   * backend read cached by fingerprint is the better long-term shape and is
+   * deferred; worth doing if this becomes several always-on displays.
+   */
+  const compile = useCompile(layoutId);
+  const compileRefresh = compile.refresh;
+  useEffect(() => {
+    if (layoutId) void compileRefresh();
+  }, [layoutId, compileRefresh]);
+
+  const routeLines = useMemo(
+    () =>
+      buildRouteLines({
+        routes: snapshot.routes,
+        blocks: live.blocks,
+        grid,
+        parsedMeta: model.parsedMeta,
+        edges,
+        compiledEdges: compile.view.report.edges,
+        locos,
+        size: TILE_SIZE,
+      }),
+    [snapshot.routes, live.blocks, grid, model.parsedMeta, edges, compile.view.report.edges, locos],
+  );
+
+  const routeSegments = useMemo(() => routeSegmentsAtCell(routeLines), [routeLines]);
+
   const safeStopped = snapshot.systemStatus === 'safe-stop';
 
   return (
@@ -108,16 +162,70 @@ export function MonitorView({
           Point positions are <strong>commanded</strong>, not confirmed
         </span>
 
+        {loading && <span style={st.status}>Loading…</span>}
+        {loadError && <span style={st.statusErr}>Could not load the drawing: {loadError}</span>}
+
         <div style={st.legend}>
           <LegendItem glyph={OCCUPANCY.occupied.glyph} label="occupied" />
           <LegendItem glyph={OCCUPANCY.clear.glyph} label="clear" />
           <LegendItem glyph={OCCUPANCY.unknown.glyph} label="unknown" />
           <LegendItem glyph={LOCK.glyph} label="locked by a route" />
         </div>
-
-        {loading && <span style={st.status}>Loading…</span>}
-        {loadError && <span style={st.statusErr}>Could not load the drawing: {loadError}</span>}
       </div>
+
+      {/*
+        The route key (#129). Only mounted when something is set: an empty
+        legend on a quiet layout is a permanent row of chrome saying nothing,
+        and the strip above it is already at its width.
+
+        A swatch drawn as the same line the diagram draws — same colour, same
+        dash — rather than a coloured square. The dash is the half that
+        survives colour being removed (#81), so a swatch that dropped it would
+        make the key the one place the encoding is incomplete.
+      */}
+      {routeLines.length > 0 && (
+        <div style={st.strip} role="list" aria-label="Routes">
+          <span style={st.caveat}>Routes</span>
+          {routeLines.map((line) => {
+            const style = routeStyle(line.styleIndex);
+            return (
+              <span key={line.routeId} style={st.legendItem} role="listitem">
+                <svg width={26} height={10} aria-hidden="true">
+                  <line
+                    x1={0}
+                    y1={5}
+                    x2={26}
+                    y2={5}
+                    stroke={style.colour}
+                    strokeWidth={5}
+                    strokeDasharray={style.dash ?? undefined}
+                    opacity={
+                      line.status === 'suspended' ? ROUTE_LINE.suspendedOpacity : ROUTE_LINE.opacity
+                    }
+                  />
+                </svg>
+                <span>{line.locoName ?? `#${line.locoAddress}`}</span>
+                {line.status === 'suspended' && <span style={st.suspended}>suspended</span>}
+                {/*
+                  A join whose cells could not be resolved — the compiled graph
+                  read at mount no longer matches the applied one. Said, not
+                  guessed at: the line is drawn with a break, and a break the
+                  operator cannot account for is worse than one that explains
+                  itself.
+                */}
+                {line.hasGaps && (
+                  <span
+                    style={st.gapWarning}
+                    title="Part of this route runs over track the compiled graph no longer describes. The line is drawn with a gap rather than guessing the path — re-compile in Configure → Edges."
+                  >
+                    {FAULT.glyph} incomplete
+                  </span>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {/*
         The strip above stays mounted even with no drawing to show.
@@ -160,6 +268,7 @@ export function MonitorView({
               // since state has taken the colour channel.
               labelsVisible={() => true}
               live={live}
+              routeSegments={routeSegments}
               accessibleName="Live track diagram. Read-only: this view shows block occupancy, route locks and commanded point positions, and has no controls."
               accessibleTitle="Live track diagram — read-only. Middle-drag to pan, wheel to zoom."
               onKeyDown={noop}
@@ -294,6 +403,14 @@ const st = {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 4,
+  } as React.CSSProperties,
+  suspended: {
+    color: INK.muted,
+    fontStyle: 'italic',
+  } as React.CSSProperties,
+  gapWarning: {
+    color: FAULT.colour,
+    cursor: 'help',
   } as React.CSSProperties,
   legendGlyph: {
     fontFamily: 'monospace',

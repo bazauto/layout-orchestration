@@ -202,7 +202,8 @@ monitor cannot drift:
 | Fact | Treatment | Why that channel |
 |---|---|---|
 | Block occupancy | Fill + hatch pattern | Areas; three states must survive greyscale (#81) |
-| Block lock | Dashed outline **around the run** | Composes with the fill — a block can be locked and clear |
+| Block lock | `LOCK.glyph` on the run label, and the route line below | The outline it used to be is gone — M8 |
+| Route | A coloured, dashed line **along the track**, under it and wider | The only mark that can say *which* route holds a road (M8) |
 | Commanded point road | Solid where set, dimmed where not, dashed where indeterminate | `docs/diagram-encoding.md` says a set/dimmed pair is already a non-colour encoding |
 | Point lock | `LOCK.glyph`, once per point at its label tile (M7) | A glyph, not a colour; the same mark a locked block's label carries |
 | Occupants | Words beside the block label | The only naming channel left once state takes the colour |
@@ -216,9 +217,10 @@ naming a block.
 
 Refused, each for a recorded reason:
 
-- **No separate route layer.** Every block on a granted route carries
-  `lockedByRoute`, so a route highlight would be a second mark for one fact,
-  competing for tiles that already carry occupancy and the lock outline.
+- **No route layer *in addition to* the lock.** The rule used to be "no route
+  layer" full stop; M8 records why the conclusion inverted while the argument
+  held. A highlight drawn *alongside* the lock outline would still be two marks
+  for one fact and is still refused.
 - **No train placed at a spot, and nothing animated between blocks.** Position
   is block-granular and always will be (`docs/braking.md` B7 — open-loop dead
   reckoning, no loco feedback). Interpolation would assert a precision the
@@ -283,6 +285,75 @@ This remains an **authority** guarantee, not a position guarantee. A locked
 point can still be showing `unknown`, and both marks draw: until #25 there is
 no feedback channel, and a lock has never meant the blades are where they were
 commanded.
+
+### M8 — A route is a line along the track, and it replaces the lock outline
+
+**This inverts a conclusion M5 stated flatly, while keeping its argument.**
+M5 said there is no route layer, because every block on a granted route carries
+`lockedByRoute` and a highlight would be a second mark for one fact. Correct —
+and it left the diagram unable to answer the question an operator actually
+asks.
+
+A locked run was a dashed yellow box. Two concurrent routes were two identical
+dashed yellow boxes. The outline could say **held**; it could never say
+**held by which**, which is exactly what someone wants to know when a route
+will not set.
+
+So the outline is gone and a coloured line along the held road takes its place
+(`diagram/routePaths.ts`, #129). Still one mark for one fact, still derived
+from `lockedByRoute` — **a step is drawn only while its block reports this
+route's lock** — so the new mark cannot contradict the fact the old one
+carried. Deriving the replacement from the replaced mark's own source is what
+makes it a replacement rather than the second layer M5 forbids. A highlight
+drawn *alongside* an outline would still be wrong.
+
+`LOCK.glyph` stays on the block's run label, so "held" survives colour being
+removed entirely.
+
+**Colour is not the carrier.** Route identity in hue alone is what #81 forbids,
+so each route also gets a dash pattern, cycling on a different period from the
+hues — four by four is sixteen combinations, and past that the key in the strip
+is the answer, which it is anyway. The palette is `BLOCK_TINTS` reused: where
+live state is drawn the identity wash is not, so those four already-validated
+hues are free, and the two systems never share a surface.
+
+**Suspended routes are drawn**, dimmed and labelled. They still hold their
+locks; what they are not is the road being run.
+
+### Where the decorative cells come from, and what happens when they are missing
+
+A route's path is a list of *blocks*, and the track between two blocks is
+frequently drawn but tagged to neither — the Fiddle Yard reaches its sidings
+through a feeder deliberately part of no block. A line that stopped at every
+block boundary would read as broken rather than as a road.
+
+`CompiledEdge.via` already carries those cells in walk order. The monitor reads
+`GET .../topology/compile` once at mount — the same argument `useOpenings`
+takes, a drawing being a config artefact a display does not poll — and joins
+`RoutePathStep.edgeId` → `BlockEdgeRecord` → the connection tuple → `via`.
+
+Walking the drawing in the frontend was **rejected**: it would be a third
+hand-maintained copy of `TILE_LEGS` across the wire, on the geometry side, and
+`CLAUDE.md` already carries two. A dedicated backend read cached by fingerprint
+is the better long-term shape and is deferred until the monitor is more than
+one display.
+
+**A join that does not resolve draws a gap, and the key says so.** If the
+drawing moved after the compile was read, the lookup misses for the changed
+edges. A gap the operator can see and account for beats a plausible path
+through the wrong decorative tiles — the "plausible until checked" failure #91
+was about.
+
+### Which legs light up
+
+On a tile carrying point roads, the leg the route's own point holds select —
+the same match `roadSelection` makes, but against the positions this route has
+*claimed* rather than the ones the points are currently lying in, because the
+line shows the road the route holds. On every other tile, every leg it draws.
+
+A block containing a passing loop therefore lights both roads. Accepted: the
+alternative is a walk through the block, which is the compiler's job and not a
+display's.
 
 ## Related
 

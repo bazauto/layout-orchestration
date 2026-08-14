@@ -40,8 +40,13 @@
  *   systems and stay readable. Block identity falls back to its label, which
  *   is a large part of why one-label-per-run (#68) matters beyond tidiness.
  * - **Colour is never the sole carrier.** Occupancy is a fill *and* a hatch
- *   pattern; a lock is an outline; a set road is solid where an unset one is
+ *   pattern; a lock is a glyph on the block label and on the point; a route is
+ *   a hue *and* a dash pattern; a set road is solid where an unset one is
  *   dimmed. Every distinction survives the colour being removed.
+ *
+ * The route line replaced the dashed outline a locked run used to carry
+ * (#129). Not an addition — the outline could say "held" and never "held by
+ * which", and two concurrent routes were two identical yellow boxes.
  */
 
 import { forwardRef } from 'react';
@@ -53,10 +58,13 @@ import {
   LOCK,
   OCCUPANCY,
   POINT_POSITION,
+  ROUTE_LINE,
   SURFACE,
+  routeStyle,
 } from '../diagram/encoding';
 import { DiagramPatternDefs } from '../diagram/patterns';
-import { LiveDiagramState, perimeterEdges, roadSelection } from '../diagram/liveState';
+import { LiveDiagramState, roadSelection } from '../diagram/liveState';
+import { RouteLine, RouteSegment } from '../diagram/routePaths';
 import { edgeAnchor, roadLabel } from '../diagram/pointRoads';
 import { chordPath, legPath } from '../diagram/trackGeometry';
 import { shortPointLabel } from '../diagram/pointLabels';
@@ -139,6 +147,16 @@ export interface TrackDiagramProps {
   live?: LiveDiagramState | null;
 
   /**
+   * Route halos, keyed by cell (#129). Built by `diagram/routePaths.ts` and
+   * passed in already keyed, because the tile loop must be able to ask "is
+   * there a route through this cell" without scanning every route's segments
+   * once per tile.
+   *
+   * Omitted by the editor, which draws no live state at all.
+   */
+  routeSegments?: ReadonlyMap<string, Array<{ line: RouteLine; segment: RouteSegment }>>;
+
+  /**
    * Accessible name and hover title for the canvas.
    *
    * Defaulted to the editor's wording rather than made required, so the
@@ -149,6 +167,12 @@ export interface TrackDiagramProps {
   accessibleName?: string;
   accessibleTitle?: string;
 }
+
+/** Shared empty default, so an editor render does not allocate a Map per frame. */
+const EMPTY_ROUTE_SEGMENTS: ReadonlyMap<
+  string,
+  Array<{ line: RouteLine; segment: RouteSegment }>
+> = new Map();
 
 const EDITOR_A11Y_NAME =
   'Track diagram editor grid. Arrow keys move the cursor, Enter or Space paints the selected tile, Delete erases, Escape returns to the toolbar.';
@@ -180,6 +204,7 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
     ghostPreview,
     jumpPulse,
     live,
+    routeSegments = EMPTY_ROUTE_SEGMENTS,
     accessibleName = EDITOR_A11Y_NAME,
     accessibleTitle = EDITOR_A11Y_TITLE,
   },
@@ -338,6 +363,51 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                       opacity={BLOCK_TINT_OPACITY}
                     />
                   )}
+              {/*
+                A route holding this road (#129), drawn **under** the track and
+                wider — a halo. The track stays the track and the colour
+                surrounds it, rather than the railway changing colour.
+
+                Inside the tile group rather than as one layer beneath all the
+                tiles, because every tile paints an opaque background rect of
+                its own and a layer below them would be invisible. So the
+                z-order per cell is: background, occupancy wash, route halo,
+                track, letters and labels.
+
+                This is what replaced the dashed outline around a locked run.
+                Same fact, same one mark — moved onto the track, where it can
+                also say *which* route holds it. See `diagram/routePaths.ts`.
+              */}
+              {routeSegments.get(`${tile.x},${tile.y}`)?.map(({ line, segment }, i) => {
+                const style = routeStyle(line.styleIndex);
+                return (
+                  <g
+                    key={`route-${line.routeId}-${i}`}
+                    transform={`rotate(${segment.rotation}, ${H}, ${H})`}
+                  >
+                    <path
+                      d={segment.d}
+                      fill="none"
+                      stroke={style.colour}
+                      strokeWidth={ROUTE_LINE.strokeWidth}
+                      strokeLinecap="round"
+                      strokeDasharray={style.dash ?? undefined}
+                      opacity={
+                        line.status === 'suspended'
+                          ? ROUTE_LINE.suspendedOpacity
+                          : ROUTE_LINE.opacity
+                      }
+                    >
+                      <title>
+                        {`route ${line.locoName ?? `#${line.locoAddress}`}${
+                          line.status === 'suspended' ? ' (suspended)' : ''
+                        }`}
+                      </title>
+                    </path>
+                  </g>
+                );
+              })}
+
               {/*
                 #71, and #81's rule applied. Decorative track reads as
                 obviously-not-monitored and unclassified track reads as
@@ -583,55 +653,20 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
         })}
 
         {/*
-          A route lock, drawn as an outline **around the run** (#63).
+          The dashed outline around a locked run used to be drawn here (#63).
+          It is gone (#129): a route is now a coloured line along the track it
+          holds, drawn per tile above.
 
-          `docs/diagram-encoding.md` gives occupancy the fill and a lock the
-          outline precisely so the two compose: a block can be locked and
-          clear (the road set ahead of a train) or occupied and unlocked, and
-          both must be readable at once.
+          Not a second mark added to the first — a replacement. The outline
+          read `lockedByRoute` and could only say "held"; two concurrent routes
+          were two identical yellow outlines, and "held by which" is the
+          question an operator actually has. The line reads the same field and
+          answers both. `diagram/liveState.ts` rule 2 and `docs/liveness.md` M5
+          carry the full argument.
 
-          Around the run, not around each tile: per-tile boxes on a nine-tile
-          block read as a hatched region rather than as one locked block,
-          which is the exact distinction the outline exists to make.
-
-          There is deliberately **no separate route layer**. Every block on a
-          granted route carries `lockedByRoute`, so a route highlight would be
-          a second mark for one fact, competing for tiles that already carry
-          occupancy and this outline — see `diagram/liveState.ts` rule 2.
+          The block label below still carries `LOCK.glyph`, so "held" survives
+          colour being removed entirely (#81).
         */}
-        {live &&
-          runs.map((run) => {
-            const state = live.blocks.get(run.blockId);
-            if (!state?.lockedByRoute) return null;
-            return (
-              <g key={`lock-${run.blockId}`}>
-                {perimeterEdges(run.tiles).map((e, i) => {
-                  const x = e.x * TILE_SIZE;
-                  const y = e.y * TILE_SIZE;
-                  const [x1, y1, x2, y2] =
-                    e.side === 'n'
-                      ? [x, y, x + T, y]
-                      : e.side === 's'
-                        ? [x, y + T, x + T, y + T]
-                        : e.side === 'w'
-                          ? [x, y, x, y + T]
-                          : [x + T, y, x + T, y + T];
-                  return (
-                    <line
-                      key={`${e.x},${e.y},${e.side},${i}`}
-                      x1={x1}
-                      y1={y1}
-                      x2={x2}
-                      y2={y2}
-                      stroke={LOCK.colour}
-                      strokeWidth={LOCK.strokeWidth}
-                      strokeDasharray={LOCK.strokeDasharray}
-                    />
-                  );
-                })}
-              </g>
-            );
-          })}
 
         {/* One block label per contiguous run, at a tile of that run. */}
         {runs.map((run) => {
