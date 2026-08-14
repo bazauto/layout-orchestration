@@ -30,6 +30,8 @@
 
 import { useMemo, useRef } from 'react';
 import { TrackDiagram, RULER_SIZE } from './TrackDiagram';
+import { PointKeyPanel } from './PointKeyPanel';
+import { buildPointKey } from '../diagram/pointKey';
 import { useGridEditor } from '../hooks/useGridEditor';
 import { useOpenings } from '../hooks/useOpenings';
 import { useDiagramModel } from '../diagram/diagramModel';
@@ -82,6 +84,13 @@ export function MonitorView({
     [snapshot, locos, freshness],
   );
 
+  /**
+   * Built from the roster and the snapshot rather than from the drawing: a
+   * point the layout reports on but nobody has drawn yet still belongs in the
+   * key, and the diagram is not the authority on which points exist.
+   */
+  const pointKey = useMemo(() => buildPointKey(points, live.points), [points, live.points]);
+
   const safeStopped = snapshot.systemStatus === 'safe-stop';
 
   return (
@@ -124,43 +133,50 @@ export function MonitorView({
           <p style={st.empty}>No layout selected.</p>
         </div>
       ) : (
-        <div style={st.canvasWrap}>
-          <TrackDiagram
-            ref={svgRef}
-            grid={grid}
-            parsedMeta={model.parsedMeta}
-            extent={model.extent}
-            offset={viewport.offset}
-            zoom={viewport.zoom}
-            runs={model.runs}
-            tintOf={model.tintOf}
-            pointLabelAt={model.pointLabelAt}
-            points={points}
-            blocks={blocks}
-            sensorNames={sensorNames}
-            // Always on. Label density is an authoring trade-off — the editor
-            // hides labels to see the track it is painting. A mimic exists to
-            // be read, and on it the label is the only thing naming a block,
-            // since state has taken the colour channel.
-            labelsVisible={() => true}
-            live={live}
-            accessibleName="Live track diagram. Read-only: this view shows block occupancy, route locks and commanded point positions, and has no controls."
-            accessibleTitle="Live track diagram — read-only. Middle-drag to pan, wheel to zoom."
-            onKeyDown={noop}
-            // Pan and zoom only. A left-drag pans here as well as a middle-drag
-            // — there is no paint gesture competing for the left button on a
-            // read-only surface, and requiring a middle button on a tablet or a
-            // trackpad would make the diagram undraggable on the two devices a
-            // wall display is most likely to be.
-            onMouseDown={(e) => viewport.beginPan(e.clientX, e.clientY)}
-            onMouseMove={(e) => viewport.continuePan(e.clientX, e.clientY)}
-            onMouseUp={viewport.endPan}
-            onMouseLeave={viewport.endPan}
-            onWheel={(e) => viewport.onWheel(e.deltaY)}
-            onContextMenu={(e) => e.preventDefault()}
-          />
+        /*
+          Canvas and key side by side. The panel is a sibling of the canvas,
+          not an overlay on it: an overlay would cover track on the one view
+          whose whole job is showing all of it, and would have to be dismissed
+          rather than simply not taking the space.
+        */
+        <div style={st.main}>
+          <div style={st.canvasWrap}>
+            <TrackDiagram
+              ref={svgRef}
+              grid={grid}
+              parsedMeta={model.parsedMeta}
+              extent={model.extent}
+              offset={viewport.offset}
+              zoom={viewport.zoom}
+              runs={model.runs}
+              tintOf={model.tintOf}
+              pointLabelAt={model.pointLabelAt}
+              points={points}
+              blocks={blocks}
+              sensorNames={sensorNames}
+              // Always on. Label density is an authoring trade-off — the editor
+              // hides labels to see the track it is painting. A mimic exists to
+              // be read, and on it the label is the only thing naming a block,
+              // since state has taken the colour channel.
+              labelsVisible={() => true}
+              live={live}
+              accessibleName="Live track diagram. Read-only: this view shows block occupancy, route locks and commanded point positions, and has no controls."
+              accessibleTitle="Live track diagram — read-only. Middle-drag to pan, wheel to zoom."
+              onKeyDown={noop}
+              // Pan and zoom only. A left-drag pans here as well as a middle-drag
+              // — there is no paint gesture competing for the left button on a
+              // read-only surface, and requiring a middle button on a tablet or a
+              // trackpad would make the diagram undraggable on the two devices a
+              // wall display is most likely to be.
+              onMouseDown={(e) => viewport.beginPan(e.clientX, e.clientY)}
+              onMouseMove={(e) => viewport.continuePan(e.clientX, e.clientY)}
+              onMouseUp={viewport.endPan}
+              onMouseLeave={viewport.endPan}
+              onWheel={(e) => viewport.onWheel(e.deltaY)}
+              onContextMenu={(e) => e.preventDefault()}
+            />
 
-          {/*
+            {/*
           Degradation, over the canvas rather than beside it (#82 item 1).
 
           A wash plus a word, not a tint: #81 forbids colour as the sole
@@ -169,36 +185,39 @@ export function MonitorView({
           operator investigating a frozen display should not also find the
           diagram unresponsive.
         */}
-          {freshness !== 'live' && (
-            <div style={st.degraded} role="status">
-              <div style={st.degradedInner}>
-                <div style={st.degradedGlyph}>{FAULT.glyph}</div>
-                <div style={st.degradedTitle}>
-                  {freshness === 'disconnected' ? 'Disconnected' : 'Not receiving updates'}
-                </div>
-                <div style={st.degradedBody}>
-                  This diagram is showing the last state received. It is <strong>not</strong> a
-                  picture of the layout now.
+            {freshness !== 'live' && (
+              <div style={st.degraded} role="status">
+                <div style={st.degradedInner}>
+                  <div style={st.degradedGlyph}>{FAULT.glyph}</div>
+                  <div style={st.degradedTitle}>
+                    {freshness === 'disconnected' ? 'Disconnected' : 'Not receiving updates'}
+                  </div>
+                  <div style={st.degradedBody}>
+                    This diagram is showing the last state received. It is <strong>not</strong> a
+                    picture of the layout now.
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/*
+            {/*
           Safe-Stop, unmissable rather than a badge (#82 item 4). It is the
           one state where nothing is allowed to move, and a mimic that
           under-sells it is under-selling the only thing that matters on it.
           Drawn even while stale — a stale Safe-Stop is still a Safe-Stop, and
           the two messages stack rather than competing.
         */}
-          {safeStopped && (
-            <div style={st.safeStop} role="alert">
-              <span style={st.safeStopTitle}>{FAULT.glyph} SAFE-STOP</span>
-              {snapshot.safeStopReason && (
-                <span style={st.safeStopReason}>{snapshot.safeStopReason}</span>
-              )}
-            </div>
-          )}
+            {safeStopped && (
+              <div style={st.safeStop} role="alert">
+                <span style={st.safeStopTitle}>{FAULT.glyph} SAFE-STOP</span>
+                {snapshot.safeStopReason && (
+                  <span style={st.safeStopReason}>{snapshot.safeStopReason}</span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <PointKeyPanel layoutId={layoutId} rows={pointKey} />
         </div>
       )}
     </div>
@@ -280,9 +299,19 @@ const st = {
     fontFamily: 'monospace',
     color: INK.primary,
   } as React.CSSProperties,
+  /** Canvas and point key, side by side. The canvas takes the slack. */
+  main: {
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
+    flex: 1,
+    minHeight: 0,
+  } as React.CSSProperties,
   canvasWrap: {
     position: 'relative',
     flex: 1,
+    minWidth: 0,
     minHeight: 0,
     background: SURFACE.canvas,
     border: '1px solid #313244',

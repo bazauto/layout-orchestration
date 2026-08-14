@@ -204,6 +204,7 @@ monitor cannot drift:
 | Block occupancy | Fill + hatch pattern | Areas; three states must survive greyscale (#81) |
 | Block lock | Dashed outline **around the run** | Composes with the fill — a block can be locked and clear |
 | Commanded point road | Solid where set, dimmed where not, dashed where indeterminate | `docs/diagram-encoding.md` says a set/dimmed pair is already a non-colour encoding |
+| Point lock | `LOCK.glyph`, once per point at its label tile (M7) | A glyph, not a colour; the same mark a locked block's label carries |
 | Occupants | Words beside the block label | The only naming channel left once state takes the colour |
 
 **Block identity gives up the colour channel.** A tile cannot carry two
@@ -230,6 +231,58 @@ Refused, each for a recorded reason:
   implying it is empty of vehicles. Rolling stock is not modelled (#39); the
   occupant model is a list precisely so #39 populates it rather than reshaping
   every consumer.
+
+### M6 — The point key is a panel beside the canvas, not marks on it
+
+The diagram draws `P1` where the point is called `P1 - Fiddle Yard`, with the
+full name in a `<title>` (#93). That trade is right on a 40px tile and it
+assumes a mouse. A wall display has nobody standing at it, so the tooltip is
+unreachable and the abbreviation is all there is.
+
+`PointKeyPanel` resolves every abbreviation at once, beside the drawing:
+`On diagram` (exactly what the tile draws, so the eye can match the two),
+`Name`, `Set` and `Held`. A key, and a status table — the same row answers
+"which point is P3" and "why will this route not set", and carrying both costs
+nothing once the row exists.
+
+**Beside, not over.** An overlay would cover track on the one view whose whole
+job is showing all of it, and would have to be dismissed rather than simply not
+taking the space. It is collapsible and the choice persists per layout, in the
+same tolerant, failure-swallowing style as the viewport (M-adjacent: a corrupt
+`localStorage` entry must never stop the monitor coming up unattended).
+
+**Monitor only.** The editor shows no live state at all, so two of the four
+columns would be blank there and the other two are already on the tiles.
+
+Two degradations, both the standing ones:
+
+- **A point with no live state reads `unknown`, never `normal`.** Absence of a
+  position is not evidence of a position — the same posture `roadSelection`
+  takes when one clause of a road is unknown.
+- **A live point with no roster record still gets a row**, named by its raw id
+  (`docs/naming.md` D8). A point the layout is reporting on and the table
+  silently omits is worse than an ugly row.
+
+### M7 — A point lock is a glyph on the point, and is not a label
+
+`PointState.lockedByRoute` was on the snapshot and drawn nowhere. It is now
+`LOCK.glyph` at the point's label tile — once per point, matching where its
+name goes, since a point is two tiles sharing one `pointId` (#93).
+
+The same glyph a locked block's run label carries, deliberately: one mark means
+one thing across the diagram, and a lock on a point and a lock on a block are
+the same kind of fact about the same route.
+
+**Not gated on label density.** "Labels: off" is an authoring control for
+seeing the track under the text; it must not be able to hide the fact that a
+route holds the road. Since the editor never receives `live` at all, this only
+ever draws on the monitor — but the gating is written to say which of the two
+it is, rather than relying on that.
+
+This remains an **authority** guarantee, not a position guarantee. A locked
+point can still be showing `unknown`, and both marks draw: until #25 there is
+no feedback channel, and a lock has never meant the blades are where they were
+commanded.
 
 ## Related
 
