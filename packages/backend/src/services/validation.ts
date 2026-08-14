@@ -788,7 +788,7 @@ export const routeCancelSchema = z
 
 // ─── Auth ────────────────────────────────────────────────────────────────
 
-const roleSchema = z.enum(['admin', 'operator']);
+const roleSchema = z.enum(['admin', 'operator', 'monitor']);
 
 /**
  * Full-row schema for a `users` DB row. `passwordHash` is nullable — see the

@@ -311,6 +311,18 @@ export const routeHolds = sqliteTable(
  * comment exists so the schema file still tells the truth about what the
  * table enforces. Removing the triggers means a new migration with
  * `DROP TRIGGER`, never editing `0006_users_last_admin_guard.sql` in place.
+ *
+ * ALSO NOT VISIBLE FROM A DIFF ALONE: the `users_role_valid` CHECK below was
+ * widened to admit `'monitor'` (#63) by a table-rebuild migration
+ * (`0011_users_monitor_role.sql`), since SQLite cannot alter a CHECK
+ * constraint in place. A Drizzle rebuild does
+ * `CREATE __new_users; INSERT…; DROP TABLE users; ALTER TABLE __new_users
+ * RENAME TO users` — and `DROP TABLE` drops every trigger attached to the
+ * table along with it. That migration therefore ends with the same two
+ * `CREATE TRIGGER` statements as `0006`, verbatim, appended by hand after
+ * `drizzle-kit generate` produced the rebuild — the one other case, besides
+ * `0006` itself, where this table's migration carries SQL `db:generate`
+ * could not have produced on its own.
  */
 export const users = sqliteTable(
   'users',
@@ -319,13 +331,13 @@ export const users = sqliteTable(
     username: text('username').notNull(),
     /** argon2id encoded hash (algorithm, params, salt, and digest all embedded). NULL = no password credential set. */
     passwordHash: text('password_hash'),
-    /** 'admin' may edit topology and config; 'operator' may drive. */
+    /** 'admin' may edit topology and config; 'operator' may drive; 'monitor' (#63) may only watch. */
     role: text('role').notNull().default('operator'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   },
   (table) => [
     uniqueIndex('users_username_unq').on(table.username),
-    check('users_role_valid', sql`${table.role} IN ('admin', 'operator')`),
+    check('users_role_valid', sql`${table.role} IN ('admin', 'operator', 'monitor')`),
     check('users_username_non_empty', sql`length(trim(${table.username})) > 0`),
   ],
 );

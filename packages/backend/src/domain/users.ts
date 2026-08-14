@@ -15,6 +15,11 @@ import { Role, UserId } from './types';
  * Whether demoting or deleting `targetId` would leave the layout with zero
  * admin accounts. `nextRole === null` means deletion, not "no role" — there
  * is no such thing as a userless role change.
+ *
+ * The check is `nextRole !== 'admin'`, not `nextRole === 'operator'`, so it
+ * needs no change when a third role is added: demoting the sole admin to
+ * `monitor` (#63) is refused by the exact same rule that refuses demoting to
+ * `operator`.
  */
 export function wouldRemoveLastAdmin(
   users: ReadonlyArray<{ id: UserId; role: Role }>,

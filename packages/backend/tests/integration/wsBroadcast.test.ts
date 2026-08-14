@@ -16,7 +16,7 @@
  * *after* the connection is open actually reaches the client.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { buildServer } from '../../src/transport/http/server';
 import { LayoutService } from '../../src/services/LayoutService';
 import { TopologyService } from '../../src/services/TopologyService';
@@ -25,6 +25,7 @@ import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
 import { ILayoutRepository } from '../../src/ports/ILayoutRepository';
+import { HEARTBEAT_INTERVAL_MS } from '../../src/domain/liveness';
 import {
   loginCookie,
   makeTestAuthService,
@@ -191,5 +192,98 @@ describe('WebSocket broadcast', () => {
     expect(b.frames.map((f) => JSON.parse(f).type)).toContain('SYSTEM_STATUS');
 
     b.ws.close();
+  });
+});
+
+// ─── Heartbeat (#82 D5/D7) ──────────────────────────────────────────────────
+
+describe('WebSocket heartbeat (#82)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('broadcasts a HEARTBEAT ServerMessage to every connected client on the interval', async () => {
+    // Fakes ONLY setInterval/clearInterval — settle() below still needs a
+    // real setTimeout to let the in-process socket actually deliver the
+    // frame, and openCollectingClient's setImmediate must stay real too.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+
+    const harness = await buildTestServer();
+    const a = await openCollectingClient(harness.app);
+    const b = await openCollectingClient(harness.app);
+
+    vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS);
+    await settle();
+
+    for (const { frames } of [a, b]) {
+      const heartbeats = frames.map((f) => JSON.parse(f)).filter((m) => m.type === 'HEARTBEAT');
+      expect(heartbeats).toHaveLength(1);
+      expect(typeof heartbeats[0].payload.serverTime).toBe('string');
+      // A real ISO 8601 timestamp, not just any string.
+      expect(new Date(heartbeats[0].payload.serverTime).toISOString()).toBe(
+        heartbeats[0].payload.serverTime,
+      );
+    }
+
+    a.ws.close();
+    b.ws.close();
+  });
+
+  it('stops broadcasting once the client disconnects (no crash on a closed socket)', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+
+    const harness = await buildTestServer();
+    const { ws, frames } = await openCollectingClient(harness.app);
+    ws.close();
+    await settle();
+
+    expect(() => vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS)).not.toThrow();
+    await settle();
+
+    expect(frames.map((f) => JSON.parse(f).type)).not.toContain('HEARTBEAT');
+  });
+});
+
+// ─── Reconnect resynchronisation (#82 open question 2) ─────────────────────
+//
+// Verified rather than assumed, per docs/liveness.md: `registerWebSocket`
+// sends a full STATE_SNAPSHOT to every NEW connection before anything else,
+// and it carries the CURRENT state — including after a prior connection to
+// the same layout has already closed. There is no delta stream resumed from
+// an unknown point, so a reconnect cannot desynchronise from what a stale
+// delta would imply.
+
+describe('WebSocket reconnect resynchronisation (#82 open question 2)', () => {
+  it('a new connection receives a STATE_SNAPSHOT as its first frame, reflecting state changed by a since-closed connection', async () => {
+    const harness = await buildTestServer();
+
+    // First connection changes system state, then disconnects.
+    const first = await openCollectingClient(harness.app);
+    first.ws.send(JSON.stringify({ type: 'SET_MODE', payload: { mode: 'auto' } }));
+    await settle();
+    first.ws.close();
+    await settle();
+
+    // A second, independent connection — its STATE_SNAPSHOT is the first
+    // thing it receives, and it already carries the mode the first
+    // connection set, not the mode the layout started in.
+    const cookie = await loginCookie(harness.app, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD);
+    const messages: string[] = [];
+    const second = await harness.app.injectWS(
+      '/ws',
+      { headers: { cookie } },
+      {
+        onOpen: (socket: { on: (event: string, cb: (data: Buffer) => void) => void }) =>
+          socket.on('message', (data: Buffer) => messages.push(data.toString())),
+      },
+    );
+    await new Promise((r) => setImmediate(r));
+
+    expect(messages.length).toBeGreaterThan(0);
+    const snapshot = JSON.parse(messages[0]);
+    expect(snapshot.type).toBe('STATE_SNAPSHOT');
+    expect(snapshot.payload.systemMode).toBe('auto');
+
+    second.close();
   });
 });

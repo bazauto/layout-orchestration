@@ -45,7 +45,7 @@ Implemented:
   occupancy stops being determinable mid-route
 - WebSocket state streaming to the frontend
 - Local username/password authentication with role-based access (`admin` /
-  `operator`) — see `docs/auth.md` for the scheme and its threat model
+  `operator` / `monitor`) — see `docs/auth.md` for the scheme and its threat model
 - Full user and role management (#53): an admin can create, list, change the role of,
   and delete accounts, and reset another user's password, from the Configure screen's
   Users tab or `GET|POST /api/users` / `PATCH|DELETE /api/users/:id`; any logged-in user
@@ -53,6 +53,15 @@ Implemented:
   demoting the last `admin` account is refused at both the service layer and the
   database (a trigger pair, since "at least one must exist" isn't expressible as a
   unique index) — see `docs/auth.md`
+- Monitor role (#63): situational awareness with no authority to move anything. The
+  WebSocket transport captures the connection's role once at the upgrade and refuses a
+  monitor's driving commands with an `ERROR` reply, never a socket close;
+  `EMERGENCY_STOP` stays available to every role. The purpose-built frontend view is a
+  later PR — see `docs/auth.md` "The monitor role"
+- Connection-health heartbeat (#82): a periodic application-level `HEARTBEAT`
+  `ServerMessage` (not a protocol-level `ws` ping, which the browser can't observe) so a
+  client can tell a frozen socket from a quiet layout. The frontend staleness indicator
+  is a later PR — see `docs/liveness.md`
 - Frontend login screen; the rest of the UI requires an authenticated session
 - Frontend operate screen for throttle, points, and live state
 - Frontend configuration screen for blocks, sensors, points, locos, and edges
