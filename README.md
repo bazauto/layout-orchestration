@@ -63,6 +63,14 @@ Implemented:
   client can tell a frozen socket from a quiet layout. The frontend staleness indicator
   is a later PR — see `docs/liveness.md`
 - Frontend login screen; the rest of the UI requires an authenticated session
+- Role-scoped navigation (#61, #63): `admin` gets Operate, Monitor, Track Editor and
+  Configure; `operator` gets Operate and Monitor; `monitor` gets Monitor alone. The
+  authoring screens are **absent** for a non-admin rather than disabled — affordance
+  only, with `requireAdmin` and the WebSocket role gate as the actual enforcement
+- Monitor view (#63, #75, #82): a read-only live mimic drawing block occupancy, route
+  locks, commanded point roads and which loco is where, on the **same** renderer the
+  Track Editor uses. Connection health is always on screen, and a stale or disconnected
+  diagram is covered rather than badged — see `docs/liveness.md`
 - Frontend operate screen for throttle, points, and live state
 - Frontend configuration screen for blocks, sensors, points, locos, and edges
 - Track editor with tile palette, rotation, keyboard shortcuts, hover ghost preview, and persistence
@@ -380,7 +388,16 @@ is the throttle — nothing drives the train along the road it has been given. T
 
 **A point lock is an authority guarantee, not a physical position guarantee.** It promises
 no other software authority will command the point, not that the blades have moved. There
-is still no point-position feedback channel from the DCC controller (#25).
+is still no point-position feedback channel from the DCC controller (#25) — so **every
+point position the Monitor view draws is commanded, not confirmed**, and it says so
+permanently rather than qualifying each point.
+
+**Loco position is block-granular and always will be.** The model is open-loop dead
+reckoning with no loco feedback (`docs/braking.md` B7), so the mimic highlights the block a
+loco occupies and never places a train at a spot along it. Rolling stock is not modelled at
+all (#39), so an occupied block with no identified occupant — a rake of coaches in a siding
+— is all the system can say, and the diagram says exactly that rather than implying the
+block is empty of vehicles.
 
 **Fouling at a plain diamond crossing is not modelled** (#26) — two routes crossing there
 share neither a block nor a point, so nothing detects the conflict. Westgate Hollow has no
@@ -442,8 +459,8 @@ preamble in `docs/sensor-simulation.md`.
 1. Per-loco braking model (#6) and collision avoidance (#7)
 2. Point position confirmation (#25)
 3. Automation engine / schedules
-4. One shared geometry renderer for the editor and the monitor view (#75). This unifies the
-   editor↔monitor seam inside the frontend; it does **not** close the three
-   backend↔frontend duplicates (`findBlockRuns`, `TILE_LEGS`/`DRAWN_LEGS`, `EDGE_OFFSET`),
-   which need a shared workspace package and are tracked separately in `CLAUDE.md`
+4. A shared workspace package for the three backend↔frontend duplicates (`findBlockRuns`,
+   `TILE_LEGS`/`DRAWN_LEGS`, `EDGE_OFFSET`, and now the heartbeat constants). #75 unified
+   the editor↔monitor seam *inside* the frontend and deliberately left these alone —
+   they span a CommonJS backend and an ESM frontend, which is a different problem
 5. Hardware validation and operator workflows

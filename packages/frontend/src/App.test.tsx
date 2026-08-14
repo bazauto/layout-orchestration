@@ -115,14 +115,14 @@ describe('App — sensor simulation capability gate (#65)', () => {
  * `installMockAuth`-style fetch mock keyed by role, rather than the fixed
  * admin identity the #65 tests assume.
  */
-const TAB_NAMES = ['Operate', 'Track Editor', 'Configure'];
+const TAB_NAMES = ['Operate', 'Monitor', 'Track Editor', 'Configure'];
 
-function installRoleFetchMock(role: 'admin' | 'operator'): void {
+function installRoleFetchMock(role: 'admin' | 'operator' | 'monitor'): void {
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      const username = role === 'admin' ? 'test-admin' : 'test-operator';
+      const username = `test-${role}`;
 
       if (url.includes('/api/auth/me')) {
         return Promise.resolve(jsonResponse(200, { username, role }));
@@ -137,8 +137,16 @@ function installRoleFetchMock(role: 'admin' | 'operator'): void {
   );
 }
 
+function visibleTabs(): (string | null)[] {
+  const nav = screen.getByRole('navigation');
+  return within(nav)
+    .getAllByRole('button')
+    .filter((b) => TAB_NAMES.includes(b.textContent ?? ''))
+    .map((b) => b.textContent);
+}
+
 describe('App — operator UI scope (#61)', () => {
-  it('renders exactly one nav button (Operate) for an operator session, with no Track Editor / Configure panel', async () => {
+  it('offers an operator the Operate and Monitor screens only, with no Track Editor / Configure panel', async () => {
     installMockWebSocket();
     installRoleFetchMock('operator');
 
@@ -146,12 +154,7 @@ describe('App — operator UI scope (#61)', () => {
 
     await waitFor(() => expect(screen.queryByText(/test-operator/)).not.toBeNull());
 
-    const nav = screen.getByRole('navigation');
-    const tabButtons = within(nav)
-      .getAllByRole('button')
-      .filter((b) => TAB_NAMES.includes(b.textContent ?? ''));
-
-    expect(tabButtons.map((b) => b.textContent)).toEqual(['Operate']);
+    expect(visibleTabs()).toEqual(['Operate', 'Monitor']);
 
     // appTab defaults to 'operate' so these panels were never going to be on
     // screen either way — the nav assertion above is the real coverage —
@@ -161,7 +164,7 @@ describe('App — operator UI scope (#61)', () => {
     expect(screen.queryByRole('application')).toBeNull();
   });
 
-  it('renders all three nav buttons for an admin session', async () => {
+  it('renders every nav button for an admin session', async () => {
     installMockWebSocket();
     installRoleFetchMock('admin');
 
@@ -169,11 +172,52 @@ describe('App — operator UI scope (#61)', () => {
 
     await waitFor(() => expect(screen.queryByText(/test-admin/)).not.toBeNull());
 
-    const nav = screen.getByRole('navigation');
-    const tabButtons = within(nav)
-      .getAllByRole('button')
-      .filter((b) => TAB_NAMES.includes(b.textContent ?? ''));
+    expect(visibleTabs()).toEqual(['Operate', 'Monitor', 'Track Editor', 'Configure']);
+  });
+});
 
-    expect(tabButtons.map((b) => b.textContent)).toEqual(['Operate', 'Track Editor', 'Configure']);
+/**
+ * App — the monitor role's nav (#63).
+ *
+ * A monitor has no authority to move anything, so it is offered nothing that
+ * looks like it might. In particular it must not land on the Operate screen:
+ * every control there is refused server-side by the WebSocket's per-connection
+ * role gate, so offering them would be exactly the greyed-out-control problem
+ * `docs/auth.md` argues against for the operator.
+ */
+describe('App — monitor role nav (#63)', () => {
+  it('offers a monitor the Monitor screen alone, and defaults to it', async () => {
+    installMockWebSocket();
+    installRoleFetchMock('monitor');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.queryByText(/test-monitor/)).not.toBeNull());
+
+    expect(visibleTabs()).toEqual(['Monitor']);
+
+    // Defaulting matters as much as the nav: `appTab` used to be initialised
+    // to the constant 'operate', which for this role would have rendered the
+    // throttle behind a nav with no way back to it.
+    expect(screen.queryByRole('heading', { name: /throttle/i })).toBeNull();
+    // The monitor panel is what rendered instead. Asserted on the status
+    // strip rather than the canvas, because the canvas needs a layout and
+    // this mock deliberately serves none — the strip is mounted either way,
+    // which is itself the behaviour an unattended display depends on.
+    expect(screen.queryByText(/not confirmed/)).not.toBeNull();
+  });
+
+  it('keeps the liveness badge on screen even when no layout loads', async () => {
+    // The "looks fine, is not" failure arrived at from the other direction: a
+    // wall display that failed to load a layout must still say whether it is
+    // connected, or a bare "no layout" message is indistinguishable from a
+    // display that died mid-session.
+    installMockWebSocket();
+    installRoleFetchMock('monitor');
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.queryByText('No layout selected.')).not.toBeNull());
+    expect(screen.queryByText(/Live|No updates|Disconnected/)).not.toBeNull();
   });
 });

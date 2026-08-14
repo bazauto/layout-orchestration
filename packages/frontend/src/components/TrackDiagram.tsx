@@ -13,16 +13,30 @@
  * component with a read-only set of handlers instead of writing a second
  * renderer of the same railway.
  *
- * Live state (occupancy, point position/lock, routes) is deliberately NOT a
- * prop here. This PR is the geometry-only extraction; #63/#82 bind a live
- * overlay to this component in a later PR, adding whatever shape it actually
- * needs once there is real state to validate against — an unused prop today
- * would only be a guess at that shape.
+ * ## The live overlay (#63, #82)
+ *
+ * `live` is the optional second layer: what the layout is doing now. The
+ * editor passes nothing and draws the railway exactly as it always did; the
+ * monitor passes a `LiveDiagramState` and gets occupancy, locks and commanded
+ * point roads on the same geometry. That is the whole point of #75 — one
+ * renderer, so the two surfaces cannot drift.
+ *
+ * Two rules the overlay obeys, both from `docs/diagram-encoding.md`:
+ *
+ * - **State wins the colour channel.** Where live state is drawn, the block
+ *   identity tint is *not* — a tile cannot carry two independent colour
+ *   systems and stay readable. Block identity falls back to its label, which
+ *   is a large part of why one-label-per-run (#68) matters beyond tidiness.
+ * - **Colour is never the sole carrier.** Occupancy is a fill *and* a hatch
+ *   pattern; a lock is an outline; a set road is solid where an unset one is
+ *   dimmed. Every distinction survives the colour being removed.
  */
 
 import { forwardRef } from 'react';
 import { BlockRun } from '../diagram/blockRuns';
-import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, OCCUPANCY, OPENING, SURFACE } from '../diagram/encoding';
+import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, LOCK, OCCUPANCY, OPENING, POINT_POSITION, SURFACE } from '../diagram/encoding';
+import { DiagramPatternDefs } from '../diagram/patterns';
+import { LiveDiagramState, perimeterEdges, roadSelection } from '../diagram/liveState';
 import { edgeAnchor, roadLabel } from '../diagram/pointRoads';
 import { portMarkGeometry } from '../diagram/openings';
 import { shortPointLabel } from '../diagram/pointLabels';
@@ -100,7 +114,30 @@ export interface TrackDiagramProps {
   ghostPreview?: GhostPreview;
   /** A diagnostics "jump to" pulse ring (#94). Editor-only. */
   jumpPulse?: JumpPulse;
+
+  /**
+   * The live overlay (#63/#82). Omitted or `null` for the Track Editor, which
+   * is a config surface and deliberately shows no live state at all — see
+   * `docs/liveness.md` M2.
+   */
+  live?: LiveDiagramState | null;
+
+  /**
+   * Accessible name and hover title for the canvas.
+   *
+   * Defaulted to the editor's wording rather than made required, so the
+   * extraction stayed behaviour-preserving — but a monitor announcing itself
+   * as an editor to a screen reader would be describing controls it does not
+   * have, which is worse than a generic name.
+   */
+  accessibleName?: string;
+  accessibleTitle?: string;
 }
+
+const EDITOR_A11Y_NAME =
+  'Track diagram editor grid. Arrow keys move the cursor, Enter or Space paints the selected tile, Delete erases, Escape returns to the toolbar.';
+const EDITOR_A11Y_TITLE =
+  'Track diagram editor grid — arrow keys move the cursor, Enter/Space paints, Delete erases, Escape leaves the grid.';
 
 export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(function TrackDiagram(
   {
@@ -128,6 +165,9 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
     cursor,
     ghostPreview,
     jumpPulse,
+    live,
+    accessibleName = EDITOR_A11Y_NAME,
+    accessibleTitle = EDITOR_A11Y_TITLE,
   },
   svgRef,
 ) {
@@ -149,7 +189,7 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
       // three times.
       tabIndex={0}
       role="application"
-      aria-label="Track diagram editor grid. Arrow keys move the cursor, Enter or Space paints the selected tile, Delete erases, Escape returns to the toolbar."
+      aria-label={accessibleName}
       onKeyDown={onKeyDown}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
@@ -161,10 +201,11 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
       onWheel={onWheel}
       onContextMenu={onContextMenu}
     >
-      <title>
-        Track diagram editor grid — arrow keys move the cursor, Enter/Space paints, Delete
-        erases, Escape leaves the grid.
-      </title>
+      <title>{accessibleTitle}</title>
+      {/* Only mounted when there is live state to draw — the editor has no
+          use for these and an unused <defs> in every editor render is noise
+          in the DOM the e2e specs read back. */}
+      {live && <DiagramPatternDefs />}
       <g transform={`translate(${offset.x + RULER_SIZE},${offset.y + RULER_SIZE}) scale(${zoom})`}>
         {/* Grid lines. Every 5th is emphasised (#94), for counting cells
             at a zoom too low for the ruler numbers to fit — the same
@@ -228,16 +269,53 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
             <g key={tile.id || `${tile.x},${tile.y}`}
               transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}>
               <rect width={T} height={T} fill={SURFACE.tile} />
-              {/* Block tint: a wash under the track, never over it, so the
-                  drawing stays exactly as legible as it was. */}
-              {tint !== undefined && (
-                <rect
-                  width={T}
-                  height={T}
-                  fill={BLOCK_TINTS[tint]}
-                  opacity={BLOCK_TINT_OPACITY}
-                />
-              )}
+              {/*
+                One colour system per surface (`docs/diagram-encoding.md`).
+
+                Without `live`, the wash is block **identity** — which block
+                is this — assigned by graph colouring over adjacency so
+                neighbours differ (#68/#81).
+
+                With `live`, the wash is block **state** — occupied, clear,
+                unknown — and identity gives up the colour channel entirely,
+                falling back to the run label. That is the standing rule the
+                encoding module records, and it is why one-label-per-run
+                matters beyond tidiness: on the monitor the label is the
+                *only* thing naming a block.
+
+                Either way it is a wash under the track, never over it, so
+                the drawing stays exactly as legible as it was.
+              */}
+              {live
+                ? (() => {
+                    const state = meta.blockId ? live.blocks.get(meta.blockId) : undefined;
+                    if (!state) return null;
+                    const enc = OCCUPANCY[state.occupancy];
+                    return (
+                      <>
+                        <rect width={T} height={T} fill={enc.colour} opacity={BLOCK_TINT_OPACITY} />
+                        {/* The pattern is what survives colour being removed
+                            (#81). `clear` has none, and that flatness is
+                            itself the distinction. */}
+                        {enc.pattern && (
+                          <rect
+                            width={T}
+                            height={T}
+                            fill={`url(#${enc.pattern})`}
+                            opacity={0.55}
+                          />
+                        )}
+                      </>
+                    );
+                  })()
+                : tint !== undefined && (
+                    <rect
+                      width={T}
+                      height={T}
+                      fill={BLOCK_TINTS[tint]}
+                      opacity={BLOCK_TINT_OPACITY}
+                    />
+                  )}
               {/*
                 #71, and #81's rule applied. Decorative track reads as
                 obviously-not-monitored and unclassified track reads as
@@ -297,6 +375,59 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                   );
                 })}
               </g>
+
+              {/*
+                The set road (#63), drawn only when there is live state.
+
+                `docs/diagram-encoding.md` is explicit that a set road drawn
+                solid against a dimmed unset one is *already* a non-colour
+                encoding and should stay that way — so this is opacity and
+                stroke weight, not a second hue. The third state,
+                `indeterminate`, is the fail-safe one and gets the `unknown`
+                colour and a dash: a point whose position the system cannot
+                determine must not be drawn like one it can.
+
+                Inside the rotation group, because `road.legs` are named in
+                the tile's **unrotated** frame (`diagram/pointRoads.ts`) —
+                the same reason the letters above are.
+
+                Every position drawn here is **commanded**, never confirmed.
+                There is no feedback channel until #25, and the view says so
+                once rather than qualifying each point.
+              */}
+              {live && (meta.pointRoads?.length ?? 0) > 0 && (
+                <g transform={`rotate(${rotation}, ${H}, ${H})`}>
+                  {meta.pointRoads!.map((road, i) => {
+                    const selection = roadSelection(road, live.points);
+                    const a = edgeAnchor(road.legs[0], T);
+                    const b = edgeAnchor(road.legs[1], T);
+                    const enc =
+                      selection === 'indeterminate' ? POINT_POSITION.unknown : POINT_POSITION.normal;
+                    return (
+                      <polyline
+                        key={`live-${i}`}
+                        points={`${a.x},${a.y} ${H},${H} ${b.x},${b.y}`}
+                        fill="none"
+                        stroke={enc.colour}
+                        strokeWidth={selection === 'selected' ? 5 : 3}
+                        strokeLinecap="round"
+                        strokeDasharray={selection === 'indeterminate' ? '3 3' : undefined}
+                        opacity={selection === 'unselected' ? 0.12 : 0.85}
+                      >
+                        <title>
+                          {`road ${roadLabel(road)}: ${
+                            selection === 'selected'
+                              ? 'set (commanded)'
+                              : selection === 'unselected'
+                                ? 'not set'
+                                : 'position unknown'
+                          }`}
+                        </title>
+                      </polyline>
+                    );
+                  })}
+                </g>
+              )}
 
               {/*
                 #74 — placed entities. Generic by construction: the glyph
@@ -456,6 +587,57 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
           );
         })}
 
+        {/*
+          A route lock, drawn as an outline **around the run** (#63).
+
+          `docs/diagram-encoding.md` gives occupancy the fill and a lock the
+          outline precisely so the two compose: a block can be locked and
+          clear (the road set ahead of a train) or occupied and unlocked, and
+          both must be readable at once.
+
+          Around the run, not around each tile: per-tile boxes on a nine-tile
+          block read as a hatched region rather than as one locked block,
+          which is the exact distinction the outline exists to make.
+
+          There is deliberately **no separate route layer**. Every block on a
+          granted route carries `lockedByRoute`, so a route highlight would be
+          a second mark for one fact, competing for tiles that already carry
+          occupancy and this outline — see `diagram/liveState.ts` rule 2.
+        */}
+        {live &&
+          runs.map((run) => {
+            const state = live.blocks.get(run.blockId);
+            if (!state?.lockedByRoute) return null;
+            return (
+              <g key={`lock-${run.blockId}`}>
+                {perimeterEdges(run.tiles).map((e, i) => {
+                  const x = e.x * TILE_SIZE;
+                  const y = e.y * TILE_SIZE;
+                  const [x1, y1, x2, y2] =
+                    e.side === 'n'
+                      ? [x, y, x + T, y]
+                      : e.side === 's'
+                        ? [x, y + T, x + T, y + T]
+                        : e.side === 'w'
+                          ? [x, y, x, y + T]
+                          : [x + T, y, x + T, y + T];
+                  return (
+                    <line
+                      key={`${e.x},${e.y},${e.side},${i}`}
+                      x1={x1}
+                      y1={y1}
+                      x2={x2}
+                      y2={y2}
+                      stroke={LOCK.colour}
+                      strokeWidth={LOCK.strokeWidth}
+                      strokeDasharray={LOCK.strokeDasharray}
+                    />
+                  );
+                })}
+              </g>
+            );
+          })}
+
         {/* One block label per contiguous run, at a tile of that run. */}
         {runs.map((run) => {
           // Falls back to the raw id rather than rendering nothing, the
@@ -465,6 +647,28 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
           // next — which is exactly the colour-alone encoding #81 forbids.
           const name = blocks.find((b) => b.id === run.blockId)?.name ?? run.blockId;
           if (!labelsVisible(run.labelAt.x, run.labelAt.y)) return null;
+
+          /**
+           * On the monitor the label carries the state in words as well —
+           * `Up Platform ■ 🔒 Jinty` — because the fill and the outline are
+           * both area treatments, and #81's rule is that no distinction may
+           * rest on colour alone. The glyphs come from the encoding module so
+           * the legend and the diagram cannot disagree about them.
+           */
+          const state = live?.blocks.get(run.blockId);
+          const marks = state
+            ? [
+                OCCUPANCY[state.occupancy].glyph,
+                state.lockedByRoute ? LOCK.glyph : null,
+                // An occupied block with no identified occupant is a real,
+                // common state — a rake of coaches. Say nothing rather than
+                // implying the block is empty of vehicles.
+                ...state.occupants.map((o) => o.name ?? `#${o.address}`),
+              ]
+                .filter(Boolean)
+                .join(' ')
+            : '';
+
           return (
             <text
               key={`${run.blockId}@${run.labelAt.x},${run.labelAt.y}`}
@@ -480,7 +684,7 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
               strokeWidth={3}
               paintOrder="stroke"
             >
-              {name}
+              {marks ? `${name} ${marks}` : name}
             </text>
           );
         })}
