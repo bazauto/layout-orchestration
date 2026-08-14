@@ -290,9 +290,18 @@ test('the toolbar offers no block-end controls, and reads no block_ends', async 
   // is one copy now, compiled on every read, so there is nothing to reconcile
   // and no name for a hand to correct.
   //
-  // `block-ends` is deliberately **not** stubbed above: an unrouted request in
-  // Playwright fails loudly, so this asserts the editor no longer asks for it.
+  // Counted rather than left unstubbed: Playwright passes an unrouted request
+  // through to the network rather than failing the test, so an editor that
+  // still asked for `block-ends` would fail quietly and this spec would pass.
+  let blockEndReads = 0;
+  await page.route('**://localhost:3000/api/layouts/layout-1/block-ends**', (r) => {
+    blockEndReads += 1;
+    return r.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+  });
+
   await openEditor(page);
+
+  expect(blockEndReads).toBe(0);
 
   await expect(page.getByTitle(/Regenerate block end labels/)).toHaveCount(0);
   await expect(page.getByTitle(/Name, rename and remove block ends/)).toHaveCount(0);
