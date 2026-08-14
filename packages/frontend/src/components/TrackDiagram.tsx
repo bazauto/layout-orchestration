@@ -97,6 +97,17 @@ const H = T / 2; // half tile
  */
 const LABEL_OFFSET = H - 5;
 
+/**
+ * How faintly a point tile's own roads are drawn where there is live state to
+ * lay over them. The live overlay redraws the set road at full strength, so
+ * this is what an *unset* road ends up looking like — present, and plainly not
+ * the road the blades are making.
+ *
+ * Only where `live` is given. The editor is authoring the mapping and needs
+ * both roads legible; it has no set road to distinguish them by anyway.
+ */
+const POINT_BASE_OPACITY = 0.3;
+
 /** The paint tool's hover preview. Editor-only; omitted entirely for any other caller. */
 export interface GhostPreview {
   cell: { x: number; y: number };
@@ -310,112 +321,165 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
           </>
         )}
 
-        {/* Placed tiles. The block name is NOT drawn here — one label per
-            contiguous run is drawn below instead (#68). */}
+        {/*
+          Three passes over the drawing, not one group per tile — **the tiles
+          are layers, not cells**.
+
+          Every tile paints an opaque background rect of its own, so with one
+          group per tile a tile's background erases whatever its
+          already-drawn neighbour put down. That is invisible for anything
+          confined to a cell, and wrong for the route halo, which is 9 units
+          wide against a 4-unit track and therefore *always* crosses the
+          boundary. On a 45° run it showed as a waist at every tile edge: the
+          halo read as a chain of capsules, and the operator's word for it was
+          carriages.
+
+          So: every background and wash first, then every route halo, then
+          every piece of track and text. Nothing a later tile draws can reach
+          back under an earlier tile's track, and adjacent halo segments
+          overlap freely into one band.
+        */}
+        <g>
+          {Array.from(grid.values()).map((tile) => {
+            const meta = parsedMeta.get(`${tile.x},${tile.y}`) ?? {};
+            const tint = meta.blockId !== undefined ? tintOf.get(meta.blockId) : undefined;
+            return (
+              <g
+                key={tile.id || `${tile.x},${tile.y}`}
+                transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}
+              >
+                <rect width={T} height={T} fill={SURFACE.tile} />
+                {/*
+                  One colour system per surface (`docs/diagram-encoding.md`).
+
+                  Without `live`, the wash is block **identity** — which block
+                  is this — assigned by graph colouring over adjacency so
+                  neighbours differ (#68/#81).
+
+                  With `live`, the wash is block **state** — occupied, clear,
+                  unknown — and identity gives up the colour channel entirely,
+                  falling back to the run label. That is the standing rule the
+                  encoding module records, and it is why one-label-per-run
+                  matters beyond tidiness: on the monitor the label is the
+                  *only* thing naming a block.
+
+                  Either way it is a wash under the track, never over it, so
+                  the drawing stays exactly as legible as it was.
+                */}
+                {live
+                  ? (() => {
+                      const state = meta.blockId ? live.blocks.get(meta.blockId) : undefined;
+                      if (!state) return null;
+                      const enc = OCCUPANCY[state.occupancy];
+                      return (
+                        <>
+                          <rect
+                            width={T}
+                            height={T}
+                            fill={enc.colour}
+                            opacity={BLOCK_TINT_OPACITY}
+                          />
+                          {/* The pattern is what survives colour being removed
+                              (#81). `clear` has none, and that flatness is
+                              itself the distinction. */}
+                          {enc.pattern && (
+                            <rect
+                              width={T}
+                              height={T}
+                              fill={`url(#${enc.pattern})`}
+                              opacity={0.55}
+                            />
+                          )}
+                        </>
+                      );
+                    })()
+                  : tint !== undefined && (
+                      <rect
+                        width={T}
+                        height={T}
+                        fill={BLOCK_TINTS[tint]}
+                        opacity={BLOCK_TINT_OPACITY}
+                      />
+                    )}
+              </g>
+            );
+          })}
+        </g>
+
+        {/*
+          A route holding this road (#129), drawn **under** the track and
+          wider — a halo. The track stays the track and the colour surrounds
+          it, rather than the railway changing colour.
+
+          Its own layer, above every wash and below every piece of track. The
+          segments still carry their cell and the tile's rotation, because the
+          shape of a leg is a property of the tile; only the z-order moved.
+
+          Not mounted at all with nothing set, which is every editor render:
+          the layer would otherwise walk the whole drawing to produce nothing.
+        */}
+        {routeSegments.size > 0 && (
+          <g>
+            {Array.from(grid.values()).map((tile) => {
+              const cellRoutes = routeSegments.get(`${tile.x},${tile.y}`);
+              if (!cellRoutes) return null;
+              return (
+                <g
+                  key={tile.id || `${tile.x},${tile.y}`}
+                  transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}
+                >
+                  {cellRoutes.map(({ line, segment }, i) => {
+                    const style = routeStyle(line.styleIndex);
+                    return (
+                      <g
+                        key={`route-${line.routeId}-${i}`}
+                        transform={`rotate(${segment.rotation}, ${H}, ${H})`}
+                      >
+                        <path
+                          d={segment.d}
+                          fill="none"
+                          stroke={style.colour}
+                          strokeWidth={ROUTE_LINE.strokeWidth}
+                          strokeLinecap="round"
+                          strokeDasharray={style.dash ?? undefined}
+                          opacity={
+                            line.status === 'suspended'
+                              ? ROUTE_LINE.suspendedOpacity
+                              : ROUTE_LINE.opacity
+                          }
+                        >
+                          <title>
+                            {`route ${line.locoName ?? `#${line.locoAddress}`}${
+                              line.status === 'suspended' ? ' (suspended)' : ''
+                            }`}
+                          </title>
+                        </path>
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
+          </g>
+        )}
+
+        {/* The track itself, and everything written on it. The block name is
+            NOT drawn here — one label per contiguous run is drawn below
+            instead (#68). */}
         {Array.from(grid.values()).map((tile) => {
           const meta = parsedMeta.get(`${tile.x},${tile.y}`) ?? {};
           const rotation = typeof meta.rotation === 'number' ? meta.rotation : 0;
-          const tint = meta.blockId !== undefined ? tintOf.get(meta.blockId) : undefined;
           // Same raw-id fallback as the block labels below: a point tile
           // that draws no name at all is the specific complaint in #68.
           const pName = meta.pointId
             ? (points.find((p) => p.id === meta.pointId)?.name ?? meta.pointId)
             : null;
           const classification = classifyTile(meta);
-          const cellRoutes = routeSegments.get(`${tile.x},${tile.y}`);
           return (
             <g
               key={tile.id || `${tile.x},${tile.y}`}
               transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}
             >
-              <rect width={T} height={T} fill={SURFACE.tile} />
-              {/*
-                One colour system per surface (`docs/diagram-encoding.md`).
-
-                Without `live`, the wash is block **identity** — which block
-                is this — assigned by graph colouring over adjacency so
-                neighbours differ (#68/#81).
-
-                With `live`, the wash is block **state** — occupied, clear,
-                unknown — and identity gives up the colour channel entirely,
-                falling back to the run label. That is the standing rule the
-                encoding module records, and it is why one-label-per-run
-                matters beyond tidiness: on the monitor the label is the
-                *only* thing naming a block.
-
-                Either way it is a wash under the track, never over it, so
-                the drawing stays exactly as legible as it was.
-              */}
-              {live
-                ? (() => {
-                    const state = meta.blockId ? live.blocks.get(meta.blockId) : undefined;
-                    if (!state) return null;
-                    const enc = OCCUPANCY[state.occupancy];
-                    return (
-                      <>
-                        <rect width={T} height={T} fill={enc.colour} opacity={BLOCK_TINT_OPACITY} />
-                        {/* The pattern is what survives colour being removed
-                            (#81). `clear` has none, and that flatness is
-                            itself the distinction. */}
-                        {enc.pattern && (
-                          <rect width={T} height={T} fill={`url(#${enc.pattern})`} opacity={0.55} />
-                        )}
-                      </>
-                    );
-                  })()
-                : tint !== undefined && (
-                    <rect
-                      width={T}
-                      height={T}
-                      fill={BLOCK_TINTS[tint]}
-                      opacity={BLOCK_TINT_OPACITY}
-                    />
-                  )}
-              {/*
-                A route holding this road (#129), drawn **under** the track and
-                wider — a halo. The track stays the track and the colour
-                surrounds it, rather than the railway changing colour.
-
-                Inside the tile group rather than as one layer beneath all the
-                tiles, because every tile paints an opaque background rect of
-                its own and a layer below them would be invisible. So the
-                z-order per cell is: background, occupancy wash, route halo,
-                track, letters and labels.
-
-                This is what replaced the dashed outline around a locked run.
-                Same fact, same one mark — moved onto the track, where it can
-                also say *which* route holds it. See `diagram/routePaths.ts`.
-              */}
-              {cellRoutes?.map(({ line, segment }, i) => {
-                const style = routeStyle(line.styleIndex);
-                return (
-                  <g
-                    key={`route-${line.routeId}-${i}`}
-                    transform={`rotate(${segment.rotation}, ${H}, ${H})`}
-                  >
-                    <path
-                      d={segment.d}
-                      fill="none"
-                      stroke={style.colour}
-                      strokeWidth={ROUTE_LINE.strokeWidth}
-                      strokeLinecap="round"
-                      strokeDasharray={style.dash ?? undefined}
-                      opacity={
-                        line.status === 'suspended'
-                          ? ROUTE_LINE.suspendedOpacity
-                          : ROUTE_LINE.opacity
-                      }
-                    >
-                      <title>
-                        {`route ${line.locoName ?? `#${line.locoAddress}`}${
-                          line.status === 'suspended' ? ' (suspended)' : ''
-                        }`}
-                      </title>
-                    </path>
-                  </g>
-                );
-              })}
-
               {/*
                 #71, and #81's rule applied. Decorative track reads as
                 obviously-not-monitored and unclassified track reads as
@@ -433,13 +497,30 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                 decorative cell carries no occupancy wash, which is the
                 monitor's way of saying the system cannot see it, and it says
                 it in the channel that view already uses for state.
+
+                **A point's roads are drawn faint where there is live state**,
+                and the overlay below redraws the set one at full strength.
+                Without this the tile drew both roads of a point solid and the
+                overlay only *added* a highlight, so a point standing reverse
+                still showed its normal road as connected track — a junction
+                the blades cannot physically be making. `docs/diagram-encoding.md`
+                D3 always said a set road is solid where an unset one is
+                dimmed; only half of that was drawn.
               */}
               <g
                 transform={`rotate(${rotation}, ${H}, ${H})`}
-                opacity={classification === 'decorative' && !live ? 0.4 : 1}
+                opacity={
+                  live
+                    ? (meta.pointRoads?.length ?? 0) > 0
+                      ? POINT_BASE_OPACITY
+                      : 1
+                    : classification === 'decorative'
+                      ? 0.4
+                      : 1
+                }
                 strokeDasharray={classification === 'decorative' && !live ? '3 3' : undefined}
               >
-                <TilePath type={tile.tileType as TileType} sleepers={!cellRoutes} />
+                <TilePath type={tile.tileType as TileType} />
               </g>
               {classification === 'unclassified' && labelsVisible(tile.x, tile.y) && (
                 <text

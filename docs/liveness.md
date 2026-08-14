@@ -204,7 +204,7 @@ monitor cannot drift:
 | Block occupancy | Fill + hatch pattern | Areas; three states must survive greyscale (#81) |
 | Block lock | `LOCK.glyph` on the run label, and the route line below | The outline it used to be is gone — M8 |
 | Route | A coloured, dashed line **along the track**, under it and wider | The only mark that can say *which* route holds a road (M8) |
-| Commanded point road | Solid where set, dimmed where not, dashed where indeterminate | `docs/diagram-encoding.md` says a set/dimmed pair is already a non-colour encoding |
+| Commanded point road | Solid where set, dimmed where not, dashed where indeterminate — **and the tile's own roads drawn faint beneath**, or a point reverse still showed its normal road as connected track | `docs/diagram-encoding.md` D3 says a set/dimmed pair is already a non-colour encoding |
 | Point lock | `LOCK.glyph`, once per point, **beside its name** (M7) | A glyph, not a colour; the same mark a locked block's label carries |
 | Occupants | Words beside the block label | The only naming channel left once state takes the colour |
 
