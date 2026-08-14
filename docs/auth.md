@@ -42,16 +42,30 @@ phone opened on the sofa.
   before any route, so it covers everything registered afterward — REST
   routes and the `/ws` upgrade alike. `@fastify/websocket` dispatches the
   upgrade request through the normal hook pipeline before switching
-  protocols, so no separate check lives in the WebSocket transport code.
-- **Roles** — `admin` may edit topology and config; `operator` may drive.
-  Enforced by a `requireAdmin` preHandler on every topology/config write
-  route (blocks, points, sensors, locos, layouts, grid tiles, edges,
-  `topology/revalidate`). Reads, and every WebSocket driving command
-  (`THROTTLE_COMMAND`/`POINT_COMMAND`/`FUNCTION_COMMAND`/`SET_MODE`), are not
-  role-gated beyond requiring *some* authenticated session. The frontend
-  mirrors this by showing an operator only the screens they can act on — see
-  "Operator UI scope" below, which is an affordance rule, not a second
-  enforcement point.
+  protocols, so *authentication* — is there a valid session at all — needs
+  no separate check in the WebSocket transport code. **This still holds**
+  after #63: the WebSocket transport now also reads `request.user.role`, but
+  only once, at the same moment the hook has already run, into a
+  per-connection constant (D2 below) — it is a second fact captured at the
+  connection edge, not a second enforcement point checked mid-connection.
+  The distinction that survives is authentication (hook, HTTP-layer,
+  connection-or-nothing) versus authorisation-by-role (per-connection
+  constant, checked per message against a value that cannot change without a
+  new connection).
+- **Roles** — `admin` may edit topology and config; `operator` may drive;
+  `monitor` (issue #63) may only watch — situational awareness with no
+  authority to move anything. `admin`/`operator` writes are enforced by a
+  `requireAdmin` preHandler on every topology/config write route (blocks,
+  points, sensors, locos, layouts, grid tiles, edges, `topology/revalidate`).
+  Config *reads* are not role-gated beyond requiring *some* authenticated
+  session — a monitor needs the same block/point/loco/sensor records an
+  operator's screen already reads unauthenticated (see "Config reads stay
+  ungated, and must" below). The WebSocket driving commands
+  (`THROTTLE_COMMAND`/`POINT_COMMAND`/`FUNCTION_COMMAND`/`SET_MODE`) *are* now
+  role-gated, refusing a `monitor` connection specifically — see "The monitor
+  role" below. The frontend mirrors both cuts by showing each role only the
+  screens/actions it can act on — see "Operator UI scope" below, which is an
+  affordance rule, not a second enforcement point.
 - **Sliding expiry** — 30 days (`domain/auth.ts#SESSION_TTL_MS`), refreshed
   on every validated request: `AuthService#validateSession` extends
   `sessions.expires_at` server-side, and the `onRequest` hook reissues the
@@ -238,6 +252,72 @@ later session does not re-open them piecemeal:
   translating a SQLite constraint/trigger abort — so the port is the one
   contract both sides share, and neither imports the other's module for an
   error type.
+
+## The monitor role (issue #63)
+
+A third `Role`: situational awareness with no authority to move anything.
+The motivating case is a wall display or a tablet handed to a visitor at an
+open day — someone who should be able to watch the layout work without
+being able to touch it. **A monitor is meant to see a purpose-built
+situational-awareness view, not a stripped Operate screen** — see "Why not
+a read-only Configure or a read-only track view" below, which already made
+this argument for `operator` and named `monitor` as where it actually
+belongs. This document, and #63's backend work landing with it, covers only
+the role itself: the `Role` vocabulary, the migration, and the WebSocket
+enforcement below. The frontend view is a separate, later PR. Four
+decisions, made once and recorded here so a later session does not re-open
+them:
+
+- **D1 — `Role` gains a third value, `monitor`.** `admin` may edit topology
+  and config; `operator` may drive; `monitor` may only watch. Widening the
+  `users_role_valid` CHECK constraint is a table-rebuild migration
+  (`migrations/0011_users_monitor_role.sql`), because SQLite cannot alter a
+  CHECK in place — the same class of change `CLAUDE.md` warns about. The
+  rebuild's generated `DROP TABLE users` drops every trigger attached to the
+  table, so the migration ends with the same two `CREATE TRIGGER` statements
+  as `migrations/0006_users_last_admin_guard.sql`, appended by hand and
+  re-tested end to end (`tests/integration/migrations.test.ts`): both
+  triggers exist post-rebuild, both still actually abort, the CHECK accepts
+  `monitor` and still rejects a junk role, and existing rows keep their role
+  through the rebuild. `domain/users.ts#wouldRemoveLastAdmin` needed no
+  change — it already checks `nextRole !== 'admin'`, not
+  `nextRole === 'operator'`, so demoting the sole admin to `monitor` is
+  refused by the exact same rule that refuses demoting to `operator`.
+- **D2 — Enforcement is a per-connection capability captured at the
+  WebSocket upgrade, not a per-message role lookup.** The "Enforcement"
+  section above states auth is enforced *only at the connection edge, never
+  mid-connection on a live socket* — nothing tears a socket down for an auth
+  reason while a train might be moving. `transport/websocket/index.ts`
+  reads `request.user.role` exactly once, at the point the upgrade handler
+  runs (`registerAuthHook` has already populated it before the upgrade
+  completes — see that module's own header comment), into a `const role`
+  closed over by the connection's `message` handler for the socket's whole
+  lifetime. Re-reading the session per message would have broken that
+  property for the first time since #20; this is the substantive backend
+  work in #63. **This re-confirms the "Enforcement" claim above, rather than
+  contradicting it**: the role check is still done exactly once, at the
+  edge — it is simply a second fact (role, not just "authenticated")
+  captured at the same moment as the first.
+- **D3 — A refused driving command is an `ERROR` message, never a socket
+  close.** Same reasoning as D2: closing a `monitor` socket over an
+  authorisation refusal would be indistinguishable, from the operator's
+  seat, from a network fault, and — more to the point — is exactly the kind
+  of mid-connection teardown D2 exists to rule out. `THROTTLE_COMMAND`,
+  `POINT_COMMAND`, `FUNCTION_COMMAND` and `SET_MODE` sent by a `monitor`
+  connection get an `ERROR` reply naming the refused message type; the
+  socket stays open and the next message is evaluated on its own merits.
+- **D4 — `EMERGENCY_STOP` remains available to every role, including
+  `monitor`.** It was already reachable by every authenticated role before
+  #63 (and, via `POST /api/emergency-stop`, by an unauthenticated LAN client
+  at all — see "Emergency Stop stays unauthenticated" above); #63 item 3
+  asked for that to be stated as a decision rather than carried forward by
+  accident. It only moves the system in the fail-safe direction, so a role
+  with no authority to *start* or *change* movement still has every reason
+  to be able to *stop* it. `DRIVING_MESSAGE_TYPES` in
+  `transport/websocket/index.ts` is deliberately a positive list of what is
+  gated, not `ClientMessage` minus an exclusion — `EMERGENCY_STOP` is simply
+  absent from it, so a future read-only message type needs no change there
+  either.
 
 ## Operator UI scope (issue #61)
 
