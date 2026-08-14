@@ -198,8 +198,9 @@ later session does not re-open them piecemeal:
   carry `requireAdmin`; an operator's own identity is already available from
   `GET /api/auth/me`, and the pre-TLS threat model below argues for the
   smaller surface. The Configure screen's Users tab is rendered only for
-  `role === 'admin'` — the only place the frontend consults `role` at all,
-  until "Operator UI scope" below widens that to the whole screen.
+  `role === 'admin'` — now one of several places the frontend consults
+  `role`, per "Operator UI scope" below, which widened it to the whole
+  screen.
 - **Q5 — A new account's password is set by the admin at creation**,
   required in the `POST /api/users` payload, no invite or first-login flow —
   this is a local-first single-household system where the admin and the new
@@ -240,9 +241,8 @@ later session does not re-open them piecemeal:
 
 ## Operator UI scope (issue #61)
 
-**Decided, not yet implemented.** This section records the call; #61 tracks
-the frontend change that makes it true. Until that lands, the behaviour
-described under "What this replaces" is what actually ships.
+**Shipped.** `App.tsx` derives one `visibleTabs` list from `role`, which the
+nav and the panel render guards both read.
 
 **An operator sees the Operate screen and nothing else.** The Track Editor
 and Configure entries are absent from the nav for a non-admin, and their

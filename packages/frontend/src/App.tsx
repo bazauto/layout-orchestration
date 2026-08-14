@@ -52,6 +52,14 @@ function AuthenticatedApp({
   const [appTab, setAppTab] = useState<AppTab>('operate');
   const [layoutId, setLayoutId] = useState<string | null>(null);
 
+  // #61: an operator sees the Operate screen and nothing else — the Track
+  // Editor and Configure nav entries are absent, not disabled, and the
+  // panels behind them must not render even if `appTab` somehow held
+  // 'grid'/'configure' (a future state-restore or deep link). One derived
+  // list feeds both the nav and the render guards below, rather than
+  // scattering `role === 'admin'` checks (docs/auth.md, "Operator UI scope").
+  const visibleTabs: AppTab[] = role === 'admin' ? ['operate', 'grid', 'configure'] : ['operate'];
+
   useEffect(() => {
     if (connectionState !== 'connected' || layoutId) return;
     apiFetch('/api/layouts')
@@ -101,7 +109,7 @@ function AuthenticatedApp({
       />
 
       <nav style={styles.nav}>
-        {(['operate', 'grid', 'configure'] as AppTab[]).map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t}
             onClick={() => setAppTab(t)}
@@ -184,7 +192,7 @@ function AuthenticatedApp({
             })()}
           </>
         )}
-        {appTab === 'grid' && (
+        {appTab === 'grid' && visibleTabs.includes('grid') && (
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             <GridEditor
               layoutId={layoutId}
@@ -194,7 +202,9 @@ function AuthenticatedApp({
             />
           </div>
         )}
-        {appTab === 'configure' && <ConfigPanel layoutId={layoutId} role={role} currentUsername={username} />}
+        {appTab === 'configure' && visibleTabs.includes('configure') && (
+          <ConfigPanel layoutId={layoutId} role={role} currentUsername={username} />
+        )}
       </main>
     </div>
   );
