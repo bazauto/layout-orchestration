@@ -46,14 +46,29 @@ is the fallback the whole scheme rests on.
 
 ---
 
-## D2 — Occupancy is a fill; a lock is an outline
+## D2 — Occupancy is a fill; a lock is a line along the track
 
 **Decision.** Occupancy is carried as a fill (flat, hatched, or cross-hatched).
-A route lock is carried as a dashed outline.
+A route lock is carried as a **line along the road the route holds**, plus
+`LOCK.glyph` on the block's run label.
 
-**Why.** They are independent — a block can be locked and clear, or occupied and
-unlocked — and #81 names them as the pair most likely to be conflated if both
-are "a colour". Fill and outline compose; two fills compete.
+**Why they must not share a channel.** Occupancy and locking are independent —
+a block can be locked and clear, or occupied and unlocked — and #81 names them
+as the pair most likely to be conflated if both are "a colour". A fill and a
+line compose; two fills compete.
+
+**Amended (#129): the lock used to be a dashed outline around the run.** The
+composition argument above is why it was an outline rather than a second fill,
+and that half stands. What changed is that an outline can only say *held*: two
+concurrent routes drew two identical yellow boxes, and "held by which" is the
+question an operator has. The line carries the same fact — it is drawn from
+the same `lockedByRoute` field, only while the block still reports it — and
+adds the route's identity. `docs/liveness.md` M8 is the full record.
+
+**Route identity is a hue *and* a dash**, never a hue alone; `ROUTE_TINTS` is
+`BLOCK_TINTS` reused, which is safe because identity gives up the colour
+channel wherever state is drawn (D1), so the two palettes never share a
+surface.
 
 **`unknown` is the most visually distinct of the three occupancy states**, not a
 neutral middle ground. It is a fail-safe state that refuses routes, so it gets

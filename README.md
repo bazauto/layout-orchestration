@@ -67,10 +67,14 @@ Implemented:
   Configure; `operator` gets Operate and Monitor; `monitor` gets Monitor alone. The
   authoring screens are **absent** for a non-admin rather than disabled — affordance
   only, with `requireAdmin` and the WebSocket role gate as the actual enforcement
-- Monitor view (#63, #75, #82): a read-only live mimic drawing block occupancy, route
-  locks, commanded point roads and which loco is where, on the **same** renderer the
-  Track Editor uses. Connection health is always on screen, and a stale or disconnected
-  diagram is covered rather than badged — see `docs/liveness.md`
+- Monitor view (#63, #75, #82, #129): a read-only live mimic drawing block occupancy,
+  commanded point roads and which loco is where, on the **same** renderer the Track
+  Editor uses. A set route is a coloured, dashed line **along the track it holds**,
+  through the decorative sections between blocks too, with a key naming each route by
+  its loco — several concurrent routes are told apart by hue and dash, not hue alone.
+  A point key beside the canvas resolves the abbreviated point names and shows what
+  each point is set to and who holds it. Connection health is always on screen, and a
+  stale or disconnected diagram is covered rather than badged — see `docs/liveness.md`
 - Frontend operate screen for throttle, points, and live state
 - Frontend configuration screen for blocks, sensors, points, locos, and edges
 - Track editor with tile palette, rotation, keyboard shortcuts, hover ghost preview, and persistence

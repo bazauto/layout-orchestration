@@ -251,6 +251,7 @@ function AuthenticatedApp({
               points={layoutConfig.config.points}
               sensors={layoutConfig.config.sensors}
               locos={layoutConfig.config.locos}
+              edges={layoutConfig.config.edges}
               snapshot={snapshot}
               freshness={freshness}
             />

@@ -130,8 +130,19 @@ export const OCCUPANCY: Record<'occupied' | 'clear' | 'unknown', StateEncoding> 
 };
 
 /**
- * A route lock, carried as an outline so it composes with the occupancy fill.
- * Not a `StateEncoding`: a lock is a boolean, and its absence needs no mark.
+ * A route lock.
+ *
+ * `glyph`/`label` are the whole of it on a block now. The dashed **outline
+ * around the run** this used to carry is gone: a route is drawn as a coloured
+ * line along the track it holds (`ROUTE_TINTS` below, #129), which is the same
+ * one-mark-per-fact posture from the opposite direction — the outline said
+ * "held" and could not say "held by which", and two concurrent routes were two
+ * identical yellow outlines.
+ *
+ * `strokeDasharray`/`strokeWidth` remain because the glyph is not the only
+ * consumer: a lock on a *point* is a glyph at its label tile, and anything
+ * later wanting to outline a held thing should use these rather than invent
+ * its own.
  */
 export const LOCK = {
   colour: '#f9e2af',
@@ -140,6 +151,48 @@ export const LOCK = {
   glyph: '\u{1F512}', // 🔒
   label: 'locked',
 } as const;
+
+/**
+ * Route identity (#129) — which route holds this road.
+ *
+ * **These are `BLOCK_TINTS`, reused deliberately.** Where live state is drawn
+ * the identity wash is not (D1), so on the monitor those four validated hues
+ * are free. They are already checked for CVD separation against the tile
+ * surface across all pairs, which is the expensive part of picking a
+ * categorical palette, and a second set would have to be validated against
+ * both this one and the state colours.
+ *
+ * They cannot be confused with block identity in practice, because the two
+ * never appear on the same surface: the editor draws tints and no routes, the
+ * monitor draws routes and no tints.
+ *
+ * **Colour is not the carrier.** Route identity in hue alone is exactly what
+ * #81 forbids, so a route also gets a dash pattern, and the two cycle on
+ * different periods — four hues by four dashes is sixteen distinguishable
+ * combinations. Past that the key in the status strip is the answer, which it
+ * is anyway: nobody identifies a route by colour alone, they use the colour to
+ * find the row.
+ */
+export const ROUTE_TINTS = BLOCK_TINTS;
+
+/** Dash patterns, cycling on a different period from the hues. `null` is solid. */
+export const ROUTE_DASHES: readonly (string | null)[] = [null, '10 5', '2 4', '12 4 2 4'];
+
+/** How wide the halo runs, and how far under the track it sits. */
+export const ROUTE_LINE = {
+  strokeWidth: 9,
+  opacity: 0.75,
+  /** A suspended route still holds its locks, but is not the road being run. */
+  suspendedOpacity: 0.32,
+} as const;
+
+/** The colour and dash for a route's ordinal among those currently drawn. */
+export function routeStyle(styleIndex: number): { colour: string; dash: string | null } {
+  return {
+    colour: ROUTE_TINTS[styleIndex % ROUTE_TINTS.length],
+    dash: ROUTE_DASHES[Math.floor(styleIndex / ROUTE_TINTS.length) % ROUTE_DASHES.length],
+  };
+}
 
 /**
  * Point position.
