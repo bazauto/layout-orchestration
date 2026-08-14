@@ -70,6 +70,21 @@ adds the route's identity. `docs/liveness.md` M8 is the full record.
 channel wherever state is drawn (D1), so the two palettes never share a
 surface.
 
+**The line is drawn along the road the route walked, not over the block it
+holds** (operator feedback on #129). A block is not a piece of track — a destination block
+containing a point has track on the far side of it that the train will not run
+over, and washing the whole block drew a road the route does not have. The
+segments come from a walk from the joins between held blocks, following legs
+and taking only the road a point hold selects. `diagram/routePaths.ts` carries
+the two fallbacks, both of which err toward drawing more rather than less.
+
+**Sleepers are dropped from a cell a route line runs through.** The halo sits
+under the track and over the tile, so the four sleeper ticks a straight draws
+cut a continuous highlight into short blocks — read on the real layout as "a
+lot of carriages on the track", which is a worse lie than losing the texture.
+Sleepers are decoration on plain track; where a route is drawn, the route is
+what the cell is saying.
+
 **`unknown` is the most visually distinct of the three occupancy states**, not a
 neutral middle ground. It is a fail-safe state that refuses routes, so it gets
 the cross-hatch: obviously different from both a flat fill and a

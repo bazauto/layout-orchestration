@@ -267,6 +267,159 @@ describe('buildRouteLines', () => {
     });
   });
 
+  /**
+   * The shape this walk exists for, taken from the live layout: a route from
+   * Engine Shed 1 into Engine / Goods Transfer, whose destination block
+   * contains the point to the Goods Shed. The road runs in through the point's
+   * `normal` leg; the three tiles beyond its `reverse` leg are track the train
+   * will not run over, and used to be lit because they belong to a held block.
+   *
+   *      (0,0) ES1 ── (1,0) via ── (2,0) point ── (3,0) EGT
+   *                                    │
+   *                                 (2,1) EGT   ← not the road
+   */
+  describe('a point inside a held block', () => {
+    const tiles = [
+      tile(0, 0, 'straight-h', { blockId: 'b1' }),
+      tile(1, 0, 'straight-h', { trackRole: 'decorative' }),
+      tile(2, 0, 'point-right', {
+        blockId: 'b2',
+        pointId: 'p1',
+        pointRoads: [
+          { when: [{ pointId: 'p1', position: 'normal' }], legs: ['w', 'e'] },
+          { when: [{ pointId: 'p1', position: 'reverse' }], legs: ['w', 's'] },
+        ],
+      }),
+      tile(3, 0, 'straight-h', { blockId: 'b2' }),
+      tile(2, 1, 'straight-v', { blockId: 'b2' }),
+    ];
+
+    const input = (requiredPosition: 'normal' | 'reverse' | null) => {
+      const { grid, parsedMeta } = build(tiles);
+      return {
+        routes: {
+          r1: route({
+            holds: requiredPosition
+              ? [
+                  {
+                    kind: 'point' as const,
+                    targetId: 'p1',
+                    requiredPosition,
+                    releaseAfterIndex: 1,
+                    released: false,
+                  },
+                ]
+              : [],
+          }),
+        },
+        blocks: liveBlocks({ b1: 'r1', b2: 'r1' }),
+        grid,
+        parsedMeta,
+        edges: [EDGE],
+        compiledEdges: [compiled()],
+        locos: LOCOS,
+        size: SIZE,
+      };
+    };
+
+    it('does not light the road beyond the leg this route holds shut', () => {
+      const [line] = buildRouteLines(input('normal'));
+      expect(line.segments.map((s) => `${s.x},${s.y}`).sort()).toEqual([
+        '0,0',
+        '1,0',
+        '2,0',
+        '3,0',
+      ]);
+    });
+
+    it('follows the other leg when the route holds the point the other way', () => {
+      const [line] = buildRouteLines(input('reverse'));
+      expect(line.segments.map((s) => `${s.x},${s.y}`).sort()).toEqual([
+        '0,0',
+        '1,0',
+        '2,0',
+        '2,1',
+      ]);
+    });
+
+    /** Neither leg is claimed, so neither is refused — see the module header. */
+    it('lights both roads out of a point no hold resolves', () => {
+      const [line] = buildRouteLines(input(null));
+      expect(line.segments.map((s) => `${s.x},${s.y}`).sort()).toEqual([
+        '0,0',
+        '1,0',
+        '2,0',
+        '2,0',
+        '2,1',
+        '3,0',
+      ]);
+    });
+  });
+
+  it('lights only the leg of a crossing the road runs over', () => {
+    const tiles = [
+      tile(0, 0, 'straight-h', { blockId: 'b1' }),
+      tile(1, 0, 'crossing', { trackRole: 'decorative' }),
+      tile(2, 0, 'straight-h', { blockId: 'b2' }),
+      tile(1, 1, 'straight-v', {}),
+    ];
+    const [line] = buildRouteLines({ ...base(), ...build(tiles) });
+    // `w-e`, not `n-s`: a diamond's two roads deliberately do not interconnect.
+    expect(line.segments.filter((s) => s.x === 1).map((s) => s.d)).toEqual(['M 0 20 L 40 20']);
+  });
+
+  /**
+   * The walk is seeded from the joins, so a block reachable from neither is
+   * washed whole rather than dropped — the route does hold it.
+   */
+  it('washes a held block whole when no join into it resolves', () => {
+    const [line] = buildRouteLines({ ...base(), compiledEdges: [] });
+    expect(line.hasGaps).toBe(true);
+    expect(line.segments.map((s) => `${s.x},${s.y}`).sort()).toEqual(['0,0', '2,0']);
+  });
+
+  it('walks two touching blocks with no cells between them', () => {
+    const tiles = [
+      tile(0, 0, 'straight-h', { blockId: 'b1' }),
+      tile(1, 0, 'straight-h', { blockId: 'b2' }),
+    ];
+    const { grid, parsedMeta } = build(tiles);
+    const [line] = buildRouteLines({
+      ...base(),
+      grid,
+      parsedMeta,
+      compiledEdges: [compiled({ via: [] })],
+    });
+    expect(line.hasGaps).toBe(false);
+    expect(line.segments.map((s) => `${s.x},${s.y}`).sort()).toEqual(['0,0', '1,0']);
+  });
+
+  /** Nothing continues through a buffer, but a route ending at one runs up to it. */
+  it('draws a buffer’s stub and stops there', () => {
+    const tiles = [
+      tile(0, 0, 'straight-h', { blockId: 'b1' }),
+      tile(1, 0, 'straight-h', { trackRole: 'decorative' }),
+      tile(2, 0, 'straight-h', { blockId: 'b2' }),
+      // Unrotated: a buffer's stub reaches its **west** edge, so this one faces
+      // back down the line it stops.
+      tile(3, 0, 'buffer', { blockId: 'b2' }),
+    ];
+    const [line] = buildRouteLines({ ...base(), ...build(tiles) });
+    expect(line.segments.map((s) => `${s.x},${s.y}`).sort()).toEqual(['0,0', '1,0', '2,0', '3,0']);
+  });
+
+  it('does not run out along track past the end of the road', () => {
+    const tiles = [
+      tile(0, 0, 'straight-h', { blockId: 'b1' }),
+      tile(1, 0, 'straight-h', { trackRole: 'decorative' }),
+      tile(2, 0, 'straight-h', { blockId: 'b2' }),
+      // Drawn, joined, and part of neither the route's blocks nor its joins.
+      tile(3, 0, 'straight-h', { trackRole: 'decorative' }),
+    ];
+    const [line] = buildRouteLines({ ...base(), ...build(tiles) });
+    expect(line.segments.some((s) => s.x === 3)).toBe(false);
+  });
+
   it('does not stack two strokes on a cell reached twice', () => {
     // The via cell is also tagged to a held block — one stroke, not two.
     const tiles = [

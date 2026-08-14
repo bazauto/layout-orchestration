@@ -43,15 +43,35 @@
  *
  * ## Which legs light up
  *
- * On a tile carrying point roads, the leg is the one the route's own point
- * holds select — the same match `roadSelection` performs, against the
- * positions this route requires rather than against the live ones, because the
- * line shows the road the route has *claimed*, not the road the points happen
- * to be lying in. On every other tile, every leg it draws.
+ * **The road is walked, not washed.** This used to light every leg of every
+ * cell of every held block, and that over-draws in the ordinary case: a route
+ * from Engine Shed 1 into Engine / Goods Transfer lit the three tiles between
+ * that block's point and the Goods Shed — track the train will not run over,
+ * on the far side of a point this very route is holding the other way.
  *
- * A block containing a passing loop therefore lights both roads. Accepted: the
- * alternative is a walk through the block, which is the compiler's job and not
- * a display's.
+ * So the segments come from a walk over the cells the route may occupy: the
+ * held blocks plus the resolved `via` cells, entered from the joins between
+ * them and followed leg to leg. At a tile carrying point roads only the road
+ * the route's own holds select is traversable — the same match `roadSelection`
+ * performs, but against the positions this route *requires* rather than the
+ * ones the points happen to be lying in, because the line shows the road the
+ * route has claimed. A leg the walk never reaches is never drawn.
+ *
+ * Two deliberate fallbacks, both erring toward drawing *more*:
+ *
+ * - **A point tile no hold resolves stays fully traversable.** The route
+ *   demonstrably runs through the cell, and an empty cell mid-line reads as a
+ *   break in the road rather than as "the position is unclaimed".
+ * - **A held block the walk never reaches is washed whole**, as before. That
+ *   happens when the joins either side could not be resolved to cells — the
+ *   same condition `hasGaps` already reports. The route holds that block, and
+ *   a line that vanishes rather than being drawn imprecisely would understate
+ *   what is locked. A single-block route has no join to enter by at all and
+ *   takes this path every time.
+ *
+ * The first block is walked from its exit join like any other, so a fork it
+ * cannot take is not drawn — but everything it *can* reach is, because the
+ * train's position within a block is not modelled (`docs/braking.md` B7).
  */
 
 import {
@@ -62,10 +82,19 @@ import {
   LocoRecord,
   RouteReservation,
   RouteStatus,
+  TileEdge,
   TileType,
 } from '../types';
 import { LiveBlock } from './liveState';
-import { chordPath, legPath, trackLegs, trackStubs } from './trackGeometry';
+import {
+  EDGE_OFFSET,
+  chordPath,
+  legPath,
+  oppositeEdge,
+  rotateEdge,
+  trackLegs,
+  trackStubs,
+} from './trackGeometry';
 
 /** One piece of drawn road, in one cell. `d` is in the tile's unrotated frame. */
 export interface RouteSegment {
@@ -166,35 +195,23 @@ export function buildRouteLines(input: RoutePathInput): RouteLine[] {
 
     const held = route.path.map((step) => blocks.get(step.blockId)?.lockedByRoute === route.id);
 
-    const segments: RouteSegment[] = [];
-    const seen = new Set<string>();
-
-    const pushCell = (key: string) => {
-      const tile = grid.get(key);
-      if (!tile) return;
-      // A cell reached twice — a via cell that is also a block cell, or a block
-      // visited twice — must not stack two strokes and read as heavier.
-      if (seen.has(key)) return;
-      seen.add(key);
-
-      const meta = parsedMeta.get(key) ?? {};
-      const rotation = typeof meta.rotation === 'number' ? meta.rotation : 0;
-      for (const d of legsFor(tile.tileType as TileType, meta, required, size)) {
-        segments.push({ x: tile.x, y: tile.y, rotation, d });
-      }
-    };
-
+    // Where the route may go: the cells of the blocks it still holds, plus the
+    // cells between them. The walk below never leaves this set, which is what
+    // stops a line running out along decorative track past the end of the road.
+    const allowed = new Set<string>();
     for (let i = 0; i < route.path.length; i++) {
       if (!held[i]) continue;
-      for (const key of cellsByBlock.get(route.path[i].blockId) ?? []) pushCell(key);
+      for (const key of cellsByBlock.get(route.path[i].blockId) ?? []) allowed.add(key);
     }
+
+    const walk = new RoadWalk({ grid, parsedMeta, required, size, allowed });
 
     let hasGaps = false;
     for (let i = 1; i < route.path.length; i++) {
       // The join between step i-1 and step i: `edgeId` is the edge that leads
-      // *into* step i (`routeLocking.ts#buildPath`). Only drawn when both ends
-      // are — a join to a block the train has already released is not part of
-      // the road ahead.
+      // *into* step i (`routeLocking.ts#buildPath`). Only walked when both ends
+      // are held — a join to a block the train has already released is not part
+      // of the road ahead.
       if (!held[i - 1] || !held[i]) continue;
 
       const via = viaCells(route.path[i].edgeId, edgeById, viaByEdge);
@@ -202,8 +219,33 @@ export function buildRouteLines(input: RoutePathInput): RouteLine[] {
         hasGaps = true;
         continue;
       }
-      for (const cell of via) pushCell(`${cell.x},${cell.y}`);
+
+      // The connective cells belong to no block, so they join the walkable set
+      // here rather than above — and only for a join both of whose ends are
+      // still held.
+      const viaKeys = via.map((cell) => `${cell.x},${cell.y}`);
+      for (const key of viaKeys) allowed.add(key);
+
+      walk.seedJoin(
+        cellsByBlock.get(route.path[i - 1].blockId) ?? [],
+        cellsByBlock.get(route.path[i].blockId) ?? [],
+        viaKeys,
+      );
     }
+
+    walk.run();
+
+    // A held block the walk never entered — no join either side of it resolved
+    // — is washed whole rather than dropped. See the header: the route does
+    // hold it, and drawing nothing understates that.
+    for (let i = 0; i < route.path.length; i++) {
+      if (!held[i]) continue;
+      const cells = cellsByBlock.get(route.path[i].blockId) ?? [];
+      if (cells.some((key) => walk.lit(key))) continue;
+      for (const key of cells) walk.lightWhole(key);
+    }
+
+    const segments = walk.segments();
 
     return {
       routeId: route.id,
@@ -244,32 +286,202 @@ function viaCells(
 }
 
 /**
- * The paths to stroke in one cell.
+ * One piece of road through one cell: the two boundaries it joins, in the
+ * **rotated** frame the walk steps in, and the path to stroke, in the
+ * unrotated frame the renderer rotates.
  *
- * A point tile whose roads none of this route's requirements resolve falls
- * through to every leg rather than drawing nothing: the route demonstrably runs
- * through the cell — it is in a held block — so saying "some road here" is
- * true, where an empty cell in the middle of a line would read as a break in
- * the road.
+ * `terminal` is a buffer's stub — track that reaches a boundary without
+ * continuing through the tile. A route ending at a buffer stop runs right up to
+ * the stop block, so it is drawn; a walk must not step through it.
  */
-function legsFor(
+interface Road {
+  edges: readonly [TileEdge, TileEdge];
+  d: string;
+  terminal: boolean;
+}
+
+/**
+ * The roads a cell offers this route.
+ *
+ * A tile carrying point roads offers only the one the route's own holds select.
+ * When none of them resolves it, every leg is offered instead — see the
+ * fallbacks in the header.
+ */
+function roadsOf(
   tileType: TileType,
   meta: GridTileMetadata,
   required: ReadonlyMap<string, 'normal' | 'reverse'>,
   size: number,
-): string[] {
+): Road[] {
+  const rotation = typeof meta.rotation === 'number' ? meta.rotation : 0;
+  const rotate = (legs: readonly [TileEdge, TileEdge]) =>
+    [rotateEdge(legs[0], rotation), rotateEdge(legs[1], rotation)] as const;
+
   const roads = meta.pointRoads ?? [];
   if (roads.length > 0) {
     const match = roads.find(
       (r) => r.when.length > 0 && r.when.every((c) => required.get(c.pointId) === c.position),
     );
-    if (match) return [legPath(tileType, match.legs, size) ?? chordPath(match.legs, size)];
+    if (match) {
+      return [
+        {
+          edges: rotate(match.legs),
+          d: legPath(tileType, match.legs, size) ?? chordPath(match.legs, size),
+          terminal: false,
+        },
+      ];
+    }
   }
 
   return [
-    ...trackLegs(tileType, size).map((l) => l.d),
-    ...trackStubs(tileType, size).map((s) => s.d),
+    ...trackLegs(tileType, size).map((l) => ({
+      edges: rotate(l.legs),
+      d: l.d,
+      terminal: false,
+    })),
+    ...trackStubs(tileType, size).map((s) => ({
+      edges: rotate([s.edge, s.edge]),
+      d: s.d,
+      terminal: true,
+    })),
   ];
+}
+
+/**
+ * A walk along the road, lighting the legs it passes through.
+ *
+ * The state is a **port** — a cell and the boundary the walk entered it by —
+ * not a cell, which is what lets a crossing be entered from the west and leave
+ * only by the east (the same reason `tileGeometry.ts#exitsFrom` takes legs
+ * rather than an edge set). A cell can therefore be lit on one road and not the
+ * other.
+ */
+class RoadWalk {
+  private readonly cells = new Map<string, { tile: GridTileRecord; roads: Road[] }>();
+  private readonly litRoads = new Map<string, Set<number>>();
+  private readonly visited = new Set<string>();
+  private readonly queue: Array<{ key: string; edge: TileEdge }> = [];
+
+  constructor(
+    private readonly input: {
+      grid: ReadonlyMap<string, GridTileRecord>;
+      parsedMeta: ReadonlyMap<string, GridTileMetadata>;
+      required: ReadonlyMap<string, 'normal' | 'reverse'>;
+      size: number;
+      allowed: ReadonlySet<string>;
+    },
+  ) {}
+
+  /**
+   * Starts the walk at a join between two held blocks.
+   *
+   * The seed is a **boundary**, never a cell: entering a cell through the
+   * boundary the road arrives at is what makes a crossing between two blocks
+   * carry the route across one road and not the other. Lighting the connective
+   * cells outright would light both roads of that diamond, which is the
+   * junction #26 says a plain diamond is not.
+   *
+   * With connective cells, both blocks are seeded into the chain, so the walk
+   * covers it from either end even if one block turns out to be unreachable.
+   * With none — two blocks drawn touching — the shared tile boundary is the
+   * join itself.
+   */
+  seedJoin(from: readonly string[], to: readonly string[], via: readonly string[]): void {
+    const target = new Set(via.length > 0 ? via : to);
+    const sources = via.length > 0 ? [...from, ...to] : from;
+
+    for (const key of sources) {
+      const cell = this.cell(key);
+      if (!cell) continue;
+      for (const road of cell.roads) {
+        for (const edge of road.edges) {
+          const neighbour = this.neighbourKey(cell.tile, edge);
+          if (!target.has(neighbour)) continue;
+          this.enter(key, edge);
+          this.enter(neighbour, oppositeEdge(edge));
+        }
+      }
+    }
+  }
+
+  run(): void {
+    while (this.queue.length > 0) {
+      const { key, edge } = this.queue.pop()!;
+      const cell = this.cell(key);
+      if (!cell) continue;
+
+      cell.roads.forEach((road, i) => {
+        const exit =
+          road.edges[0] === edge ? road.edges[1] : road.edges[1] === edge ? road.edges[0] : null;
+        if (exit === null) return;
+
+        this.light(key, i);
+        if (road.terminal) return;
+        this.enter(this.neighbourKey(cell.tile, exit), oppositeEdge(exit));
+      });
+    }
+  }
+
+  lit(key: string): boolean {
+    return this.litRoads.has(key);
+  }
+
+  /** The whole-block fallback: every road of the cell, walked or not. */
+  lightWhole(key: string): void {
+    const cell = this.cell(key);
+    if (!cell) return;
+    cell.roads.forEach((_, i) => this.light(key, i));
+  }
+
+  segments(): RouteSegment[] {
+    const out: RouteSegment[] = [];
+    for (const [key, indices] of this.litRoads) {
+      const cell = this.cell(key)!;
+      const meta = this.input.parsedMeta.get(key) ?? {};
+      const rotation = typeof meta.rotation === 'number' ? meta.rotation : 0;
+      for (const i of indices) {
+        out.push({ x: cell.tile.x, y: cell.tile.y, rotation, d: cell.roads[i].d });
+      }
+    }
+    return out;
+  }
+
+  private cell(key: string): { tile: GridTileRecord; roads: Road[] } | undefined {
+    const cached = this.cells.get(key);
+    if (cached) return cached;
+
+    const tile = this.input.grid.get(key);
+    if (!tile) return undefined;
+    const meta = this.input.parsedMeta.get(key) ?? {};
+    const built = {
+      tile,
+      roads: roadsOf(tile.tileType as TileType, meta, this.input.required, this.input.size),
+    };
+    this.cells.set(key, built);
+    return built;
+  }
+
+  private neighbourKey(tile: GridTileRecord, edge: TileEdge): string {
+    const off = EDGE_OFFSET[edge];
+    return `${tile.x + off.dx},${tile.y + off.dy}`;
+  }
+
+  private enter(key: string, edge: TileEdge): void {
+    if (!this.input.allowed.has(key)) return;
+    const port = `${key}|${edge}`;
+    if (this.visited.has(port)) return;
+    this.visited.add(port);
+    this.queue.push({ key, edge });
+  }
+
+  private light(key: string, index: number): void {
+    // A Set per cell, so a cell reached twice — a via cell that is also a block
+    // cell, or a loop walked both ways — never stacks two strokes and reads as
+    // heavier than the rest of the line.
+    const set = this.litRoads.get(key);
+    if (set) set.add(index);
+    else this.litRoads.set(key, new Set([index]));
+  }
 }
 
 /**
