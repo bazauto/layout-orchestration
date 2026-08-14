@@ -46,6 +46,58 @@
 import { TileEdge, TileType } from '../types';
 
 /**
+ * The eight edges, **clockwise from north** — the order `rotateEdge` steps
+ * through. Mirrors `TILE_EDGES` in the backend's `domain/types.ts`.
+ */
+export const TILE_EDGES: readonly TileEdge[] = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'];
+
+/**
+ * Which neighbouring cell each tile edge faces, in the **rotated (screen)**
+ * frame.
+ *
+ * `y` increases **downward** — north is the top of the diagram, the screen
+ * convention rather than the mathematical one. Inverting it would step every
+ * walk the wrong way.
+ *
+ * This is back, and it is a known backend↔frontend duplicate again
+ * (`CLAUDE.md`, "Open limits"): it mirrors `EDGE_OFFSET` in the backend's
+ * `services/tileGeometry.ts`. It went away with the opening marks (#103,
+ * `docs/track-editor.md` D15) because nothing on the client walked the drawing
+ * any more. #129's route line does — a route highlight has to follow the road
+ * through a block rather than wash the whole block — so the table returns,
+ * beside the leg table it belongs with, and `trackGeometry.test.ts` asserts it
+ * literally so a backend change fails a test here.
+ */
+export const EDGE_OFFSET: Readonly<Record<TileEdge, { dx: number; dy: number }>> = {
+  n: { dx: 0, dy: -1 },
+  ne: { dx: 1, dy: -1 },
+  e: { dx: 1, dy: 0 },
+  se: { dx: 1, dy: 1 },
+  s: { dx: 0, dy: 1 },
+  sw: { dx: -1, dy: 1 },
+  w: { dx: -1, dy: 0 },
+  nw: { dx: -1, dy: -1 },
+};
+
+/** The edge facing back from the neighbour across a shared boundary. */
+export function oppositeEdge(edge: TileEdge): TileEdge {
+  return TILE_EDGES[(TILE_EDGES.indexOf(edge) + 4) % TILE_EDGES.length];
+}
+
+/**
+ * Rotates an edge **clockwise in screen coordinates**, matching the SVG
+ * `rotate(deg, H, H)` every caller draws with: `n` at 90° is `e`.
+ *
+ * `TILE_EDGES` is ordered clockwise from north, so this is an index step of
+ * `rotation / 45`.
+ */
+export function rotateEdge(edge: TileEdge, rotation = 0): TileEdge {
+  const steps = Math.round(rotation / 45);
+  const i = (TILE_EDGES.indexOf(edge) + steps) % TILE_EDGES.length;
+  return TILE_EDGES[(i + TILE_EDGES.length) % TILE_EDGES.length];
+}
+
+/**
  * Where a named tile edge meets the tile boundary. Unrotated.
  *
  * Lives here rather than in `diagram/pointRoads.ts`, where it used to: this is
@@ -56,14 +108,22 @@ import { TileEdge, TileType } from '../types';
 export function edgeAnchor(edge: TileEdge, size: number): { x: number; y: number } {
   const h = size / 2;
   switch (edge) {
-    case 'n':  return { x: h, y: 0 };
-    case 'ne': return { x: size, y: 0 };
-    case 'e':  return { x: size, y: h };
-    case 'se': return { x: size, y: size };
-    case 's':  return { x: h, y: size };
-    case 'sw': return { x: 0, y: size };
-    case 'w':  return { x: 0, y: h };
-    case 'nw': return { x: 0, y: 0 };
+    case 'n':
+      return { x: h, y: 0 };
+    case 'ne':
+      return { x: size, y: 0 };
+    case 'e':
+      return { x: size, y: h };
+    case 'se':
+      return { x: size, y: size };
+    case 's':
+      return { x: h, y: size };
+    case 'sw':
+      return { x: 0, y: size };
+    case 'w':
+      return { x: 0, y: h };
+    case 'nw':
+      return { x: 0, y: 0 };
   }
 }
 
@@ -201,7 +261,9 @@ const LEG_PROBE_SIZE = 2;
  */
 export function pointLegs(
   type: TileType,
-): { through: readonly [TileEdge, TileEdge]; divergent: readonly [TileEdge, TileEdge] } | undefined {
+):
+  | { through: readonly [TileEdge, TileEdge]; divergent: readonly [TileEdge, TileEdge] }
+  | undefined {
   const legs = trackLegs(type, LEG_PROBE_SIZE);
   const through = legs.find((l) => !l.divergent);
   const divergent = legs.find((l) => l.divergent);
@@ -221,4 +283,35 @@ export function chordPath(legs: readonly [TileEdge, TileEdge], size: number): st
   const a = edgeAnchor(legs[0], size);
   const b = edgeAnchor(legs[1], size);
   return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+}
+
+/**
+ * The angle, in degrees, a label on this tile should be turned through to lie
+ * **along** the track — or `0` for every tile where upright is right.
+ *
+ * Only diagonal track answers with anything. A block drawn as a 45° staircase
+ * (Westgate Hollow's Engine / Goods Transfer is six tiles of it) got a
+ * horizontal label lying across the track it names; on a diagonal the label is
+ * the one thing tying a name to a road, and across is exactly the direction
+ * that reads as belonging to neither side.
+ *
+ * Restricted to a tile drawing **one** leg, so a point or a crossing — where
+ * "along the track" has two answers — keeps the upright label rather than
+ * picking one road arbitrarily. And restricted to ±45°: `straight-v` would
+ * otherwise turn its label on its side, which is worse than across.
+ *
+ * The result is always within ±45° of upright, so text never reads upside down
+ * — a leg pointing north-west and one pointing south-east lie on the same axis
+ * and get the same angle.
+ */
+export function trackAngle(type: TileType, rotation = 0): number {
+  const legs = trackLegs(type, LEG_PROBE_SIZE);
+  if (legs.length !== 1) return 0;
+
+  const [a, b] = legs[0].legs.map((e) => edgeAnchor(rotateEdge(e, rotation), LEG_PROBE_SIZE));
+  // Screen coordinates, so a positive `dy` runs down the page — which is what
+  // makes a north-west/south-east axis a positive (clockwise) rotation.
+  const angle = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+  const normalised = ((((angle + 90) % 180) + 180) % 180) - 90;
+  return Math.abs(Math.abs(normalised) - 45) < 1 ? Math.round(normalised) : 0;
 }

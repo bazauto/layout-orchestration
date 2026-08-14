@@ -535,8 +535,13 @@ change surfaces as a failing test rather than as a diagram that quietly
 disagrees with the compiler. The duplicate itself stays open — closing it needs
 the shared workspace package D14 describes.
 
-`EDGE_OFFSET`'s frontend mirror went with `diagram/openings.ts` (D15), so that
-duplicate is closed outright rather than merely reshaped.
+`EDGE_OFFSET`'s frontend mirror went with `diagram/openings.ts` (D15), and has
+since **come back** — it is in this same file now, with `rotateEdge` and
+`oppositeEdge`. The route line walks the road through a block rather than
+washing the block (`docs/liveness.md` M9), and a walk needs to know which
+neighbour an edge faces. It was closed because nothing on the client walked the
+drawing any more; something does again. The offsets are asserted literally in
+`trackGeometry.test.ts` for the same reason the leg pairs are.
 
 ## D17 — The `N`/`R` road letters are placed by rotation but never turned by it
 
@@ -568,3 +573,26 @@ translation that is a multiple of the pattern period, and the period divides
 drawn that way — so the fix was to draw the other two like that one, not to
 invent anything. `patterns.test.ts` asserts the divisibility rather than
 trusting the comment.
+
+## D19 — A block label lies along diagonal track, and stays upright everywhere else
+
+Westgate Hollow's Engine / Goods Transfer is six `straight-45` tiles in a 45°
+staircase. Its one run label (#68) was drawn horizontally, across the track it
+names, which on a diagonal reads as belonging to neither side of it — and a
+diagonal run is exactly the case where the label matters most, since the run
+has no straight side for it to sit beside.
+
+`trackGeometry.ts#trackAngle` answers "which way is the track here" off the
+tile the label was already anchored to. Two restrictions do the work:
+
+- **Only a tile drawing one leg.** On a point or a crossing "along the track"
+  has two answers, and picking one arbitrarily is worse than upright.
+- **Only ±45°.** `straight-v` would otherwise turn its label on its side, which
+  is worse than across. The result is always within 45° of upright, so a leg
+  pointing north-west and one pointing south-east — the same axis — get the
+  same angle, and text never reads upside down.
+
+The angle comes from the one leg-shape table (D16), so it cannot disagree with
+the track it is drawn against. It applies on both surfaces: the editor and the
+monitor share a renderer (#75), and a label lying across the track is no better
+while authoring than while watching.

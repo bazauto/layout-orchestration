@@ -205,8 +205,15 @@ monitor cannot drift:
 | Block lock | `LOCK.glyph` on the run label, and the route line below | The outline it used to be is gone — M8 |
 | Route | A coloured, dashed line **along the track**, under it and wider | The only mark that can say *which* route holds a road (M8) |
 | Commanded point road | Solid where set, dimmed where not, dashed where indeterminate | `docs/diagram-encoding.md` says a set/dimmed pair is already a non-colour encoding |
-| Point lock | `LOCK.glyph`, once per point at its label tile (M7) | A glyph, not a colour; the same mark a locked block's label carries |
+| Point lock | `LOCK.glyph`, once per point, **beside its name** (M7) | A glyph, not a colour; the same mark a locked block's label carries |
 | Occupants | Words beside the block label | The only naming channel left once state takes the colour |
+
+**Decorative track is drawn like any other track here** (M9). The editor draws
+it faint and dashed because the question there is "is this tile finished"; the
+question on a mimic is "where can a train go", and a route running over a
+feeder that belongs to no block was drawn as a solid line crossing three faint
+dashed tiles. Nothing is lost — a decorative cell carries no occupancy wash,
+which says the same thing in the channel this view already uses for state.
 
 **Block identity gives up the colour channel.** A tile cannot carry two
 independent colour systems and stay readable, so where live state is drawn the
@@ -234,24 +241,42 @@ Refused, each for a recorded reason:
   occupant model is a list precisely so #39 populates it rather than reshaping
   every consumer.
 
-### M6 — The point key is a panel beside the canvas, not marks on it
+### M6 — The point key is a panel the operator places over the canvas
 
 The diagram draws `P1` where the point is called `P1 - Fiddle Yard`, with the
 full name in a `<title>` (#93). That trade is right on a 40px tile and it
 assumes a mouse. A wall display has nobody standing at it, so the tooltip is
 unreachable and the abbreviation is all there is.
 
-`PointKeyPanel` resolves every abbreviation at once, beside the drawing:
-`On diagram` (exactly what the tile draws, so the eye can match the two),
-`Name`, `Set` and `Held`. A key, and a status table — the same row answers
-"which point is P3" and "why will this route not set", and carrying both costs
-nothing once the row exists.
+`PointKeyPanel` resolves every abbreviation at once: `On diagram` (exactly what
+the tile draws, so the eye can match the two), `Name`, `Set` and `Held`. A key,
+and a status table — the same row answers "which point is P3" and "why will
+this route not set", and carrying both costs nothing once the row exists.
 
-**Beside, not over.** An overlay would cover track on the one view whose whole
-job is showing all of it, and would have to be dismissed rather than simply not
-taking the space. It is collapsible and the choice persists per layout, in the
-same tolerant, failure-swallowing style as the viewport (M-adjacent: a corrupt
-`localStorage` entry must never stop the monitor coming up unattended).
+**Over the canvas, dragged where the operator wants it.** This said *beside,
+not over*, on the argument that an overlay covers track on the one view whose
+whole job is showing all of it. The argument was right about overlays and wrong
+about the alternative: a fixed column covers track too — permanently,
+everywhere, whether or not anything is under it. On Westgate Hollow that was a
+260px strip of two-line wrapped names taken off a diagram that is mostly empty
+canvas in the corners.
+
+Which corner is empty is a property of the drawing, and the person looking at
+it is the one who knows. So the panel floats, and it is placed by dragging its
+grip — or by the arrow keys, because a panel that can only be dragged is one a
+keyboard user cannot move at all, and the position is the whole feature. It is
+clamped inside the canvas on every move: a panel dragged off the edge of an
+unattended display cannot be dragged back, because there is nothing left to
+grab.
+
+Floating is also what pays for the width. Out of the canvas's flex row it sizes
+to its own content between a floor and a ceiling, so the names stop wrapping.
+
+It is collapsible, and both the collapsed state and the position persist per
+layout, in the same tolerant, failure-swallowing style as the viewport
+(M-adjacent: a corrupt `localStorage` entry must never stop the monitor coming
+up unattended — the loader also still reads the bare `open`/`closed` string the
+key held before there was a position to store).
 
 **Monitor only.** The editor shows no live state at all, so two of the four
 columns would be blank there and the other two are already on the tiles.
@@ -271,15 +296,24 @@ Two degradations, both the standing ones:
 `LOCK.glyph` at the point's label tile — once per point, matching where its
 name goes, since a point is two tiles sharing one `pointId` (#93).
 
+**Beside the name, in the same text run.** It first went in the tile's
+bottom-right corner, as far from the name as a 40px cell allows, and the
+operator's reading of it was the one that predicts: *it isn't immediately
+obvious which point is locked*. A point is drawn as two tiles and only one
+carries the mark, so a glyph floating in a corner had nothing tying it to a
+point at all. As a `<tspan>` of the name's own `<text>` it moves with the name
+and cannot drift out of alignment with it.
+
 The same glyph a locked block's run label carries, deliberately: one mark means
 one thing across the diagram, and a lock on a point and a lock on a block are
 the same kind of fact about the same route.
 
 **Not gated on label density.** "Labels: off" is an authoring control for
 seeing the track under the text; it must not be able to hide the fact that a
-route holds the road. Since the editor never receives `live` at all, this only
-ever draws on the monitor — but the gating is written to say which of the two
-it is, rather than relying on that.
+route holds the road. With labels off the glyph draws alone, at the position
+the name would have taken. Since the editor never receives `live` at all, this
+only ever draws on the monitor — but the gating is written to say which of the
+two it is, rather than relying on that.
 
 This remains an **authority** guarantee, not a position guarantee. A locked
 point can still be showing `unknown`, and both marks draw: until #25 there is
@@ -306,6 +340,58 @@ route's lock** — so the new mark cannot contradict the fact the old one
 carried. Deriving the replacement from the replaced mark's own source is what
 makes it a replacement rather than the second layer M5 forbids. A highlight
 drawn *alongside* an outline would still be wrong.
+
+### M9 — The line follows the road, and the road is walked
+
+The first version of M8 lit every leg of every cell of every held block, and
+recorded the alternative — a walk through the block — as "the compiler's job
+and not a display's". The operator found what that costs on the first route
+they set: **ES1 → Engine / Goods Transfer lit the three tiles between that
+block's point and the Goods Shed**, track the train will not run over, on the
+far side of a point this very route was holding the other way.
+
+A block is not a piece of track. A destination block containing a point has a
+road out of it the route has not claimed, and washing the block draws a road
+that does not exist — the same class of error as guessing a path through the
+wrong decorative cells, which M8 already refuses.
+
+So the segments come from a walk (`diagram/routePaths.ts`):
+
+- **Seeded from the joins**, never from the cells. The walk starts at the
+  boundary where one held block's track meets the connective cells, and follows
+  legs from there. Seeding whole cells instead would light both roads of a
+  crossing, which is the junction #26 says a plain diamond is not.
+- **A point offers only the road this route's holds select** — the same match
+  `roadSelection` performs, but against the positions the route *requires*
+  rather than the ones the points are lying in, because the line shows the road
+  the route has claimed.
+- **The state is a port**, a cell plus the boundary entered by, not a cell. It
+  is what lets a crossing be entered from the west and left only by the east,
+  and it is the same reason `tileGeometry.ts#exitsFrom` takes legs rather than
+  an edge set.
+
+Two fallbacks, both erring toward drawing **more**, because a line that
+understates what is locked is the worse failure:
+
+- A point tile no hold resolves stays fully traversable. The route demonstrably
+  runs through the cell, and an empty cell mid-line reads as a break in the
+  road rather than as "the position is unclaimed".
+- A held block the walk never reaches is washed whole, as before. That happens
+  when the joins either side could not be resolved to cells — the condition
+  `hasGaps` already reports — and for a single-block route, which has no join
+  to enter by at all.
+
+The first block is walked from its exit join like any other, so a fork it
+cannot take is not drawn; everything it *can* reach is, because position within
+a block is not modelled (`docs/braking.md` B7).
+
+**The cost is a re-opened duplicate.** Walking the drawing on the client needs
+`EDGE_OFFSET`, `rotateEdge` and `oppositeEdge`, which #103 deleted from the
+frontend along with the opening marks. They are back in
+`diagram/trackGeometry.ts`, beside the leg table they belong with, and
+`trackGeometry.test.ts` asserts the offsets literally so a backend change fails
+a test here. The alternative was a backend read per route, which is a much
+larger change to avoid one small table (`CLAUDE.md`, "Open limits").
 
 `LOCK.glyph` stays on the block's run label, so "held" survives colour being
 removed entirely.

@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { TileType } from '../types';
-import { chordPath, edgeAnchor, legKey, legPath, pointLegs, trackLegs, trackStubs } from './trackGeometry';
+import {
+  EDGE_OFFSET,
+  TILE_EDGES,
+  chordPath,
+  edgeAnchor,
+  legKey,
+  legPath,
+  oppositeEdge,
+  pointLegs,
+  rotateEdge,
+  trackAngle,
+  trackLegs,
+  trackStubs,
+} from './trackGeometry';
 
 const SIZE = 40;
 
@@ -99,6 +112,80 @@ describe('edgeAnchor', () => {
     expect(edgeAnchor('w', SIZE)).toEqual({ x: 0, y: 20 });
     expect(edgeAnchor('n', SIZE)).toEqual({ x: 20, y: 0 });
     expect(edgeAnchor('se', SIZE)).toEqual({ x: 40, y: 40 });
+  });
+});
+
+describe('rotateEdge', () => {
+  it('turns clockwise in screen coordinates, matching the SVG rotate the tiles use', () => {
+    expect(rotateEdge('n', 90)).toBe('e');
+    expect(rotateEdge('e', 90)).toBe('s');
+    expect(rotateEdge('w', 180)).toBe('e');
+    expect(rotateEdge('n', 45)).toBe('ne');
+  });
+
+  it('wraps, and treats no rotation as none', () => {
+    expect(rotateEdge('nw', 90)).toBe('ne');
+    expect(rotateEdge('s')).toBe('s');
+    expect(rotateEdge('s', 360)).toBe('s');
+  });
+});
+
+describe('oppositeEdge', () => {
+  it('faces back across the shared boundary', () => {
+    expect(oppositeEdge('n')).toBe('s');
+    expect(oppositeEdge('sw')).toBe('ne');
+  });
+
+  it('agrees with EDGE_OFFSET: stepping and looking back lands where you started', () => {
+    for (const edge of TILE_EDGES) {
+      const there = EDGE_OFFSET[edge];
+      const back = EDGE_OFFSET[oppositeEdge(edge)];
+      expect({ dx: there.dx + back.dx, dy: there.dy + back.dy }).toEqual({ dx: 0, dy: 0 });
+    }
+  });
+});
+
+/**
+ * The other half of the same duplicate as the leg table below — `EDGE_OFFSET`
+ * in the backend's `services/tileGeometry.ts`. `y` increases **downward**;
+ * inverting it would step every walk the wrong way while still looking
+ * plausible.
+ */
+describe('EDGE_OFFSET mirrors the backend', () => {
+  it('faces north up the screen', () => {
+    expect(EDGE_OFFSET).toEqual({
+      n: { dx: 0, dy: -1 },
+      ne: { dx: 1, dy: -1 },
+      e: { dx: 1, dy: 0 },
+      se: { dx: 1, dy: 1 },
+      s: { dx: 0, dy: 1 },
+      sw: { dx: -1, dy: 1 },
+      w: { dx: -1, dy: 0 },
+      nw: { dx: -1, dy: -1 },
+    });
+  });
+});
+
+describe('trackAngle', () => {
+  it('turns a label along a 45° corner, on the axis the tile actually draws', () => {
+    // `straight-45` unrotated joins west to north — an up-right diagonal.
+    expect(trackAngle('straight-45', 0)).toBe(-45);
+    expect(trackAngle('straight-45', 90)).toBe(45);
+    // Half a turn is the same axis, so the label does not flip over.
+    expect(trackAngle('straight-45', 180)).toBe(-45);
+    expect(trackAngle('straight-45', 270)).toBe(45);
+  });
+
+  it('leaves horizontal and vertical track upright — on its side is worse than across', () => {
+    expect(trackAngle('straight-h')).toBe(0);
+    expect(trackAngle('straight-v')).toBe(0);
+    expect(trackAngle('straight-h', 90)).toBe(0);
+  });
+
+  it('leaves a tile with more than one leg alone, since "along the track" has two answers', () => {
+    expect(trackAngle('point-left')).toBe(0);
+    expect(trackAngle('crossing')).toBe(0);
+    expect(trackAngle('buffer')).toBe(0);
   });
 });
 

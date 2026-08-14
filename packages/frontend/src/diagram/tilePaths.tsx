@@ -39,7 +39,7 @@ const H = T / 2; // half tile
 
 // ─── SVG per tile type ───────────────────────────────────────────────────────
 
-export function TilePath({ type }: { type: TileType }) {
+export function TilePath({ type, sleepers = true }: { type: TileType; sleepers?: boolean }) {
   const stroke = {
     stroke: TRACK_COLOUR,
     strokeWidth: 4,
@@ -50,11 +50,20 @@ export function TilePath({ type }: { type: TileType }) {
 
   // Sleeper marks across the track. Only the two straights carry them: on a
   // curve or a point they collide with the leg they are meant to sit under.
+  //
+  // `sleepers={false}` is for a cell a route line runs through (#129). The
+  // halo is drawn under the track but *over* the tile, so four grey ticks per
+  // tile cut a continuous highlight into short blocks — the operator's words
+  // were "it looks like a lot of carriages are on the track". Sleepers are
+  // texture on plain track; where a route is drawn, the route is what the cell
+  // is saying.
   const sleeperMarks = (positions: number[], vertical = false) =>
-    positions.map((p, i) =>
-      vertical
-        ? <line key={i} x1={H - 7} y1={p} x2={H + 7} y2={p} {...sleeper} />
-        : <line key={i} x1={p} y1={H - 7} x2={p} y2={H + 7} {...sleeper} />,
+    (sleepers ? positions : []).map((p, i) =>
+      vertical ? (
+        <line key={i} x1={H - 7} y1={p} x2={H + 7} y2={p} {...sleeper} />
+      ) : (
+        <line key={i} x1={p} y1={H - 7} x2={p} y2={H + 7} {...sleeper} />
+      ),
     );
 
   const legs = trackLegs(type, T).map((leg, i) => (
@@ -72,19 +81,33 @@ export function TilePath({ type }: { type: TileType }) {
 
   switch (type) {
     case 'straight-h':
-      return <>{sleeperMarks([8, 16, 24, 32])}{legs}</>;
+      return (
+        <>
+          {sleeperMarks([8, 16, 24, 32])}
+          {legs}
+        </>
+      );
     case 'straight-v':
-      return <>{sleeperMarks([8, 16, 24, 32], true)}{legs}</>;
+      return (
+        <>
+          {sleeperMarks([8, 16, 24, 32], true)}
+          {legs}
+        </>
+      );
     case 'buffer':
-      return <>
-        {stubs}
-        <rect x={H - 2} y={H - 8} width={10} height={16} fill={TRACK_COLOUR} rx={2} />
-      </>;
+      return (
+        <>
+          {stubs}
+          <rect x={H - 2} y={H - 8} width={10} height={16} fill={TRACK_COLOUR} rx={2} />
+        </>
+      );
     case 'platform':
-      return <>
-        {legs}
-        <rect x={4} y={H - 12} width={T - 8} height={8} fill="#a6e3a1" rx={2} opacity={0.7} />
-      </>;
+      return (
+        <>
+          {legs}
+          <rect x={4} y={H - 12} width={T - 8} height={8} fill="#a6e3a1" rx={2} opacity={0.7} />
+        </>
+      );
     default:
       return <>{legs}</>;
   }

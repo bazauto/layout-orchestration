@@ -66,7 +66,7 @@ import { DiagramPatternDefs } from '../diagram/patterns';
 import { LiveDiagramState, roadSelection } from '../diagram/liveState';
 import { RouteLine, RouteSegment } from '../diagram/routePaths';
 import { edgeAnchor, roadLabel } from '../diagram/pointRoads';
-import { chordPath, legPath } from '../diagram/trackGeometry';
+import { chordPath, legPath, trackAngle } from '../diagram/trackGeometry';
 import { shortPointLabel } from '../diagram/pointLabels';
 import { rulerTicks } from '../diagram/ruler';
 import { TilePath, TILE_SIZE } from '../diagram/tilePaths';
@@ -89,6 +89,13 @@ export const RULER_SIZE = 20;
 
 const T = TILE_SIZE;
 const H = T / 2; // half tile
+
+/**
+ * How far below the track a block's run label sits. The baseline used to be
+ * written as `T - 5`; it is the same number, named, because a turned label
+ * (D19) has to reproduce the offset along the perpendicular rather than down.
+ */
+const LABEL_OFFSET = H - 5;
 
 /** The paint tool's hover preview. Editor-only; omitted entirely for any other caller. */
 export interface GhostPreview {
@@ -315,6 +322,7 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
             ? (points.find((p) => p.id === meta.pointId)?.name ?? meta.pointId)
             : null;
           const classification = classifyTile(meta);
+          const cellRoutes = routeSegments.get(`${tile.x},${tile.y}`);
           return (
             <g
               key={tile.id || `${tile.x},${tile.y}`}
@@ -378,7 +386,7 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                 Same fact, same one mark — moved onto the track, where it can
                 also say *which* route holds it. See `diagram/routePaths.ts`.
               */}
-              {routeSegments.get(`${tile.x},${tile.y}`)?.map(({ line, segment }, i) => {
+              {cellRoutes?.map(({ line, segment }, i) => {
                 const style = routeStyle(line.styleIndex);
                 return (
                   <g
@@ -415,13 +423,23 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                 is drawn faint, unclassified carries a corner glyph. An
                 operator needs to know at a glance which parts of the
                 diagram the system can actually see.
+
+                **Authoring only.** On the monitor the dimming is dropped and
+                decorative track is drawn like any other. The question there is
+                not "is this tile finished" but "where can a train go", and a
+                route running over a feeder that belongs to no block was drawn
+                as a solid line crossing three faint dashed tiles — the road
+                looked broken where it is continuous. Nothing is lost: a
+                decorative cell carries no occupancy wash, which is the
+                monitor's way of saying the system cannot see it, and it says
+                it in the channel that view already uses for state.
               */}
               <g
                 transform={`rotate(${rotation}, ${H}, ${H})`}
-                opacity={classification === 'decorative' ? 0.4 : 1}
-                strokeDasharray={classification === 'decorative' ? '3 3' : undefined}
+                opacity={classification === 'decorative' && !live ? 0.4 : 1}
+                strokeDasharray={classification === 'decorative' && !live ? '3 3' : undefined}
               >
-                <TilePath type={tile.tileType as TileType} />
+                <TilePath type={tile.tileType as TileType} sleepers={!cellRoutes} />
               </g>
               {classification === 'unclassified' && labelsVisible(tile.x, tile.y) && (
                 <text
@@ -585,65 +603,60 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                 alike (#68). The leading `⌥` that used to carry that
                 distinction is gone: it is U+2325, the Mac option key, and
                 it resolved to a replacement box in the monospace fallback.
-              */}
-              {pName &&
-                pointLabelAt.get(`${tile.x},${tile.y}`) === meta.pointId &&
-                labelsVisible(tile.x, tile.y) && (
-                  <g>
-                    <title>{pName}</title>
-                    <text
-                      x={H}
-                      y={9}
-                      textAnchor="middle"
-                      fontSize={8}
-                      fill={INK.primary}
-                      fontFamily="monospace"
-                      fontStyle="italic"
-                      stroke={SURFACE.tile}
-                      strokeWidth={2.5}
-                      paintOrder="stroke"
-                    >
-                      {shortPointLabel(pName)}
-                    </text>
-                  </g>
-                )}
 
-              {/*
-                A route holding this point, drawn once per point at the same
-                tile its name is on.
+                A route holding this point is `LOCK.glyph` **beside the name**,
+                in the same text run.
 
-                Deliberately **not** gated on `labelsVisible`. A lock is state,
-                not a label: "Labels: off" is an authoring control for seeing
-                the track under the text, and it must not be able to hide the
-                fact that a route holds the road. The editor never has `live`
-                at all, so this only ever draws on the monitor.
+                It used to sit in the tile's bottom-right corner, as far from
+                the name as the cell allows, and the operator's complaint was
+                exactly what that predicts: "it isn't immediately obvious to me
+                which point is locked". A point is drawn as two tiles and the
+                one carrying the lock was identifiable only by counting cells.
+                Beside the name, both marks are the same fact about the same
+                point and read as one thing.
+
+                Still **not** gated on `labelsVisible`. A lock is state, not a
+                label: "Labels: off" is an authoring control for seeing the
+                track under the text, and it must not be able to hide the fact
+                that a route holds the road. With labels off the glyph draws
+                alone, at the name's position — the editor never has `live` at
+                all, so this only ever happens on the monitor.
 
                 The glyph, not a colour — the same `LOCK.glyph` a locked
                 block's run label carries, so one mark means one thing on both
-                (#81). Bottom-right: the name is top-centre, annotations are
-                top-left, the unclassified `?` is bottom-left, and the road
-                letters sit at the edges the legs meet.
+                (#81). It is a `<tspan>` of the same `<text>`, so it moves with
+                the name and cannot drift out of alignment with it.
               */}
-              {live &&
-                meta.pointId &&
+              {meta.pointId &&
                 pointLabelAt.get(`${tile.x},${tile.y}`) === meta.pointId &&
                 (() => {
-                  const held = live.points.get(meta.pointId)?.lockedByRoute;
-                  if (!held) return null;
+                  const held = live?.points.get(meta.pointId)?.lockedByRoute ?? null;
+                  const named = labelsVisible(tile.x, tile.y);
+                  if (!named && !held) return null;
                   return (
                     <g>
-                      <title>{`${pName ?? meta.pointId}: held by route ${held}`}</title>
+                      <title>
+                        {held ? `${pName}: held by route ${held}` : (pName ?? meta.pointId)}
+                      </title>
                       <text
-                        x={T - 3}
-                        y={T - 3}
-                        textAnchor="end"
-                        fontSize={9}
-                        fill={LOCK.colour}
+                        x={H}
+                        y={9}
+                        textAnchor="middle"
+                        fontSize={8}
+                        fill={INK.primary}
+                        fontFamily="monospace"
+                        fontStyle="italic"
                         stroke={SURFACE.tile}
                         strokeWidth={2.5}
                         paintOrder="stroke"
                       >
-                        {LOCK.glyph}
+                        {named && pName ? shortPointLabel(pName) : ''}
+                        {held && (
+                          <tspan fill={LOCK.colour} fontStyle="normal">
+                            {named && pName ? ' ' : ''}
+                            {LOCK.glyph}
+                          </tspan>
+                        )}
                       </text>
                     </g>
                   );
@@ -699,11 +712,40 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                 .join(' ')
             : '';
 
+          /**
+           * Turned to lie **along** diagonal track, and upright everywhere
+           * else (`trackGeometry.ts#trackAngle`).
+           *
+           * Westgate Hollow's Engine / Goods Transfer is a six-tile 45°
+           * staircase, and a horizontal label across it named the road by
+           * lying over it. The angle comes from the one leg-shape table, off
+           * the tile the run's label was already anchored to, so it cannot
+           * disagree with the track it is drawn against.
+           */
+          const anchor = grid.get(`${run.labelAt.x},${run.labelAt.y}`);
+          const anchorMeta = parsedMeta.get(`${run.labelAt.x},${run.labelAt.y}`) ?? {};
+          const angle = anchor
+            ? trackAngle(
+                anchor.tileType as TileType,
+                typeof anchorMeta.rotation === 'number' ? anchorMeta.rotation : 0,
+              )
+            : 0;
+
+          // An upright label sits `LABEL_OFFSET` below the track through the
+          // tile centre. A turned one keeps that relationship, along the
+          // perpendicular: `(-sin, cos)` always points down the screen for an
+          // angle inside ±90°, so the label lands beside its road rather than
+          // along the middle of it, on the same side it always has.
+          const rad = (angle * Math.PI) / 180;
+          const cx = run.labelAt.x * TILE_SIZE + H - Math.sin(rad) * LABEL_OFFSET;
+          const cy = run.labelAt.y * TILE_SIZE + H + Math.cos(rad) * LABEL_OFFSET;
+
           return (
             <text
               key={`${run.blockId}@${run.labelAt.x},${run.labelAt.y}`}
-              x={run.labelAt.x * TILE_SIZE + H}
-              y={run.labelAt.y * TILE_SIZE + T - 5}
+              x={cx}
+              y={cy}
+              transform={angle ? `rotate(${angle}, ${cx}, ${cy})` : undefined}
               textAnchor="middle"
               fontSize={9}
               fill={INK.primary}
