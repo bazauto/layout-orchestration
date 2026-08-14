@@ -17,7 +17,9 @@ Implemented:
 - Backend domain safety and state logic
 - MQTT and DCC adapter abstraction with simulator support
 - SQLite persistence via Drizzle ORM with auto-migrate on startup
-- REST API for layouts, locos, blocks, points, sensors, grid tiles, and block edges (track topology)
+- REST API for layouts, locos, blocks, points, sensors, and grid tiles. The track graph
+  (`block_edges`) is **read-only over REST** — it is compiled from the drawing and applied
+  whole, so there is no edge create/update/delete surface (#103)
 - Topology validation with Safe-Stop on an invalid graph, and operator recovery by
   re-compiling the drawing
 - Safe-Stop on a malformed sensor payload (a message on a `sensor/*/reading` topic that
@@ -221,7 +223,7 @@ Current automated coverage includes:
   `docs/sensor-simulation.md`
 
 ### Configure
-- CRUD for blocks, sensors, points, locos, and edges
+- CRUD for blocks, sensors, points, and locos. **Not edges** — see the Edges tab below
 - Inline editing
 - Sensors tab: an In service toggle per sensor (marking a dead device out of service clears
   its latched fault and stops the system trusting it)
@@ -321,100 +323,118 @@ The system follows a fail-safe posture:
 
 ## Known Limits
 
-A formal track graph exists — `block_edges` in the schema, with construction and
-traversal in `domain/graph.ts`, a full REST CRUD surface, and a Configure UI tab for
-authoring it. Route reservation and locking now exists on top of it (`docs/route-locking.md`)
-— granting, cancelling, suspending, resuming, and progressive release — but it takes an
-explicit ordered edge list; there is no pathfinder yet and nothing issues point/throttle
-commands for a granted route (both #4). Two limits the locking model records rather than
-closes: a point lock guarantees no other software authority will command the point, not
-that the point is physically in the required position — there is still no point-position
-feedback channel from the DCC controller (#25) — and the model does not catch two routes
-fouling at a plain (non-switched) diamond crossing, since neither shares a block or a
-point (#26; Westgate Hollow has none today — and the Track Editor now says so when one is
-drawn, which is a warning rather than a fix). **Edges are no longer authored by hand at
-all**: the drawing compiles to `block_edges` and an operator applies the whole graph after
-reading the diff (#103). The manual write routes and the older edge-proposal surface are
-both deleted, so there is exactly one writer, and the two representations cannot drift
-because there is only one of them. Westgate Hollow's graph has been compiled and applied
-(2026-08-14): 90 tiles and 9 blocks to 22 edges, one connected component, no gaps. That
-includes the two south-east openings of `Engine / Goods Transfer` that the old generator
-refused to name and therefore left unroutable — the compiler disambiguates them by suffix
-and both carry edges. Distance is not compiled and never could be — length lives on the
-block (#105), edited in Configure → Blocks and left blank where nobody has run a tape over
-it. `block_ends` is deleted, along with its service, its routes and four of the five
-end-related diagnostics — an opening's name is derived from the drawing on every compile
-and referenced by nothing between compiles, so there is nothing to store and nothing to
-keep in agreement.
-A block's openings come from where its **drawn track leaves the run** — tile type and
-rotation — not from which cells sit next to each other, so two yard roads drawn side by
-side no longer read as opening into one another (#91). The advisory half of all of it is
-unchanged: nothing in `domain/` reads a tile, and no diagnostic can refuse a write or halt
-a layout. The classification pass marking which existing Westgate Hollow tiles are
-deliberately decorative (#71) is done: the layout is 90 tiles, 79 tagged to a block and 11
-decorative, with none unclassified. Each layout is capped at
-2,000 `block_edges` — a deliberate admission-control limit on the compiled apply (not a
-physical layout constraint; Westgate Hollow compiles to 22 edges), enforced only in
-`TopologyService.replaceGraph` against the whole candidate set, not in the database or the
-load path. A second, tighter cap of 200 refuses to *render* a diff nobody could review —
-see `docs/topology.md`.
+Positions the system holds deliberately, each with a document behind it. **This is not a
+changelog** — nothing here is a bug waiting to be fixed in passing, and a limit leaves
+this list only when the decision behind it changes.
 
-A sensor-payload Safe-Stop (#27) is latched per sensor: once tripped it is not cleared by
-an unrelated health re-evaluation (e.g. an MQTT/DCC reconnect). Recovery (#34) is now
-possible without a restart, but is narrow by design: an operator may acknowledge a fault
-only after `SENSOR_FAULT_CLEAR_READINGS` (default 3) consecutive valid, non-retained
-readings have armed it, or mark the sensor out of service outright for a device that will
-never publish again. Sharp edges worth knowing: faults are in-memory only and lost on
-restart, with no audit trail of what faulted when; nothing marks a sensor out of service
-automatically, however many times it faults; a sensor that goes *silent* rather than
-malformed is not a fault under this model (a device-liveness gap shared with #25, decided
-together later); and a block with no in-service sensor able to determine it reads
-`unknown` indefinitely — no route may be granted over it, and none can resume through it,
-for as long as that is true (see docs/sensor-fault-recovery.md D6). `websocket`/HTTP parse
-failures on operator-facing requests remain ordinary 4xx/`ERROR` responses, not a
-Safe-Stop — see the fail-safe rule in `docs/mqtt-contract.md`, which applies only to
-sensor and control topics.
+### Track graph
 
-Authentication is local-only and, until TLS is added, only defends against a stray
-device, a curious guest, or a rogue web page — not an attacker who already has a
-foothold on the LAN, since both the login password and the session cookie are
-sniffable over plain HTTP. See `docs/auth.md` for the full threat model and what
-changes once TLS lands. `EMERGENCY_STOP` is deliberately reachable without
-authentication (`POST /api/emergency-stop`); every other control and config
-endpoint requires a session.
+**The graph is compiled from the drawing, not authored.** The Track Editor's tiles are the
+only description of the railway's connectivity; `block_edges` is generated from them and
+applied whole after an operator reads the diff (#103). There is one writer and one
+representation, so the two cannot drift. The hand-authoring routes and the older
+edge-proposal surface are both deleted, as is `block_ends` — an opening's name is derived
+on every compile and referenced by nothing in between, so there is nothing to store and
+nothing to keep in agreement.
 
-Every block/point/sensor/loco create/update/delete in `useLayoutConfig.ts` now
-surfaces a failed save instead of discarding the response — matching how the Edges
-tab has always handled a rejected write (#22).
+**An opening comes from where drawn track leaves the run** — tile type and rotation — not
+from which cells happen to sit next to each other, so two yard roads drawn side by side no
+longer read as opening into one another (#91).
 
-Every config write route now validates its body with a `.strict()` Zod schema in
-`services/validation.ts` before anything reaches the repository (#36). The gap was
-that a Fastify `Body` generic is erased at compile time, so a route declaring a
-typed body and nothing more validated nothing at runtime — `blocks` `POST`/`PUT`
-and `points` `POST` were the remaining outliers and now carry `blockCreateSchema`,
-`blockUpdateSchema`, and `pointCreateSchema`.
+**No distance is compiled, and none ever could be.** Tile count bears no relation to
+physical length. Length lives on the block (#105), edited in Configure → Blocks and left
+blank wherever nobody has run a tape over it.
 
-Operator-facing diagnostic strings (route rejections, topology violations, Safe-Stop
-reasons, HTTP 404 bodies) now name the block/point/sensor/loco involved instead of
-a bare UUID, wherever a `NameBook` reaches the call site (#54, `docs/naming.md`). One
-residual by design: a route-lock message (`block ... is locked by route <id>`) still
-names the *route*, not the train behind it — a route is runtime state with a
-different invalidation lifetime than the rest of the book, so this is deferred
-rather than solved here (`docs/naming.md` D3).
+**Two edge caps, for two different reasons.** `MAX_EDGES_PER_LAYOUT` (2,000) is admission
+control on the apply, checked in `TopologyService.replaceGraph` against the whole candidate
+set — not in the database and not on the load path. `MAX_COMPILED_EDGES` (200) is tighter
+and sits in the compiler: a drawing producing more than that returns **409** from
+`GET .../topology/compile` rather than handing back a diff nobody could review. Neither is
+a physical constraint — Westgate Hollow compiles to 22 edges. See `docs/topology.md`.
 
-Sensor simulation (#65) is single-shot only — there is no timed or scripted sequence, no
-record/replay, and no cancellation semantics; each button press is one MQTT publish. The
-"last injected" history shown in the panel is client-side and resets on reload — it is not
-persisted, and it is not part of the WebSocket `STATE_SNAPSHOT` (deliberately; see
-`docs/sensor-fault-recovery.md`'s note that per-sensor last-reading stays out of that
-snapshot). The flag is off by default and must not be enabled on a live layout — see the
-safety preamble in `docs/sensor-simulation.md`.
+**Nothing in `domain/` reads a tile**, and no grid diagnostic can refuse a write or halt a
+layout. Diagnostics are advisory; only the compiler's *gaps* gate anything, and what they
+gate is `auto` mode, never a write.
+
+*Westgate Hollow, applied 2026-08-14:* 90 tiles (79 tagged to a block, 11 decorative, none
+unclassified — the #71 classification pass is finished) and 9 blocks compile to 22 edges,
+one connected component, no gaps. That includes the two south-east openings of
+`Engine / Goods Transfer` which the old generator refused to name and therefore left
+unroutable; the compiler disambiguates them by suffix and both carry edges.
+
+### Routing and movement
+
+**Driving a granted route is manual.** Pathfinding, reservation and locking all landed
+(#4): a route is found, its track reserved and **its points thrown**. What is not automated
+is the throttle — nothing drives the train along the road it has been given. That is #6
+(per-loco braking) and #7 (collision avoidance).
+
+**A point lock is an authority guarantee, not a physical position guarantee.** It promises
+no other software authority will command the point, not that the blades have moved. There
+is still no point-position feedback channel from the DCC controller (#25).
+
+**Fouling at a plain diamond crossing is not modelled** (#26) — two routes crossing there
+share neither a block nor a point, so nothing detects the conflict. Westgate Hollow has no
+plain diamond today, and the Track Editor now warns when one is drawn. That is a warning,
+not a fix.
+
+**A route-lock message names the route, not the train** (`block … is locked by route <id>`).
+Everything else operator-facing resolves ids to names (#54), but a route is runtime state
+with a different invalidation lifetime from the rest of the `NameBook` — deferred by
+design, `docs/naming.md` D3.
+
+### Sensors and occupancy
+
+**A sensor-payload Safe-Stop is latched per sensor** (#27): once tripped it is not cleared
+by an unrelated health re-evaluation, such as an MQTT or DCC reconnect.
+
+**Recovery needs no restart, but is narrow by design** (#34). An operator may acknowledge a
+fault only after `SENSOR_FAULT_CLEAR_READINGS` (default 3) consecutive valid, non-retained
+readings have armed it — or mark the sensor out of service outright, for a device that will
+never publish again.
+
+Sharp edges worth knowing:
+
+- Faults are **in-memory only** and lost on restart. There is no audit trail of what
+  faulted when.
+- **Nothing marks a sensor out of service automatically**, however many times it faults.
+- **A silent sensor is not a fault** under this model — only a malformed one is. That
+  device-liveness gap is shared with #25 and will be decided together with it.
+- **A block with no in-service sensor able to determine it reads `unknown` indefinitely.**
+  No route may be granted over it and none can resume through it for as long as that holds
+  (`docs/sensor-fault-recovery.md` D6).
+
+**Parse failures on operator-facing requests are ordinary 4xx/`ERROR` responses**, not a
+Safe-Stop. The fail-safe rule in `docs/mqtt-contract.md` is scoped to sensor and control
+topics; turning a bad UI request into a layout halt would itself be a bug.
+
+### Authentication
+
+**Local-only, and until TLS lands it defends against a stray device, a curious guest, or a
+rogue web page — not an attacker with an existing foothold on the LAN.** Over plain HTTP
+both the login password and the session cookie are sniffable. `docs/auth.md` carries the
+full threat model and what changes once TLS is in place.
+
+**`EMERGENCY_STOP` is deliberately reachable without authentication**
+(`POST /api/emergency-stop`) — it can only move the system in the fail-safe direction, and
+requiring a login before someone can halt a runaway is the wrong trade. Every other control
+and config endpoint requires a session.
+
+### Sensor simulation
+
+**Single-shot only** (#65) — no timed or scripted sequence, no record/replay, no
+cancellation. Each button press is one MQTT publish. The panel's "last injected" history is
+client-side and resets on reload; it is deliberately not on the WebSocket `STATE_SNAPSHOT`.
+The flag is off by default and **must not be enabled on a live layout** — see the safety
+preamble in `docs/sensor-simulation.md`.
 
 ## Next Milestones
 
 1. Per-loco braking model (#6) and collision avoidance (#7)
 2. Point position confirmation (#25)
 3. Automation engine / schedules
-4. One shared geometry renderer for the editor and the monitor view (#75), which is the
-   last hand-maintained duplication in this area
+4. One shared geometry renderer for the editor and the monitor view (#75). This unifies the
+   editor↔monitor seam inside the frontend; it does **not** close the three
+   backend↔frontend duplicates (`findBlockRuns`, `TILE_LEGS`/`DRAWN_LEGS`, `EDGE_OFFSET`),
+   which need a shared workspace package and are tracked separately in `CLAUDE.md`
 5. Hardware validation and operator workflows
