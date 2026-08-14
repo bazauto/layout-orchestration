@@ -324,6 +324,18 @@ them:
 **Shipped.** `App.tsx` derives one `visibleTabs` list from `role`, which the
 nav and the panel render guards both read.
 
+**A `monitor` currently gets this same non-admin nav** — `visibleTabs` reads
+`role === 'admin' ? [...] : ['operate']`, so a monitor sees the Operate
+screen, throttle/point controls included, exactly as an operator does. Every
+one of those controls is refused server-side per "The monitor role" above
+(D2/D3), so nothing a monitor does through them actually moves anything —
+but the screen does not yet *say* that, which is the "greyed-out control"
+problem this very section argues against for the wrong role. That is #63's
+frontend half, not a regression introduced here: `visibleTabs` was written
+for a two-role world and is deliberately not being widened to a three-way
+branch in this PR, since the destination for `monitor` is the purpose-built
+view named below, not a corrected `visibleTabs`.
+
 **An operator sees the Operate screen and nothing else.** The Track Editor
 and Configure entries are absent from the nav for a non-admin, and their
 panels are not rendered. Absent, not disabled: a greyed-out control still
