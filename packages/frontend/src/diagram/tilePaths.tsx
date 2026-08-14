@@ -39,7 +39,7 @@ const H = T / 2; // half tile
 
 // ─── SVG per tile type ───────────────────────────────────────────────────────
 
-export function TilePath({ type, sleepers = true }: { type: TileType; sleepers?: boolean }) {
+export function TilePath({ type }: { type: TileType }) {
   const stroke = {
     stroke: TRACK_COLOUR,
     strokeWidth: 4,
@@ -51,14 +51,12 @@ export function TilePath({ type, sleepers = true }: { type: TileType; sleepers?:
   // Sleeper marks across the track. Only the two straights carry them: on a
   // curve or a point they collide with the leg they are meant to sit under.
   //
-  // `sleepers={false}` is for a cell a route line runs through (#129). The
-  // halo is drawn under the track but *over* the tile, so four grey ticks per
-  // tile cut a continuous highlight into short blocks — the operator's words
-  // were "it looks like a lot of carriages are on the track". Sleepers are
-  // texture on plain track; where a route is drawn, the route is what the cell
-  // is saying.
+  // They are drawn on a route cell too. A previous pass suppressed them there,
+  // on a wrong diagnosis of the broken-looking route line — the breaks were
+  // the halo's own tile boundaries (`TrackDiagram`'s three layers), and the
+  // sleepers were doing what they are for.
   const sleeperMarks = (positions: number[], vertical = false) =>
-    (sleepers ? positions : []).map((p, i) =>
+    positions.map((p, i) =>
       vertical ? (
         <line key={i} x1={H - 7} y1={p} x2={H + 7} y2={p} {...sleeper} />
       ) : (

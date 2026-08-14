@@ -78,12 +78,24 @@ segments come from a walk from the joins between held blocks, following legs
 and taking only the road a point hold selects. `diagram/routePaths.ts` carries
 the two fallbacks, both of which err toward drawing more rather than less.
 
-**Sleepers are dropped from a cell a route line runs through.** The halo sits
-under the track and over the tile, so the four sleeper ticks a straight draws
-cut a continuous highlight into short blocks — read on the real layout as "a
-lot of carriages on the track", which is a worse lie than losing the texture.
-Sleepers are decoration on plain track; where a route is drawn, the route is
-what the cell is saying.
+**The renderer draws in three layers, and that is what makes the line
+continuous.** Every tile paints an opaque background rect of its own, so with
+one group per tile a tile's background erases whatever its already-drawn
+neighbour put down. Harmless for anything that stays inside a cell; wrong for
+the halo, which is 9 units wide against a 4-unit track and therefore always
+crosses the boundary. On a 45° run the erased wedge showed as a waist at every
+tile edge — the halo read as a chain of capsules, and the operator's word for
+it was carriages.
+
+So `TrackDiagram` makes one pass for every background and wash, one for every
+route halo, and one for every piece of track and text. Nothing a later tile
+draws can reach back under an earlier tile's track, and adjacent halo segments
+overlap into one band.
+
+A first attempt blamed the sleeper marks and suppressed them on route cells.
+That was a wrong diagnosis of the right complaint — the breaks were the halo's
+own tile boundaries, and the sleepers were doing what they are for. They are
+drawn on a route cell like any other.
 
 **`unknown` is the most visually distinct of the three occupancy states**, not a
 neutral middle ground. It is a fail-safe state that refuses routes, so it gets
@@ -98,6 +110,20 @@ should not look like a milder version of "clear".
 **Decision.** A set road drawn solid and an unset road dimmed is already a
 non-colour encoding. Keep it. `unknown` takes the cross-hatch, for the same
 reason as occupancy.
+
+**Only half of that was drawn, and the missing half was the important one.**
+The overlay dimmed the *unset road it drew* — but the tile underneath still
+drew both of the point's roads as ordinary solid track, so the overlay only
+ever **added** a highlight to one of them. A point standing reverse showed its
+normal road as connected track: the blades making a junction in two directions
+at once, which is the one thing a point cannot physically do. Where there is
+live state a point tile's own roads are therefore drawn faint
+(`POINT_BASE_OPACITY`), and the overlay redraws the set one at full strength.
+What is left faint is the road that is not set.
+
+**Only where there is live state.** The editor is authoring the road mapping
+and needs both roads legible; it has no set road to distinguish them by
+anyway.
 
 **Commanded versus confirmed is deliberately not invented here.** It needs a
 third non-colour treatment, and it gets one when #25 gives it something to
