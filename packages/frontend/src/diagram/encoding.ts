@@ -169,27 +169,16 @@ export const FAULT = {
   label: 'fault',
 } as const;
 
-/**
- * A block opening (#103, D-H) — the boundary tick the Track Editor draws
- * where a compiled opening's ports actually are, plus the `⊣` stop glyph on a
- * terminated one's closed side. Not a fill or an outline like the state
- * encodings above: `pattern` is `null` because there is nothing to pattern —
- * this is a mark, not an area — and it ships here anyway so the encoding
- * module stays the single source of every track-diagram glyph, not only the
- * ones with a colour to reinforce.
+/*
+ * `OPENING` used to live here — the boundary tick, the `⊣` stop glyph and the
+ * label that #103 step 6.1 drew for a compiled opening. All three are gone
+ * (`docs/track-editor.md` D15, `docs/diagram-encoding.md` D7, withdrawn), and
+ * so is the encoding: an unused entry in this module is an invitation to draw
+ * something the diagram deliberately does not draw.
  *
- * `label`/`glyph` are what a redraw at the wrong boundary loses that a word at
- * a nearby cell (the model this replaces, `docs/track-editor.md` D12) could
- * not: #91's fused siding read as a plausible label right up until someone
- * checked it against the drawing. A mark at the wrong boundary is not
- * plausible.
+ * Openings are still named in the keyboard readout, the Edges tab and the
+ * compile diff. None of those is a track diagram, and none needs an encoding.
  */
-export const OPENING: StateEncoding = {
-  colour: '#a6adc8',
-  pattern: null,
-  glyph: '⊤', // ⊤ — a tick crossing the boundary it marks
-  label: 'opening',
-} as const;
 
 /** Ink. Text never wears a state or identity colour — a mark beside it carries that. */
 export const INK = {

@@ -243,23 +243,21 @@ test('clicking an already-annotated tile removes the annotation', async ({ page 
   expect(write.metadata.annotations).toBeUndefined();
 });
 
-test('opening labels and boundary marks are drawn, with the stop glyph on a terminated one (#103)', async ({
-  page,
-}) => {
+test('no opening label, boundary mark or stop glyph is drawn (D15)', async ({ page }) => {
   await openEditor(page);
 
+  // This test used to assert all three were present, which is what #103 step
+  // 6.1 shipped. `docs/track-editor.md` D15 records why they went: with the
+  // graph compiled and applied, an opening's name is disposable output that
+  // nothing on the canvas acts on, and three marks per opening were competing
+  // with occupancy, locks, block names, point names and road letters for the
+  // same cells.
   const texts = await page.locator('svg text').allTextContents();
-  expect(texts).toContain('west');
-  expect(texts).toContain('yard-3');
-  expect(texts.some((t) => t.includes('⊣'))).toBe(true);
+  expect(texts).not.toContain('west');
+  expect(texts).not.toContain('yard-3');
+  expect(texts.some((t) => t.includes('⊣'))).toBe(false);
 
-  // Not just the label — the boundary tick itself, at the port the geometry
-  // actually names. A mark at the wrong cell is visibly wrong in a way a
-  // word at a nearby cell was not (#91), which is the point of #103 step 6.1.
-  const westTick = page
-    .locator('svg line')
-    .filter({ has: page.locator('title', { hasText: /^west$/ }) });
-  await expect(westTick).toHaveCount(1);
+  await expect(page.locator('svg line').filter({ has: page.locator('title') })).toHaveCount(0);
 });
 
 test('the diagnostics panel separates hazards from unfinished authoring', async ({ page }) => {
@@ -306,10 +304,11 @@ test('the toolbar offers no block-end controls, and reads no block_ends', async 
   await expect(page.getByTitle(/Regenerate block end labels/)).toHaveCount(0);
   await expect(page.getByTitle(/Name, rename and remove block ends/)).toHaveCount(0);
 
-  // The openings themselves are still drawn — losing the controls must not lose
-  // the information they were about. Matched on the SVG text node rather than
-  // by page text: an opening label also appears in a hidden `<title>` tooltip,
-  // and a `text=` locator resolves to that one first.
+  // The openings are still *read* — losing the controls must not lose the
+  // information they were about — but they are no longer drawn (D15). What
+  // survives is the keyboard readout, covered as a sentence in
+  // `diagram/cursorAnnouncement.test.ts`, and the Edges tab. So the assertion
+  // that belongs here is the one above: no request for a stored copy.
   const labels = await page.locator('svg text').allTextContents();
-  expect(labels).toContain('west');
+  expect(labels).not.toContain('west');
 });

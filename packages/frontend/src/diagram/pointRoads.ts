@@ -27,44 +27,27 @@
  * re-modelling any of this.
  */
 
-import { TileEdge, TilePointRoad, TileType } from '../types';
-
-/** Where a named tile edge meets the tile boundary, for a tile of size `size`. Unrotated. */
-export function edgeAnchor(edge: TileEdge, size: number): { x: number; y: number } {
-  const h = size / 2;
-  switch (edge) {
-    case 'n':  return { x: h, y: 0 };
-    case 'ne': return { x: size, y: 0 };
-    case 'e':  return { x: size, y: h };
-    case 'se': return { x: size, y: size };
-    case 's':  return { x: h, y: size };
-    case 'sw': return { x: 0, y: size };
-    case 'w':  return { x: 0, y: h };
-    case 'nw': return { x: 0, y: 0 };
-  }
-}
+import { TilePointRoad, TileType } from '../types';
+import { pointLegs } from './trackGeometry';
 
 /**
- * The legs the palette's two point tiles actually draw.
- *
- * `TilePath` draws `point-left` as a through line west→east plus a divergent
- * leg from the west centre up to the north centre; `point-right` diverges
- * downward to the south instead. These constants have to track that geometry —
- * if the drawing changes, so does this.
- *
- * These are two rows of `TILE_LEGS` in the backend's
- * `packages/backend/src/services/tileGeometry.ts`, which carries the same
- * mapping for every tile type and must stay equal to these two. A known
- * duplicate across the wire, alongside `findBlockRuns`; #75 unifies both.
+ * `edgeAnchor` moved to `diagram/trackGeometry.ts`, which owns tile geometry
+ * now. Re-exported here because a road *is* a pair of anchors and every caller
+ * that wants one wants the other — and because the alternative was a cycle,
+ * since that module derives this one's legs.
  */
-const DRAWN_LEGS: Partial<Record<TileType, { through: [TileEdge, TileEdge]; divergent: [TileEdge, TileEdge] }>> = {
-  'point-left':  { through: ['w', 'e'], divergent: ['w', 'n'] },
-  'point-right': { through: ['w', 'e'], divergent: ['w', 's'] },
-};
+export { edgeAnchor } from './trackGeometry';
 
-/** Whether this tile type depicts something with a road mapping at all. */
+/**
+ * Whether this tile type depicts something with a road mapping at all.
+ *
+ * Derived from `trackGeometry`'s table rather than from a local copy of two of
+ * its rows, which is what this file used to hold. Those two rows were a
+ * *fragment* of the backend's `TILE_LEGS` and drifted independently of the
+ * paths `TilePath` drew from — the divergence #75's argument is about.
+ */
 export function isPointTile(tileType: TileType): boolean {
-  return DRAWN_LEGS[tileType] !== undefined;
+  return pointLegs(tileType) !== undefined;
 }
 
 /**
@@ -87,15 +70,15 @@ export function defaultPointRoads(
   pointId: string,
   divergentIsNormal = false,
 ): TilePointRoad[] | undefined {
-  const legs = DRAWN_LEGS[tileType];
+  const legs = pointLegs(tileType);
   if (!legs) return undefined;
 
   const normalLegs = divergentIsNormal ? legs.divergent : legs.through;
   const reverseLegs = divergentIsNormal ? legs.through : legs.divergent;
 
   return [
-    { when: [{ pointId, position: 'normal' }], legs: normalLegs },
-    { when: [{ pointId, position: 'reverse' }], legs: reverseLegs },
+    { when: [{ pointId, position: 'normal' }], legs: [...normalLegs] },
+    { when: [{ pointId, position: 'reverse' }], legs: [...reverseLegs] },
   ];
 }
 

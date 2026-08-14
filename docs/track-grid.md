@@ -451,9 +451,13 @@ The one row worth reading twice is `straight-45`: the palette calls it "Corner"
 and it draws `(0,H)→(H,0)`, joining the **west and north edge midpoints**. It
 does not run corner to corner.
 
-`DRAWN_LEGS` in `packages/frontend/src/diagram/pointRoads.ts` is two rows of
-this table, maintained by hand on the other side of the wire. Same situation as
-`findBlockRuns` existing twice; #75 unifies both.
+`packages/frontend/src/diagram/trackGeometry.ts` mirrors this whole table on the
+other side of the wire, maintained by hand, and pairs each leg with the SVG path
+it is drawn along. It used to be `DRAWN_LEGS` in `diagram/pointRoads.ts` —
+*two rows* of this table, free to drift from both this file and the paths the
+editor actually drew (`docs/track-editor.md` D16). Still a duplicate, same
+situation as `findBlockRuns` existing twice, but a complete one with a test
+asserting the pair list literally.
 
 **`track-not-joined`** is the finding this makes possible: drawn track running
 into a tile that draws nothing back. `warning`, because the drawing contradicts

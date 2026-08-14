@@ -2,8 +2,20 @@
  * TrackDiagram
  *
  * The presentational `<svg>`: grid lines, block tints, tile paths,
- * point-road letters, annotations, opening port ticks and stop glyphs,
- * opening labels, point labels, block run labels, and the ruler gutters.
+ * point-road letters, annotations, point labels, block run labels, and the
+ * ruler gutters.
+ *
+ * ## What it deliberately does not draw
+ *
+ * **Compiled openings.** Boundary ticks, the `⊣` stop glyph and the opening
+ * label were all drawn here until the operator asked for them to go: on a
+ * layout whose graph is compiled and applied, an opening's name is disposable
+ * output that nothing on the canvas needs, and three marks per opening were
+ * competing for cells that carry occupancy, locks and block names. They are
+ * still in the keyboard readout (`diagram/cursorAnnouncement.ts`), which is
+ * where a name is asked for rather than always present, and in the Edges tab
+ * and the compile diff, where an end label is the join key and means
+ * something. See `docs/track-editor.md` D15.
  *
  * Extracted from `GridEditor.tsx` by #75. This component draws the railway
  * and nothing else — no palette, no ghost-preview *policy*, no mouse
@@ -34,20 +46,18 @@
 
 import { forwardRef } from 'react';
 import { BlockRun } from '../diagram/blockRuns';
-import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, LOCK, OCCUPANCY, OPENING, POINT_POSITION, SURFACE } from '../diagram/encoding';
+import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, LOCK, OCCUPANCY, POINT_POSITION, SURFACE } from '../diagram/encoding';
 import { DiagramPatternDefs } from '../diagram/patterns';
 import { LiveDiagramState, perimeterEdges, roadSelection } from '../diagram/liveState';
 import { edgeAnchor, roadLabel } from '../diagram/pointRoads';
-import { portMarkGeometry } from '../diagram/openings';
+import { chordPath, legPath } from '../diagram/trackGeometry';
 import { shortPointLabel } from '../diagram/pointLabels';
 import { rulerTicks } from '../diagram/ruler';
 import { TilePath, TILE_SIZE } from '../diagram/tilePaths';
 import {
   BlockRecord,
-  CompiledOpening,
   GridTileMetadata,
   GridTileRecord,
-  Port,
   PointRecord,
   TileType,
   classifyTile,
@@ -89,8 +99,6 @@ export interface TrackDiagramProps {
   runs: readonly BlockRun[];
   tintOf: ReadonlyMap<string, number>;
   pointLabelAt: ReadonlyMap<string, string>;
-  portsAtCell: ReadonlyMap<string, { edge: Port['edge']; label: string }[]>;
-  openingsAtCell: ReadonlyMap<string, CompiledOpening[]>;
   points: readonly PointRecord[];
   blocks: readonly BlockRecord[];
   sensorNames: ReadonlyMap<string, string>;
@@ -149,8 +157,6 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
     runs,
     tintOf,
     pointLabelAt,
-    portsAtCell,
-    openingsAtCell,
     points,
     blocks,
     sensorNames,
@@ -259,12 +265,6 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
             ? (points.find((p) => p.id === meta.pointId)?.name ?? meta.pointId)
             : null;
           const classification = classifyTile(meta);
-          // #103 (D-H) — ports whose boundary sits on THIS tile (an
-          // opening can span several tiles, so a port's own cell is not
-          // necessarily `opening.at`) and openings whose *label* sits
-          // here.
-          const portsHere = portsAtCell.get(`${tile.x},${tile.y}`) ?? [];
-          const openingsHere = openingsAtCell.get(`${tile.x},${tile.y}`) ?? [];
           return (
             <g key={tile.id || `${tile.x},${tile.y}`}
               transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}>
@@ -356,11 +356,20 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
               <g transform={`rotate(${rotation}, ${H}, ${H})`}>
                 {(meta.pointRoads ?? []).map((road, i) => {
                   const anchor = edgeAnchor(road.legs[1], T);
+                  const x = anchor.x + (anchor.x === 0 ? 5 : anchor.x === T ? -5 : 0);
+                  const y = anchor.y + (anchor.y === 0 ? 9 : anchor.y === T ? -3 : 3);
                   return (
                     <text
                       key={i}
-                      x={anchor.x + (anchor.x === 0 ? 5 : anchor.x === T ? -5 : 0)}
-                      y={anchor.y + (anchor.y === 0 ? 9 : anchor.y === T ? -3 : 3)}
+                      x={x}
+                      y={y}
+                      // Counter-rotated about its own anchor, so the letter is
+                      // *placed* by the tile's rotation but never turned by it.
+                      // A point rotated 180° drew an upside-down `N`, and `N`
+                      // and `R` are symbols with no direction to carry — unlike
+                      // the `⊣` stop glyph below, which points at the closed
+                      // side and must keep turning with the tile.
+                      transform={rotation ? `rotate(${-rotation}, ${x}, ${y})` : undefined}
                       textAnchor="middle"
                       fontSize={7}
                       fontWeight="bold"
@@ -399,14 +408,15 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                 <g transform={`rotate(${rotation}, ${H}, ${H})`}>
                   {meta.pointRoads!.map((road, i) => {
                     const selection = roadSelection(road, live.points);
-                    const a = edgeAnchor(road.legs[0], T);
-                    const b = edgeAnchor(road.legs[1], T);
                     const enc =
                       selection === 'indeterminate' ? POINT_POSITION.unknown : POINT_POSITION.normal;
                     return (
-                      <polyline
+                      <path
                         key={`live-${i}`}
-                        points={`${a.x},${a.y} ${H},${H} ${b.x},${b.y}`}
+                        d={
+                          legPath(tile.tileType as TileType, road.legs, T) ??
+                          chordPath(road.legs, T)
+                        }
                         fill="none"
                         stroke={enc.colour}
                         strokeWidth={selection === 'selected' ? 5 : 3}
@@ -423,7 +433,7 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                                 : 'position unknown'
                           }`}
                         </title>
-                      </polyline>
+                      </path>
                     );
                   })}
                 </g>
@@ -458,91 +468,6 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                 </text>
               ) : null}
 
-              {/*
-                #103 (D-H) — a tick at each tile boundary a compiled
-                opening's ports actually cross. This is the mark #91's
-                fused-siding bug argues for: a word at a *nearby* cell
-                (the model this replaces, `docs/track-editor.md` D12) read
-                as a perfectly plausible label right up until someone
-                checked it against the drawing, and a mark at the *wrong*
-                boundary is not plausible — it is visibly wrong. The tick
-                says *where*; the block label below says *which*.
-
-                Drawn in THIS `<g>`, never inside the sibling one below
-                that applies `rotation` to `TilePath` — `port.edge` is
-                already in the rotated (screen) frame
-                (`diagram/openings.ts`), and rotating it again is the
-                double-rotation bug that module's header warns about.
-              */}
-              {labelsVisible(tile.x, tile.y) &&
-                portsHere.map((p, i) => {
-                  const mark = portMarkGeometry(p, T);
-                  return (
-                    <line
-                      key={`${p.edge}-${i}`}
-                      x1={mark.x1}
-                      y1={mark.y1}
-                      x2={mark.x2}
-                      y2={mark.y2}
-                      stroke={OPENING.colour}
-                      strokeWidth={2}
-                      strokeLinecap="round"
-                    >
-                      <title>{p.label}</title>
-                    </line>
-                  );
-                })}
-
-              {/*
-                The stop glyph, on a terminated opening's closed side.
-                Drawn inside the same rotation `TilePath` uses below —
-                `buffer` is the only palette tile that terminates today,
-                and its stop block is always drawn just right of centre in
-                the *unrotated* frame, so sharing that transform puts the
-                glyph on the correct physical side without re-deriving
-                which edge is "closed" a second time.
-              */}
-              {labelsVisible(tile.x, tile.y) && openingsHere.some((o) => o.terminated) && (
-                <g transform={`rotate(${rotation}, ${H}, ${H})`}>
-                  <text
-                    x={H + 12}
-                    y={H + 3}
-                    textAnchor="middle"
-                    fontSize={9}
-                    fill={OPENING.colour}
-                    fontFamily="monospace"
-                    stroke={SURFACE.tile}
-                    strokeWidth={2.5}
-                    paintOrder="stroke"
-                  >
-                    ⊣
-                  </text>
-                </g>
-              )}
-
-              {/*
-                The label, once per opening, at `opening.at` — the tile
-                the compiler chose to carry it. Not "pinned"/"generated":
-                unlike a `block_ends` row, a compiled label is disposable
-                output with nothing referencing it between compiles (D8).
-              */}
-              {labelsVisible(tile.x, tile.y) &&
-                openingsHere.map((o) => (
-                  <text
-                    key={o.label}
-                    x={H}
-                    y={H + 3}
-                    textAnchor="middle"
-                    fontSize={7}
-                    fill={INK.secondary}
-                    fontFamily="monospace"
-                    stroke={SURFACE.canvas}
-                    strokeWidth={3}
-                    paintOrder="stroke"
-                  >
-                    {o.label}
-                  </text>
-                ))}
               {/*
                 #93 — the point's name, drawn **once per point** at the tile
                 `pointLabelAnchors` chose, and abbreviated to what a 40px

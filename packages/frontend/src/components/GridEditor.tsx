@@ -978,8 +978,6 @@ export function GridEditor({ layoutId, blocks, points, sensors }: Props) {
           runs={model.runs}
           tintOf={model.tintOf}
           pointLabelAt={model.pointLabelAt}
-          portsAtCell={model.portsAtCell}
-          openingsAtCell={model.openingsAtCell}
           points={points}
           blocks={blocks}
           sensorNames={sensorNames}

@@ -170,15 +170,23 @@ test('label density off hides the labels but keeps the drawing', async ({ page }
 });
 
 /**
- * #103 step 6.1 — opening marks at tile boundaries, replacing the old
- * "a word at a nearby cell" model (`docs/track-editor.md` D12, superseded).
+ * Openings are **not drawn on the canvas** (`docs/track-editor.md` D15).
  *
- * `GET .../grid/openings` is stubbed directly with a hand-built
- * `CompiledOpening[]`, rather than relying on the real compiler, so the test
- * asserts against a geometry it controls: block `b1`'s west end (a real
- * boundary, one port) and its east end (a buffer, terminated, no port).
+ * This block used to assert the boundary tick, the `⊣` stop glyph and the
+ * label that #103 step 6.1 introduced. The operator asked for all three to go:
+ * once the graph is compiled and applied, an opening's name is disposable
+ * output that nothing on the diagram acts on, and three marks per opening were
+ * competing for cells that already carry occupancy, locks and block names.
+ *
+ * The fixture is kept as-is and the assertions inverted, which is the point —
+ * `GET .../grid/openings` still returns openings, the editor still reads them
+ * for the keyboard readout, and nothing renders. A test that simply stopped
+ * serving openings would pass for the wrong reason.
+ *
+ * The readout half is covered by `diagram/cursorAnnouncement.test.ts`, which
+ * asserts the exact sentence naming an opening and its boundary.
  */
-test.describe('opening marks (#103 D-H)', () => {
+test.describe('openings are not drawn on the canvas (D15)', () => {
   const OPENING_TILES: Tile[] = [
     { x: 2, y: 8, tileType: 'straight-h', blockId: 'b1' },
     { x: 3, y: 8, tileType: 'straight-h', blockId: 'b1' },
@@ -255,68 +263,34 @@ test.describe('opening marks (#103 D-H)', () => {
     await expect(page.getByText(/5 tiles/)).toBeVisible();
   }
 
-  test('a mark is drawn exactly at the boundary the port names, not a nearby cell', async ({
-    page,
-  }) => {
+  test('no boundary tick is drawn for a port', async ({ page }) => {
     await openEditorWithOpenings(page);
 
-    // The `west` opening's one port sits on tile (2, 8)'s west edge —
-    // `portMarkGeometry({ edge: 'w' }, 40)` in the tile's own local frame.
-    // Asserting the raw SVG attributes, rather than a computed screen
-    // position, is deliberate: it is what makes a mark drawn at the wrong
-    // boundary (the #91 failure mode this replaces) fail visibly here,
-    // instead of only "close enough" to a plausible position passing.
-    const westTick = page
-      .locator('svg line')
-      .filter({ has: page.locator('title', { hasText: /^west$/ }) });
-    await expect(westTick).toHaveCount(1);
-    await expect(westTick).toHaveAttribute('x1', '5');
-    await expect(westTick).toHaveAttribute('y1', '20');
-    await expect(westTick).toHaveAttribute('x2', '-5');
-    await expect(westTick).toHaveAttribute('y2', '20');
+    // The `west` opening's port sits on tile (2, 8)'s west edge, and used to
+    // draw a `<title>`-bearing tick there. Scoped to a `<title>` rather than
+    // to every `<line>`: `TilePath` draws sleeper marks as lines, which are
+    // track and always were.
+    await expect(page.locator('svg line').filter({ has: page.locator('title') })).toHaveCount(0);
   });
 
-  test('a buffered opening draws the stop glyph, and no boundary tick (it has no port)', async ({
-    page,
-  }) => {
+  test('no stop glyph is drawn on a terminated opening', async ({ page }) => {
     await openEditorWithOpenings(page);
 
-    // The `east` opening is terminated with an empty `ports` array (a
-    // buffer's closed side is not a boundary anything can cross), so there is
-    // no tick for it — only the stop glyph, inside the buffer tile at (6, 8).
-    const bufferTileGroup = page.locator('svg g[transform="translate(240,320)"]');
-    await expect(bufferTileGroup.locator('text', { hasText: '⊣' })).toHaveCount(1);
-    // Scoped to a tick (a `<title>`-bearing `<line>`) rather than every
-    // `<line>` in the tile — `TilePath` itself draws the buffer's own stub
-    // line, which is track, not an opening mark, and must not be mistaken
-    // for one here.
-    await expect(bufferTileGroup.locator('line').filter({ has: page.locator('title') })).toHaveCount(
-      0,
-    );
-
-    const eastTick = page
-      .locator('svg line')
-      .filter({ has: page.locator('title', { hasText: /^east$/ }) });
-    await expect(eastTick).toHaveCount(0);
+    // The buffer tile at (6, 8) carries the `east` opening, which is
+    // `terminated`. The buffer's own stop *block* is still drawn — that is
+    // `TilePath` drawing a buffer, not an opening mark — so this asserts on
+    // the `⊣` glyph specifically.
+    await expect(page.locator('svg text', { hasText: '⊣' })).toHaveCount(0);
   });
 
-  test('the label is still drawn once per opening, alongside its mark', async ({ page }) => {
+  test('no opening label is drawn', async ({ page }) => {
     await openEditorWithOpenings(page);
 
     const texts = await svgTexts(page);
-    expect(texts.filter((t) => t === 'west')).toHaveLength(1);
-    expect(texts.filter((t) => t === 'east')).toHaveLength(1);
-  });
-
-  test('label density off hides opening marks and the stop glyph too', async ({ page }) => {
-    await openEditorWithOpenings(page);
-    await expect(page.locator('svg line').filter({ has: page.locator('title') })).toHaveCount(1);
-
-    await page.getByRole('combobox', { name: /labels/i }).selectOption('off');
-
-    await expect(page.locator('svg line').filter({ has: page.locator('title') })).toHaveCount(0);
-    await expect(page.locator('svg text', { hasText: '⊣' })).toHaveCount(0);
-    // The track itself is untouched — this hides marks and labels, not tiles.
-    await expect(page.getByText(/5 tiles/)).toBeVisible();
+    expect(texts.filter((t) => t === 'west')).toHaveLength(0);
+    expect(texts.filter((t) => t === 'east')).toHaveLength(0);
+    // The block label is untouched: removing the opening names is not
+    // removing the names of things the operator drives.
+    expect(texts.filter((t) => t === 'Siding 1')).toHaveLength(1);
   });
 });
