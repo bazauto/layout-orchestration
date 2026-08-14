@@ -394,3 +394,60 @@ by the write path rather than by the input.
 Kept as a numbered decision rather than deleted outright: the reasoning is still
 the argument for *why* hand-typing a join key was the wrong shape, and that
 argument is the one #103 generalises.
+
+## D14 — Geometry and viewport are shared; authoring is not
+
+**Decision.** #75's extraction half. `GridEditor.tsx` no longer owns the tile
+SVG, the pan/zoom viewport, or the model derived from the drawing — those moved
+out so a monitor view (#63/#82) consumes the same renderer instead of writing a
+second one that draws the same railway a different way, which is the whole risk
+#75 names: on a diagram whose purpose is being trusted at a glance, two
+renderers will diverge.
+
+The split, along the line the issue drew:
+
+- `diagram/tilePaths.tsx` — `TilePath`, `TILE_SIZE`, the track/sleeper colours.
+  Pure SVG per tile type, no state.
+- `hooks/useDiagramViewport.ts` — `offset`, `zoom`, middle-drag pan, wheel zoom,
+  `fitToContent`, `centerOn`, and the per-layout `localStorage` persistence
+  (D5 above). Moved **verbatim**, including the `pendingRestore`/`hydratedFor`
+  dance — the persist effect fires in the same commit as the restore, and
+  writing there without the guard clobbers the entry the restore just read.
+- `diagram/diagramModel.ts` — pure functions of `(tiles, openings)`:
+  `parseTileMetadata` (D10's `{}`-on-parse-failure behaviour travels with it,
+  `docs/track-grid.md` D10), `computeBlockRuns`, `computePointLabelAt`,
+  `computePortsAtCell`, `computeOpeningsAtCell`, `computeOpeningsAtCursor`,
+  `computeExtent` (D1) — plus `useDiagramModel`, a thin memoising hook over all
+  of them. No live state in or out: a monitor reading a WebSocket snapshot
+  needs exactly this, computed the same way.
+- `components/TrackDiagram.tsx` — the presentational `<svg>`: grid lines, block
+  tints, tile paths, point-road letters, annotations, opening port ticks and
+  stop glyphs, opening labels, point labels, block run labels, ruler gutters
+  (D5's "outside the pan/zoom `<g>`, positioned by hand" survives unchanged).
+  It owns `role="application"`, `tabIndex`, `aria-label` and the `<title>`
+  (D11) because it owns the `<svg>` element. Editor-only decorations — the
+  ghost preview tile, the keyboard cursor crosshair, the diagnostics "jump to"
+  pulse — arrive as **optional** props (`ghostPreview`, `cursor`, `jumpPulse`)
+  so the component renders correctly with none of them supplied; that
+  optionality is what makes it reusable, and it is exercised today with the
+  editor as the only caller.
+- `GridEditor.tsx` — what is left: the toolbar, the palette, paint/erase/
+  annotate, undo, `onCanvasKeyDown`, the diagnostics panel, and the cursor
+  readout (D11's `aria-live` string stays here — it is a keyboard-authoring
+  concept, not part of the `<svg>`). It composes `TrackDiagram`, owning the
+  policy of *which* tile/rotation/block a ghost preview shows and *when* the
+  keyboard cursor moves, and hands the results down as inert data.
+
+**What did not move.** Live state — occupancy, point position/lock, routes —
+is not a prop on `TrackDiagram`. This was the geometry-only half of #75; a
+later PR binds a live overlay once there is a real shape (`StateSnapshot`) to
+validate against, at the extension point `TrackDiagram.tsx`'s header comment
+names. An unused `occupancy`/`points`/`routes` prop today would only be a
+guess.
+
+**What this does not fix.** Three backend↔frontend duplicates recorded in
+CLAUDE.md's "Open limits" (`findBlockRuns` vs `diagram/blockRuns.ts`,
+`TILE_LEGS` vs `DRAWN_LEGS`, `EDGE_OFFSET` mirrored in `diagram/openings.ts`)
+are **not** touched here. They are backend↔frontend duplicates, not
+editor↔monitor ones — unifying them needs a shared workspace package, a
+different and riskier change than this seam. The limit stays open.
