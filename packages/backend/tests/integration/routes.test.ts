@@ -15,6 +15,7 @@ import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
 import { ILayoutRepository } from '../../src/ports/ILayoutRepository';
+import { IRouteLockView } from '../../src/ports/IRouteLockView';
 import {
   authenticateAsAdmin,
   authenticateAsOperator,
@@ -96,7 +97,7 @@ function makeRepo(): ILayoutRepository {
  */
 async function buildTestServer(
   repo: ILayoutRepository,
-  options: { skipLogin?: boolean } = {},
+  options: { skipLogin?: boolean; lockView?: IRouteLockView } = {},
 ) {
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
@@ -110,7 +111,11 @@ async function buildTestServer(
     repo,
     () => Promise.resolve(),
     silentTopologyLogger,
-    reservations,
+    // The real `ReservationService` unless a test substitutes one. Driving it
+    // into a holding state through the API needs a whole granted route, which
+    // is `route-locking.scenario.test.ts`'s job; what is being tested here is
+    // only what the transport does with the refusal.
+    options.lockView ?? reservations,
   );
   const authService = await makeTestAuthService();
   const app = await buildServer(
@@ -397,6 +402,66 @@ describe('Point routes', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(repo.updatePoint).not.toHaveBeenCalled();
+  });
+});
+
+// ─── D10's write-guard, on the wire ──────────────────────────────────────────
+//
+// `TopologyService` has refused a write against anything a live route holds
+// since #3, and `route-locking.scenario.test.ts` covers that thoroughly at the
+// service level. What was never covered is what the *transport* does with the
+// refusal, and the answer was nothing: `LockedByRouteError` matched no `catch`
+// in `blocks.ts` or `points.ts`, reached Fastify's default handler, and came
+// back as a bare 500.
+//
+// That is the wrong answer twice over. It tells the operator the server broke
+// when the server worked correctly, and it hides the one fact that makes the
+// situation actionable — a named route is holding this, cancel it and the
+// delete succeeds. A 409 with `routeId`, matching the mapping the compile apply
+// already has (`topology.ts#mapCompileError`).
+
+describe('Route-held writes are a 409, never a 500', () => {
+  const HOLDING_ROUTE = 'route-42';
+
+  /** Everything in the layout is held by one route — the shape D10 refuses. */
+  const allHeld: IRouteLockView = {
+    findRouteHoldingBlock: () => HOLDING_ROUTE,
+    findRouteHoldingPoint: () => HOLDING_ROUTE,
+    findRouteHoldingEdge: () => HOLDING_ROUTE,
+    findAnyHeldRoute: () => HOLDING_ROUTE,
+  };
+
+  let repo: ReturnType<typeof makeRepo>;
+  let app: Awaited<ReturnType<typeof buildTestServer>>;
+
+  beforeEach(async () => {
+    repo = makeRepo();
+    app = await buildTestServer(repo, { lockView: allHeld });
+  });
+
+  it('DELETE a block held by a route returns 409 naming the route, and deletes nothing', async () => {
+    const res = await app.inject({ method: 'DELETE', url: '/api/layouts/layout-1/blocks/b1' });
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({ routeId: HOLDING_ROUTE });
+    // The refusal precedes the write, which is the property that matters:
+    // deleting a block out from under a held reservation is the "guess a
+    // train's position" failure the fail-safe rule forbids.
+    expect(repo.deleteBlock).not.toHaveBeenCalled();
+  });
+
+  it('DELETE a point held by a route returns 409 naming the route, and deletes nothing', async () => {
+    const res = await app.inject({ method: 'DELETE', url: '/api/layouts/layout-1/points/pt1' });
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({ routeId: HOLDING_ROUTE });
+    expect(repo.deletePoint).not.toHaveBeenCalled();
+  });
+
+  it('the message names the held record, so the operator knows which one', async () => {
+    const res = await app.inject({ method: 'DELETE', url: '/api/layouts/layout-1/blocks/b1' });
+    expect(JSON.parse(res.body).error).toContain('b1');
+    expect(JSON.parse(res.body).error).toContain(HOLDING_ROUTE);
   });
 });
 
