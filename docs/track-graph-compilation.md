@@ -9,15 +9,16 @@
 | D8 — disposable end labels | **shipped** in `compileOpenings`; `block_ends` still exists alongside |
 | D9 — a compile cannot Safe-Stop | **shipped**: refuse-then-write in `replaceGraph`, asserted at unit, integration and scenario level |
 | D10 — fingerprint | **shipped**: `compiled_graphs`, `GET .../topology/compile`, and the apply's mismatch 409 |
-| D3 — the compiler owns the edge set | **shipped** as a mechanism: `replaceGraph` is a whole-set replace. The manual write path still exists and is deleted in PR 5 |
-| D1 — compile under operator review | **partly**: the compile, the diff and the apply exist; the review UI does not, so the diff is read over HTTP rather than looked at |
-| D2 — `block_ends` deleted | **not started** |
+| D3 — the compiler owns the edge set | **shipped**, and now literally true: `POST`/`PUT`/`DELETE .../edges` and `TopologyService.createEdge`/`updateEdge`/`deleteEdge` are deleted (PR 5, OQ1), so `replaceGraph` is the only writer |
+| D1 — compile under operator review | **shipped**: `CompilePanel` on Configure → Edges — gaps first, then the diff, one `Apply`, and a 409 that says re-compile rather than retrying |
+| D2 — `block_ends` deleted | **not started**. `BlockEndService`, its routes and the `Ends ✎` panel all still work; PR 6.2/6.3 and PR 7 remove them |
 
-This document records a design decision, not shipped behaviour. Everything it
-describes supersedes parts of #72 (block ends) and #78 (edge proposals), both of
-which *are* shipped and are still described accurately by `docs/topology.md`.
-Read this before extending either of them — building further on the model it
-replaces is the specific waste it exists to prevent.
+This document records a design decision. Most of it is now shipped behaviour;
+the table above says which parts. It supersedes #72 (block ends) and #78 (edge
+proposals) — #78 is **deleted** as of PR 5, and #72 still ships and is still
+described accurately by `docs/topology.md`. Read this before extending it:
+building further on the model it replaces is the specific waste it exists to
+prevent.
 
 Tracking issue: **#103**.
 
@@ -29,9 +30,12 @@ The system describes one railway twice, by hand: the **drawing** (`grid_tiles`)
 and the **track graph** (`block_edges`). Everything between them —
 `gridGeometry`'s opening derivation, `BlockEndService`'s generation and pinning
 and adoption, `edgeProposals`' walk, the grid diagnostics reconciler, plus the
-duplicated `findBlockRuns` and `TILE_LEGS` — exists to keep those two
-descriptions in agreement. Forever. There is no end state in which that
-machinery is finished.
+duplicated `findBlockRuns` and `TILE_LEGS` — existed to keep those two
+descriptions in agreement. Forever. There was no end state in which that
+machinery was finished.
+
+(`edgeProposals` is gone as of PR 5 and its walk is the compiler's; the rest of
+that list is still standing. The point of the sentence is unchanged until PR 7.)
 
 Underneath that sits a sharper fault. **`block_ends.label` does two
 incompatible jobs at once:**

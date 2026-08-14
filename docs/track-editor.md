@@ -368,16 +368,21 @@ not an editor one.
 
 ---
 
-## D13 — The Edges tab offers the drawing's own end names
+## D13 — The Edges tab has no end-label field, because it has no form
 
-**Decision.** The end-label `<datalist>` on Configure → Edges is the union of
-every `block_ends` row for the selected block and every label existing edges
-already use. It was derived from `edges` alone, so on a layout with no edges yet
-it was empty and the operator typed the opening's name from memory — into a
-field where a typo produces a valid-looking edge naming an end that does not
-exist, which the pathfinder will plan on happily.
+**Decision.** Deleted, and replaced by its own removal.
 
-Still a datalist, still not enforced. Authoring an edge against a name before
-the track carrying it is drawn is a legitimate work order; the diagnostics
-report the mismatch (`end-not-on-diagram`) rather than the write path refusing
-it.
+D13 used to describe an end-label `<datalist>` on Configure → Edges: the union
+of every `block_ends` row for the selected block and every label existing edges
+already used. It existed because the field beside it was free text, and a typo
+there produced a valid-looking edge naming an end that does not exist — which
+the pathfinder plans on happily.
+
+The field is gone (#103 PR 5). `block_edges` is written by the compile apply and
+by nothing else, so there is no name for an operator to type and no typo for a
+datalist to prevent. The whole class of error the affordance mitigated is closed
+by the write path rather than by the input.
+
+Kept as a numbered decision rather than deleted outright: the reasoning is still
+the argument for *why* hand-typing a join key was the wrong shape, and that
+argument is the one #103 generalises.

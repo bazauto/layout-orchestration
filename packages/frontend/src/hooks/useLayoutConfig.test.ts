@@ -39,7 +39,7 @@ import {
   type DeleteBlockResult,
   type MutationResult,
 } from './useLayoutConfig';
-import { BlockEdgeRecord, BlockRecord, LocoRecord, TopologyStatus } from '../types';
+import { BlockRecord, LocoRecord, TopologyStatus } from '../types';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
@@ -337,10 +337,13 @@ describe('useLayoutConfig', () => {
     });
   });
 
-  describe('edge mutation violations (the reason mutate() exists)', () => {
-    it('createEdge surfaces a rejected topology write with its violations, and does not refresh', async () => {
-      const { result } = await mountWithEmptyConfig();
-
+  describe('violations reach the caller (the reason mutate() exists)', () => {
+    it('surfaces a 422 with its violations rather than swallowing the response', async () => {
+      // This used to be asserted through `createEdge`, which is gone with the
+      // manual edge write path (#103 PR 5). The behaviour it defended is not:
+      // `mutate` is what every config write goes through, and a 422 carrying
+      // `violations` still has to reach the caller intact — `CompilePanel`
+      // renders exactly this shape when an apply is refused by the validator.
       fetchMock.mockResolvedValueOnce(
         jsonResponse(
           {
@@ -351,14 +354,10 @@ describe('useLayoutConfig', () => {
         ),
       );
 
-      let outcome: MutationResult<BlockEdgeRecord> | undefined;
-      await act(async () => {
-        outcome = await result.current.createEdge({
-          fromBlockId: 'block-1',
-          fromEnd: 'a',
-          toBlockId: 'block-1',
-          toEnd: 'b',
-        });
+      const outcome = await mutate('/api/layouts/layout-1/topology/compile/apply', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fingerprint: 'fp-1' }),
       });
 
       expect(outcome).toEqual({
@@ -367,7 +366,6 @@ describe('useLayoutConfig', () => {
         message: 'topology rejected',
         violations: [{ kind: 'self-loop', edgeId: 'e1', blockId: 'block-1' }],
       });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 

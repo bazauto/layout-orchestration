@@ -12,7 +12,6 @@ import {
   BlockEdgeRecord,
   BlockRecord,
   LocoRecord,
-  PointCondition,
   PointRecord,
   RouteFaultView,
   RouteReservation,
@@ -166,14 +165,6 @@ export async function mutate<T = void>(path: string, init: RequestInit): Promise
 
   const { message, violations } = await readErrorBody(res);
   return { ok: false, status: res.status, message, violations };
-}
-
-export interface EdgeWriteInput {
-  fromBlockId: string;
-  fromEnd: string;
-  toBlockId: string;
-  toEnd: string;
-  pointConditions?: PointCondition[];
 }
 
 /** Response of `DELETE /blocks/:id` — no longer a bare 204, see docs/mqtt-contract.md-adjacent PR A notes. */
@@ -467,41 +458,12 @@ export function useLayoutConfig(layoutId: string | null) {
     return result;
   };
 
-  // Edge mutations use `mutate()` so a 422 (topology rejected) or 400/404
-  // reaches the caller with its `violations`/`message` intact — see
-  // EdgesTab, which renders `violations` inline without clearing the
-  // operator's form. (This was the original use of `mutate()`; every other
-  // create/update/delete above now follows the same convention — #22.)
-  const createEdge = async (data: EdgeWriteInput): Promise<MutationResult<BlockEdgeRecord>> => {
-    const result = await mutate<BlockEdgeRecord>(`/api/layouts/${layoutId}/edges`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    if (result.ok) await refresh();
-    return result;
-  };
-
-  const updateEdge = async (
-    id: string,
-    data: Partial<EdgeWriteInput>,
-  ): Promise<MutationResult<BlockEdgeRecord>> => {
-    const result = await mutate<BlockEdgeRecord>(`/api/layouts/${layoutId}/edges/${id}`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    if (result.ok) await refresh();
-    return result;
-  };
-
-  const deleteEdge = async (id: string): Promise<MutationResult<void>> => {
-    const result = await mutate<void>(`/api/layouts/${layoutId}/edges/${id}`, {
-      method: 'DELETE',
-    });
-    if (result.ok) await refresh();
-    return result;
-  };
+  // `createEdge` / `updateEdge` / `deleteEdge` were here and are gone with the
+  // routes they called (#103 PR 5, OQ1). `block_edges` is written by the
+  // compile apply and by nothing else — `useCompile` owns that one call, and it
+  // posts a fingerprint rather than rows, so there is nothing edge-shaped for
+  // this hook to send. `edges` stays in the fetch above: reading the graph was
+  // never the problem.
 
   return {
     config,
@@ -526,8 +488,5 @@ export function useLayoutConfig(layoutId: string | null) {
     createLoco,
     updateLoco,
     deleteLoco,
-    createEdge,
-    updateEdge,
-    deleteEdge,
   };
 }

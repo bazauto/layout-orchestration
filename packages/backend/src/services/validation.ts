@@ -158,29 +158,18 @@ function extractRowId(row: unknown): string {
   return 'unknown';
 }
 
-/**
- * Write schema for creating an edge. `.strict()` so a body carrying `id` or
- * `layoutId` — both path/server-owned, never client-supplied — is a 400, not
- * a silently ignored field. `fromEnd`/`toEnd` are trimmed and lower-cased
- * before the slug check, so operator input like `' North '` normalises to
- * `'north'` instead of being rejected.
+/*
+ * `edgeCreateSchema` / `edgeUpdateSchema` were here, and went with the manual
+ * edge write path (#103 PR 5, OQ1). There is no body to validate any more: the
+ * only thing that writes `block_edges` is the compile apply below, whose body
+ * is a fingerprint. A compiled row is built by `trackGraphCompiler` in-process
+ * and never crosses the wire, so it is guarded by the type system rather than
+ * by Zod — `NamedCompiledEdge` cannot hold a null end.
+ *
+ * `blockEndLabelSchema` above stays: it is still the shape of
+ * `block_edges.fromEnd`/`toEnd` on read, and `routeCreateSchema` still accepts
+ * a `startExitEnd`.
  */
-export const edgeCreateSchema = z
-  .object({
-    fromBlockId: z.string().min(1),
-    fromEnd: z.string().trim().toLowerCase().pipe(blockEndLabelSchema),
-    toBlockId: z.string().min(1),
-    toEnd: z.string().trim().toLowerCase().pipe(blockEndLabelSchema),
-    pointConditions: pointConditionsSchema.default([]),
-  })
-  .strict();
-
-export type EdgeCreateInput = z.infer<typeof edgeCreateSchema>;
-
-/** Write schema for a partial edge update. Same `.strict()` posture as create. */
-export const edgeUpdateSchema = edgeCreateSchema.partial().strict();
-
-export type EdgeUpdateInput = z.infer<typeof edgeUpdateSchema>;
 
 /**
  * Write schema for `POST .../topology/compile/apply` (#103, D10).

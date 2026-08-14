@@ -49,10 +49,15 @@ describe('scenario: invalid topology triggers Safe-Stop', () => {
     await h.service.stop();
   });
 
-  it('recovers to online with a non-null graph once the offending edge is deleted via TopologyService', async () => {
+  it('recovers to online with a non-null graph once the offending edge is replaced away', async () => {
+    // The recovery path since #103 PR 5: there is no per-edge delete any more,
+    // so an operator repairs a corrupt graph by fixing the drawing and applying
+    // the compile — `replaceGraph`, the one remaining write. Here the drawing
+    // implies nothing, so the compiled graph is empty, and an empty graph is a
+    // legitimate answer rather than a refusal.
     const h = createScenarioHarness();
     h.repo._setBlocks([{ id: 'b1', layoutId: LAYOUT_ID, name: 'Block 1' }]);
-    const badEdge = await h.repo.createBlockEdge({
+    await h.repo.createBlockEdge({
       layoutId: LAYOUT_ID,
       fromBlockId: 'b1',
       fromEnd: 'north',
@@ -65,7 +70,7 @@ describe('scenario: invalid topology triggers Safe-Stop', () => {
     await h.start();
     expect(h.service.getSystemStatus().status).toBe('safe-stop');
 
-    await h.topologyService.deleteEdge(LAYOUT_ID, badEdge.id);
+    await h.topologyService.replaceGraph(LAYOUT_ID, [], 'fp-repaired');
 
     expect(h.service.getSystemStatus().status).toBe('online');
     expect(h.service.getSystemStatus().reason).toBeNull();
@@ -134,7 +139,7 @@ describe('scenario: invalid topology triggers Safe-Stop', () => {
     await h.service.stop();
   });
 
-  it('safe-stops on a duplicate connection at scale, and heals to online once one of the pair is deleted (#21 — the index-based detector must not miss what the old scan caught)', async () => {
+  it('safe-stops on a duplicate connection at scale, and heals to online once the pair is resolved (#21 — the index-based detector must not miss what the old scan caught)', async () => {
     const EDGE_COUNT = 150;
     const h = createScenarioHarness();
     const blocks = Array.from({ length: EDGE_COUNT + 1 }, (_, i) => ({
@@ -144,19 +149,20 @@ describe('scenario: invalid topology triggers Safe-Stop', () => {
     }));
     h.repo._setBlocks(blocks);
 
-    for (let i = 0; i < EDGE_COUNT; i++) {
-      await h.repo.createBlockEdge({
-        layoutId: LAYOUT_ID,
-        fromBlockId: `b${i}`,
-        fromEnd: 'east',
-        toBlockId: `b${i + 1}`,
-        toEnd: 'west',
-        pointConditions: [],
-        lengthMm: null,
-      });
+    const chain = Array.from({ length: EDGE_COUNT }, (_, i) => ({
+      fromBlockId: `b${i}`,
+      fromEnd: 'east',
+      toBlockId: `b${i + 1}`,
+      toEnd: 'west',
+      pointConditions: [],
+      lengthMm: null,
+    }));
+
+    for (const edge of chain) {
+      await h.repo.createBlockEdge({ layoutId: LAYOUT_ID, ...edge });
     }
     // Duplicates the very first edge's connection tuple (b0 east -> b1 west).
-    const duplicateEdge = await h.repo.createBlockEdge({
+    await h.repo.createBlockEdge({
       layoutId: LAYOUT_ID,
       fromBlockId: 'b0',
       fromEnd: 'east',
@@ -176,10 +182,12 @@ describe('scenario: invalid topology triggers Safe-Stop', () => {
     expect(h.service.getSystemStatus().reason).toContain('Block 1');
     expect(h.service.getTrackGraph()).toBeNull();
 
-    // Healing case from D1: deleting one of the duplicate pair must clear
-    // Safe-Stop without disturbing the other 150 edges — an incrementally
-    // cached "invalid" verdict is exactly what gets this wrong.
-    await h.topologyService.deleteEdge(LAYOUT_ID, duplicateEdge.id);
+    // Healing case from D1: resolving the duplicate must clear Safe-Stop
+    // without disturbing the other 150 edges — an incrementally cached
+    // "invalid" verdict is exactly what gets this wrong. Since #103 PR 5 the
+    // repair is `replaceGraph` with the corrected set, which is what an apply
+    // of a fixed drawing does; the healing property under test is unchanged.
+    await h.topologyService.replaceGraph(LAYOUT_ID, chain, 'fp-deduped');
 
     expect(h.service.getSystemStatus().status).toBe('online');
     expect(h.service.getSystemStatus().reason).toBeNull();

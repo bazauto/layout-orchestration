@@ -18,7 +18,8 @@ Implemented:
 - MQTT and DCC adapter abstraction with simulator support
 - SQLite persistence via Drizzle ORM with auto-migrate on startup
 - REST API for layouts, locos, blocks, points, sensors, grid tiles, and block edges (track topology)
-- Topology validation with Safe-Stop on an invalid graph, and operator recovery via edge authoring
+- Topology validation with Safe-Stop on an invalid graph, and operator recovery by
+  re-compiling the drawing
 - Safe-Stop on a malformed sensor payload (a message on a `sensor/*/reading` topic that
   fails Zod validation, including a non-JSON payload), naming the sensor and topic in the
   reason — latched per sensor (`SystemHealth.sensorFaults`, keyed so acknowledging one
@@ -195,7 +196,8 @@ Current automated coverage includes:
   not clear on an unrelated health evaluation (#4)
 - Playwright tests for editor happy path, erase flow, keyboard shortcuts, keyboard-only
   grid navigation (canvas focus, cursor movement, paint/erase at the cursor, and jumping to
-  a diagnostic's cell — #94), no-scrollbar viewport regression, edge authoring, and the
+  a diagnostic's cell — #94), no-scrollbar viewport regression, the compile review panel
+  (including the failure path where the drawing moves between review and apply), and the
   login screen
 
 ## Frontend Features
@@ -223,16 +225,18 @@ Current automated coverage includes:
 - Inline editing
 - Sensors tab: an In service toggle per sensor (marking a dead device out of service clears
   its latched fault and stops the system trusting it)
-- Edge authoring: from/to block and end labels, optional point conditions, length, and an
-  "also create reverse edge" shortcut; a violation banner surfaces invalid topology and
-  rejected writes without discarding the operator's input. End-label suggestions come from
-  the block ends the drawing generated, so the name you type is one that exists
-- Edge proposals (`docs/topology.md`): a collapsed panel above the form lists the
-  connections the drawing implies, with their point conditions, and accepts them one at a
-  time or all at once. Accepting is the same `POST .../edges` the form makes — there is no
-  second write path. Rows that cannot be posted (an opening with no block end, a
-  connection the graph already carries) say why instead of offering a button, and notes
-  name the cell where the walk stopped
+- Edges tab: a read-only list of the track graph, plus the compile panel that writes it.
+  A violation banner surfaces an invalid topology. There is no edge form — `block_edges`
+  is compiled from the drawing and has exactly one writer (#103)
+- Compile review (`docs/track-graph-compilation.md`): a collapsed panel that walks the
+  drawing on demand and shows the graph it implies. **Gaps first** — a block nothing
+  reaches, a block with no detection, an opening leading nowhere — then the diff against
+  the stored graph, grouped into changed / to add / to remove / renamed / unchanged, with
+  the *changed* rows first because those are the same two openings needing different point
+  positions. **One `Apply`**, which replaces the whole graph: there is no per-row accept,
+  because a recompile is a replace and taking one row would author a graph the drawing
+  does not describe. If the drawing moves while you are reading, the apply is refused and
+  says to re-compile — it never retries by itself
 
 ### Track Editor
 - Tile-based sparse grid persisted to backend
@@ -329,28 +333,28 @@ that the point is physically in the required position — there is still no poin
 feedback channel from the DCC controller (#25) — and the model does not catch two routes
 fouling at a plain (non-switched) diamond crossing, since neither shares a block or a
 point (#26; Westgate Hollow has none today — and the Track Editor now says so when one is
-drawn, which is a warning rather than a fix). Edges are still authored explicitly through
-the Edges tab rather than derived from grid tiles, but the two representations are
-no longer entirely unchecked against each other: block ends are generated from the drawing
-as 8-point cardinal labels with a sticky manual override (#72), buffer stops assert that an
-end has no onward connection, and `GET .../grid/diagnostics` reports where the drawing and
-the graph disagree (#84). The Edges tab will also *propose* the edges the drawing implies
-and accept them through the ordinary write path (#78) — proposing is not deriving, and an
-edge carries no distance for it to propose: length lives on the block now (#105), edited in
-Configure → Blocks and left blank where nobody has run a tape over it. One case the manual override still cannot
-fully resolve: where the generator refused to name two openings facing the same bearing
-(`end-label-collision`), a hand-created end authors edges but never attaches to a cell on
-the drawing — see `docs/topology.md`. A block's openings come from where its **drawn track leaves the
-run** — tile type and rotation — not from which cells sit next to each other, so two yard
-roads drawn side by side no longer read as opening into one another (#91). All of it is
-advisory — nothing in `domain/` reads a tile, and no diagnostic can refuse a write or halt
+drawn, which is a warning rather than a fix). **Edges are no longer authored by hand at
+all**: the drawing compiles to `block_edges` and an operator applies the whole graph after
+reading the diff (#103). The manual write routes and the older edge-proposal surface are
+both deleted, so there is exactly one writer, and the two representations cannot drift
+because there is only one of them. Distance is not compiled and never could be — length
+lives on the block (#105), edited in Configure → Blocks and left blank where nobody has run
+a tape over it. `block_ends` still exists alongside as a legacy table and is deleted next;
+one of its warts survives with it — where the generator refused to name two openings facing
+the same bearing (`end-label-collision`), a hand-created end never attaches to a cell on the
+drawing, which the compiler's own labels do not suffer because they disambiguate by suffix.
+A block's openings come from where its **drawn track leaves the run** — tile type and
+rotation — not from which cells sit next to each other, so two yard roads drawn side by
+side no longer read as opening into one another (#91). The advisory half of all of it is
+unchanged: nothing in `domain/` reads a tile, and no diagnostic can refuse a write or halt
 a layout. The classification pass marking which existing Westgate Hollow tiles are
 deliberately decorative (#71) is done: the layout is 90 tiles, 79 tagged to a block and 11
 decorative, with none unclassified. Each layout is capped at
-2,000 `block_edges` —
-a deliberate admission-control limit on `POST .../edges` (not a physical layout constraint;
-Westgate Hollow is ~40 edges), enforced only on create and only in `TopologyService`, not
-the database or the load path — see `docs/topology.md`.
+2,000 `block_edges` — a deliberate admission-control limit on the compiled apply (not a
+physical layout constraint; Westgate Hollow compiles to 22 edges), enforced only in
+`TopologyService.replaceGraph` against the whole candidate set, not in the database or the
+load path. A second, tighter cap of 200 refuses to *render* a diff nobody could review —
+see `docs/topology.md`.
 
 A sensor-payload Safe-Stop (#27) is latched per sensor: once tripped it is not cleared by
 an unrelated health re-evaluation (e.g. an MQTT/DCC reconnect). Recovery (#34) is now
@@ -405,8 +409,9 @@ safety preamble in `docs/sensor-simulation.md`.
 
 ## Next Milestones
 
-1. Per-loco braking model (#6) and collision avoidance (#7)
-2. Point position confirmation (#25)
-3. Automation engine / schedules
-4. Link grid tiles to the topology graph, so tile placement can derive edges
+1. Finish #103: remove the `Ends ⟳`/`Ends ✎` controls and delete `block_ends`, leaving
+   the compiler as the only description of the railway's connectivity
+2. Per-loco braking model (#6) and collision avoidance (#7)
+3. Point position confirmation (#25)
+4. Automation engine / schedules
 5. Hardware validation and operator workflows

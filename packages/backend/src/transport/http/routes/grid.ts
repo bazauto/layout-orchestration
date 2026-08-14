@@ -1,5 +1,4 @@
 import { FastifyInstance, FastifyReply } from 'fastify';
-import { ProposalLimitExceededError } from '../../../services/edgeProposals';
 import { CompileService } from '../../../services/CompileService';
 import {
   GridService,
@@ -51,24 +50,6 @@ export async function gridRoutes(
     async (req, reply) => {
       try {
         return await gridService.diagnose(req.params.layoutId);
-      } catch (err) {
-        return mapGridError(err, reply);
-      }
-    },
-  );
-
-  // Candidate `block_edges` the drawing implies (#78). A **GET**, and that is
-  // the structural guarantee: there is no accept endpoint, so accepting a
-  // proposal can only be an ordinary `POST .../edges` through the same
-  // validation a hand-authored edge gets. No bypass can exist here.
-  //
-  // Not admin-gated, for the same reason the diagnostics read is not — the
-  // write is what is gated.
-  fastify.get<{ Params: { layoutId: string } }>(
-    '/api/layouts/:layoutId/grid/edge-proposals',
-    async (req, reply) => {
-      try {
-        return await gridService.proposeEdges(req.params.layoutId);
       } catch (err) {
         return mapGridError(err, reply);
       }
@@ -165,17 +146,14 @@ export async function gridRoutes(
  * Maps a `GridService` rejection to its status code.
  *
  * A `TileReferenceError` is a 400 rather than a 422 deliberately: 422 in this
- * codebase means the topology graph refused a proposal
+ * codebase means the topology graph refused a candidate set
  * (`TopologyRejectedError`, carrying `violations` the operator can act on). A
  * tile naming a block that is not there is just a bad field in a config write.
  *
- * A `ProposalLimitExceededError` is a **409**, mirroring `EdgeLimitExceeded-
- * Error` on `POST .../edges` byte-for-byte in shape: the request was
- * well-formed, and it is the state of the drawing that conflicts with what
- * this surface will render. It was previously unmapped and reached Fastify's
- * default handler as a bare 500 — which is the one outcome #78's design
- * argues against everywhere else, since "no connection found" and "I gave up"
- * must never look the same from outside.
+ * `grid/openings` is the only read routed through here that can fail for any
+ * other reason, and it cannot: it is pure geometry over the drawing with no
+ * search, no cap and no graph. The compile surfaces, which do have both, map
+ * their own errors in `topology.ts#mapCompileError`.
  */
 function mapGridError(err: unknown, reply: FastifyReply): FastifyReply {
   if (err instanceof LayoutNotFoundError) {
@@ -183,9 +161,6 @@ function mapGridError(err: unknown, reply: FastifyReply): FastifyReply {
   }
   if (err instanceof TileReferenceError) {
     return reply.status(400).send({ error: err.message });
-  }
-  if (err instanceof ProposalLimitExceededError) {
-    return reply.status(409).send({ error: err.message, limit: err.limit, found: err.found });
   }
   throw err;
 }
