@@ -46,7 +46,15 @@
 
 import { forwardRef } from 'react';
 import { BlockRun } from '../diagram/blockRuns';
-import { BLOCK_TINTS, BLOCK_TINT_OPACITY, INK, LOCK, OCCUPANCY, POINT_POSITION, SURFACE } from '../diagram/encoding';
+import {
+  BLOCK_TINTS,
+  BLOCK_TINT_OPACITY,
+  INK,
+  LOCK,
+  OCCUPANCY,
+  POINT_POSITION,
+  SURFACE,
+} from '../diagram/encoding';
 import { DiagramPatternDefs } from '../diagram/patterns';
 import { LiveDiagramState, perimeterEdges, roadSelection } from '../diagram/liveState';
 import { edgeAnchor, roadLabel } from '../diagram/pointRoads';
@@ -221,8 +229,10 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
         {rulerTicks(extent.cols + 1, TILE_SIZE * zoom).map((tick) => (
           <line
             key={`v${tick.index}`}
-            x1={tick.index * TILE_SIZE} y1={0}
-            x2={tick.index * TILE_SIZE} y2={gridH}
+            x1={tick.index * TILE_SIZE}
+            y1={0}
+            x2={tick.index * TILE_SIZE}
+            y2={gridH}
             stroke={tick.major ? '#45475a' : SURFACE.gridLine}
             strokeWidth={tick.major ? 1 : 0.5}
           />
@@ -230,8 +240,10 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
         {rulerTicks(extent.rows + 1, TILE_SIZE * zoom).map((tick) => (
           <line
             key={`h${tick.index}`}
-            x1={0} y1={tick.index * TILE_SIZE}
-            x2={gridW} y2={tick.index * TILE_SIZE}
+            x1={0}
+            y1={tick.index * TILE_SIZE}
+            x2={gridW}
+            y2={tick.index * TILE_SIZE}
             stroke={tick.major ? '#45475a' : SURFACE.gridLine}
             strokeWidth={tick.major ? 1 : 0.5}
           />
@@ -247,8 +259,22 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
         */}
         {cursor && (
           <>
-            <rect x={0} y={cursor.y * TILE_SIZE} width={gridW} height={TILE_SIZE} fill={INK.primary} opacity={0.05} />
-            <rect x={cursor.x * TILE_SIZE} y={0} width={TILE_SIZE} height={gridH} fill={INK.primary} opacity={0.05} />
+            <rect
+              x={0}
+              y={cursor.y * TILE_SIZE}
+              width={gridW}
+              height={TILE_SIZE}
+              fill={INK.primary}
+              opacity={0.05}
+            />
+            <rect
+              x={cursor.x * TILE_SIZE}
+              y={0}
+              width={TILE_SIZE}
+              height={gridH}
+              fill={INK.primary}
+              opacity={0.05}
+            />
           </>
         )}
 
@@ -257,8 +283,7 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
         {Array.from(grid.values()).map((tile) => {
           const meta = parsedMeta.get(`${tile.x},${tile.y}`) ?? {};
           const rotation = typeof meta.rotation === 'number' ? meta.rotation : 0;
-          const tint =
-            meta.blockId !== undefined ? tintOf.get(meta.blockId) : undefined;
+          const tint = meta.blockId !== undefined ? tintOf.get(meta.blockId) : undefined;
           // Same raw-id fallback as the block labels below: a point tile
           // that draws no name at all is the specific complaint in #68.
           const pName = meta.pointId
@@ -266,8 +291,10 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
             : null;
           const classification = classifyTile(meta);
           return (
-            <g key={tile.id || `${tile.x},${tile.y}`}
-              transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}>
+            <g
+              key={tile.id || `${tile.x},${tile.y}`}
+              transform={`translate(${tile.x * TILE_SIZE},${tile.y * TILE_SIZE})`}
+            >
               <rect width={T} height={T} fill={SURFACE.tile} />
               {/*
                 One colour system per surface (`docs/diagram-encoding.md`).
@@ -298,12 +325,7 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                             (#81). `clear` has none, and that flatness is
                             itself the distinction. */}
                         {enc.pattern && (
-                          <rect
-                            width={T}
-                            height={T}
-                            fill={`url(#${enc.pattern})`}
-                            opacity={0.55}
-                          />
+                          <rect width={T} height={T} fill={`url(#${enc.pattern})`} opacity={0.55} />
                         )}
                       </>
                     );
@@ -409,7 +431,9 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                   {meta.pointRoads!.map((road, i) => {
                     const selection = roadSelection(road, live.points);
                     const enc =
-                      selection === 'indeterminate' ? POINT_POSITION.unknown : POINT_POSITION.normal;
+                      selection === 'indeterminate'
+                        ? POINT_POSITION.unknown
+                        : POINT_POSITION.normal;
                     return (
                       <path
                         key={`live-${i}`}
@@ -446,7 +470,14 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
               */}
               {(meta.annotations ?? []).map((a, i) => (
                 <g key={`${a.entityType}:${a.entityId}`} transform={`translate(${4 + i * 9}, 4)`}>
-                  <circle cx={3.5} cy={3.5} r={3.5} fill="none" stroke={INK.primary} strokeWidth={1.2} />
+                  <circle
+                    cx={3.5}
+                    cy={3.5}
+                    r={3.5}
+                    fill="none"
+                    stroke={INK.primary}
+                    strokeWidth={1.2}
+                  />
                   <line x1={3.5} y1={0} x2={3.5} y2={7} stroke={INK.primary} strokeWidth={1} />
                 </g>
               ))}
@@ -462,9 +493,7 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                   strokeWidth={2.5}
                   paintOrder="stroke"
                 >
-                  {meta.annotations
-                    .map((a) => sensorNames.get(a.entityId) ?? a.entityId)
-                    .join(' ')}
+                  {meta.annotations.map((a) => sensorNames.get(a.entityId) ?? a.entityId).join(' ')}
                 </text>
               ) : null}
 
@@ -508,6 +537,47 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                     </text>
                   </g>
                 )}
+
+              {/*
+                A route holding this point, drawn once per point at the same
+                tile its name is on.
+
+                Deliberately **not** gated on `labelsVisible`. A lock is state,
+                not a label: "Labels: off" is an authoring control for seeing
+                the track under the text, and it must not be able to hide the
+                fact that a route holds the road. The editor never has `live`
+                at all, so this only ever draws on the monitor.
+
+                The glyph, not a colour — the same `LOCK.glyph` a locked
+                block's run label carries, so one mark means one thing on both
+                (#81). Bottom-right: the name is top-centre, annotations are
+                top-left, the unclassified `?` is bottom-left, and the road
+                letters sit at the edges the legs meet.
+              */}
+              {live &&
+                meta.pointId &&
+                pointLabelAt.get(`${tile.x},${tile.y}`) === meta.pointId &&
+                (() => {
+                  const held = live.points.get(meta.pointId)?.lockedByRoute;
+                  if (!held) return null;
+                  return (
+                    <g>
+                      <title>{`${pName ?? meta.pointId}: held by route ${held}`}</title>
+                      <text
+                        x={T - 3}
+                        y={T - 3}
+                        textAnchor="end"
+                        fontSize={9}
+                        fill={LOCK.colour}
+                        stroke={SURFACE.tile}
+                        strokeWidth={2.5}
+                        paintOrder="stroke"
+                      >
+                        {LOCK.glyph}
+                      </text>
+                    </g>
+                  );
+                })()}
             </g>
           );
         })}
@@ -618,38 +688,46 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
             "This cell is already taken" is carried by the corner wedge as
             well as the colour, so the warning survives colour being
             removed (#81) — it was previously a red tint and nothing else. */}
-        {ghostPreview && (() => {
-          const occupied = grid.has(`${ghostPreview.cell.x},${ghostPreview.cell.y}`);
-          return (
-            <g transform={`translate(${ghostPreview.cell.x * TILE_SIZE},${ghostPreview.cell.y * TILE_SIZE})`}>
-              <rect
-                width={T}
-                height={T}
-                fill={occupied ? '#f38ba822' : '#89b4fa22'}
-                stroke={occupied ? OCCUPANCY.occupied.colour : '#89b4fa'}
-                strokeWidth={1}
-                strokeDasharray="3 2"
-              />
-              {occupied && (
-                <path
-                  d={`M ${T - 11} 0 L ${T} 0 L ${T} 11 Z`}
-                  fill={OCCUPANCY.occupied.colour}
+        {ghostPreview &&
+          (() => {
+            const occupied = grid.has(`${ghostPreview.cell.x},${ghostPreview.cell.y}`);
+            return (
+              <g
+                transform={`translate(${ghostPreview.cell.x * TILE_SIZE},${ghostPreview.cell.y * TILE_SIZE})`}
+              >
+                <rect
+                  width={T}
+                  height={T}
+                  fill={occupied ? '#f38ba822' : '#89b4fa22'}
+                  stroke={occupied ? OCCUPANCY.occupied.colour : '#89b4fa'}
+                  strokeWidth={1}
+                  strokeDasharray="3 2"
                 />
-              )}
-              <g opacity={0.45} transform={`rotate(${ghostPreview.rotation}, ${H}, ${H})`}>
-                <TilePath type={ghostPreview.tileType} />
+                {occupied && (
+                  <path d={`M ${T - 11} 0 L ${T} 0 L ${T} 11 Z`} fill={OCCUPANCY.occupied.colour} />
+                )}
+                <g opacity={0.45} transform={`rotate(${ghostPreview.rotation}, ${H}, ${H})`}>
+                  <TilePath type={ghostPreview.tileType} />
+                </g>
+                {ghostPreview.blockName && (
+                  <text
+                    x={T / 2}
+                    y={T - 5}
+                    textAnchor="middle"
+                    fontSize={9}
+                    fill={INK.secondary}
+                    fontFamily="monospace"
+                    stroke={SURFACE.canvas}
+                    strokeWidth={3}
+                    paintOrder="stroke"
+                    opacity={0.8}
+                  >
+                    {ghostPreview.blockName}
+                  </text>
+                )}
               </g>
-              {ghostPreview.blockName && (
-                <text x={T / 2} y={T - 5} textAnchor="middle"
-                  fontSize={9} fill={INK.secondary} fontFamily="monospace"
-                  stroke={SURFACE.canvas} strokeWidth={3} paintOrder="stroke"
-                  opacity={0.8}>
-                  {ghostPreview.blockName}
-                </text>
-              )}
-            </g>
-          );
-        })()}
+            );
+          })()}
 
         {/*
           A diagnostic's "jump to" pulse (#94) — a fading ring, not a
@@ -665,7 +743,12 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
             transform={`translate(${jumpPulse.x * TILE_SIZE},${jumpPulse.y * TILE_SIZE})`}
           >
             <rect width={T} height={T} fill="none" stroke={INK.primary} strokeWidth={3}>
-              <animate attributeName="opacity" values="1;0.15;1;0.15;1;0" dur="0.9s" fill="freeze" />
+              <animate
+                attributeName="opacity"
+                values="1;0.15;1;0.15;1;0"
+                dur="0.9s"
+                fill="freeze"
+              />
             </rect>
           </g>
         )}
@@ -689,13 +772,22 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
           return (
             <g key={`rc${tick.index}`}>
               <line
-                x1={x} y1={RULER_SIZE - (tick.major ? 8 : 4)}
-                x2={x} y2={RULER_SIZE}
-                stroke={INK.muted} strokeWidth={1}
+                x1={x}
+                y1={RULER_SIZE - (tick.major ? 8 : 4)}
+                x2={x}
+                y2={RULER_SIZE}
+                stroke={INK.muted}
+                strokeWidth={1}
               />
               {tick.label && (
-                <text x={x} y={RULER_SIZE - 10} textAnchor="middle" fontSize={9}
-                  fontFamily="monospace" fill={INK.secondary}>
+                <text
+                  x={x}
+                  y={RULER_SIZE - 10}
+                  textAnchor="middle"
+                  fontSize={9}
+                  fontFamily="monospace"
+                  fill={INK.secondary}
+                >
                   {tick.index}
                 </text>
               )}
@@ -707,9 +799,12 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
           return (
             <g key={`rr${tick.index}`}>
               <line
-                x1={RULER_SIZE - (tick.major ? 8 : 4)} y1={y}
-                x2={RULER_SIZE} y2={y}
-                stroke={INK.muted} strokeWidth={1}
+                x1={RULER_SIZE - (tick.major ? 8 : 4)}
+                y1={y}
+                x2={RULER_SIZE}
+                y2={y}
+                stroke={INK.muted}
+                strokeWidth={1}
               />
               {tick.label && (
                 <text x={4} y={y + 3} fontSize={9} fontFamily="monospace" fill={INK.secondary}>
