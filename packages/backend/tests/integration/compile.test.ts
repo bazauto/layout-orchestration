@@ -150,12 +150,6 @@ function makeRepo(): ILayoutRepository {
     }),
     updateBlockEdge: vi.fn(),
     deleteBlockEdge: vi.fn(),
-    listBlockEnds: vi.fn().mockResolvedValue([]),
-    getBlockEnd: vi.fn().mockResolvedValue(null),
-    createBlockEnd: vi.fn(),
-    updateBlockEnd: vi.fn(),
-    deleteBlockEnd: vi.fn(),
-    replaceGeneratedBlockEnds: vi.fn(),
     getCompiledGraph: vi.fn(async () => compiled),
     // Functional, so the apply path can be exercised end to end and the
     // idempotence claim (re-compile after apply shows an empty diff) is a real

@@ -49,13 +49,15 @@
  * lengthMm` stays authored and nullable-means-unmeasured (`docs/braking.md`
  * B4). Geometry can propose *connectivity*; it can never supply *distance*.
  *
- * ## Two callers, two policies, one walk (#103)
+ * ## The walk and the naming policy are separate (#103)
  *
  * `rawOpenings` is the walk; what happens when a bearing collides or comes
- * back `null` is a decision for the caller, not the walk. `generateBlockEnds`
- * keeps #72's refusal — a `block_ends` row is an identifier a later edge could
- * be typed against wrong, so guessing was never safe. `compileOpenings`
- * disambiguates instead, per D-I of `docs/track-graph-compilation.md`: an end
+ * back `null` is a decision for the caller, not the walk. There were two such
+ * policies. `generateBlockEnds` **refused** — a `block_ends` row was an
+ * identifier a later edge could be typed against wrong, so guessing was never
+ * safe — and `compileOpenings` **disambiguates**, per D-I of
+ * `docs/track-graph-compilation.md`. The first is deleted (#103 PR 7), and the
+ * split is why replacing it touched no geometry at all: an end
  * label is disposable compiler output under D8, referenced by nothing between
  * compiles, so the one thing that made refusal necessary is gone. It never
  * refuses and never drops an opening.
@@ -548,7 +550,7 @@ export interface UnjoinedEdge {
  * quietly ends there. The diagnostics report it as `track-not-joined` so the
  * end has an explanation rather than looking like a generator bug.
  *
- * Over **all** tiles, not only block ones. The run walk in `generateBlockEnds`
+ * Over **all** tiles, not only block ones. The run walk in `rawOpenings`
  * only iterates block-classified tiles, so it would miss a decorative tile
  * drawing into a block tile that does not meet it — and that is the direction
  * the mistake usually points, since decorative track is the stuff drawn last.
