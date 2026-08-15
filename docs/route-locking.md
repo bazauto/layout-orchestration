@@ -292,17 +292,19 @@ are, as far as anyone knows, still standing on it. So:
   left untouched so a restart Safe-Stop does **not** clear, and the caller
   gets `resumed: false` with every failure named.
 
-  It would be easy to read D11 as licence to swallow these failures — a
-  point lock is an authority guarantee, not a physical position guarantee,
-  so the system cannot promise the point is where it should be either way.
-  That reading is backwards. Precisely *because* there is no position
-  feedback channel (#25), a command the DCC adapter **rejects** is the only
-  evidence available that the road is not set, and resume is the exact
-  moment an operator is asserting it is safe to proceed. Discarding the one
-  signal we have, at the one moment it matters most, is not a neutral
-  simplification. This is the same criterion #4 applies to a granted
-  route — a rejected point command invalidates it — arriving early on the
-  recovery path.
+  It would be easy to read D11 as licence to swallow these failures — on a
+  `'none'` point a lock is an authority guarantee, not a physical position
+  guarantee, so the system cannot promise the point is where it should be
+  either way. That reading is backwards, and is unchanged by #25 landing: a
+  rejected `IDccController.setPoint` call happens at *send* time, before any
+  confirmation reading could ever arrive, so even a `'required'` point's
+  feedback channel has nothing to say about it. A command the DCC adapter
+  **rejects** is the only evidence available that the road is not set, and
+  resume is the exact moment an operator is asserting it is safe to proceed.
+  Discarding the one signal we have, at the one moment it matters most, is
+  not a neutral simplification. This is the same criterion #4 applies to a
+  granted route — a rejected point command invalidates it — arriving early
+  on the recovery path.
 
 A runtime Safe-Stop does **not** latch on suspended routes by itself — the
 system may return to `online` with routes still suspended, which is safe
@@ -410,20 +412,40 @@ so this is an explicit ordering, not a deadlock.
 
 ## D11 — What a point lock actually guarantees
 
-A point lock guarantees **"no other authority will command this point."** It
-does **not** guarantee the point is physically in the required position:
-`IDccController.setPoint` resolves on send, `PointState.position` is
-*commanded*, not confirmed, and `docs/mqtt-contract.md` lists
-`point/{pointId}/state` as Backend -> Subscribers with no feedback direction
-at all. True position confirmation is tracked as **#25** and is a real gap —
-a point that fails to throw (servo stall, disconnected wire, mechanical
-bind, dead controller) is today indistinguishable from one that threw
-correctly, and this PR does nothing to close that. Every place in this
-codebase that could be read as claiming otherwise — the resume flow (D8),
-the force-override cancel (D6) — is documented as an authority guarantee,
-not a position guarantee. #4's acceptance criteria are already amended to
-match: "a point command the DCC adapter *rejects* invalidates the route" is
-implementable today; "a point that fails to confirm" is not, until #25 lands.
+**Split by `points.positionFeedback` (#25, `docs/point-feedback.md`), shipped
+2026-08-15.** What a point lock guarantees now depends on how the operator
+configured that one point:
+
+- **`positionFeedback: 'required'`** — a point lock is **both** an authority
+  guarantee and a position guarantee. A held point that transitions to
+  `timeout`, `mismatch`, or `indeterminate` suspends the route holding it
+  (locks retained, never cancelled — the same D8 reasoning above applies:
+  releasing locks would make the track look free while a train may still be
+  standing on it) and stops that route's loco unconditionally. The full
+  mechanism — the new `RouteFaultKind`, the resume precondition, the
+  suspend-and-stop path — is `docs/point-feedback.md` D8; this section does
+  not restate it.
+- **`positionFeedback: 'none'`** — the original wording below stands
+  verbatim, unchanged by #25. Westgate Hollow has no feedback hardware
+  fitted today, so every point on the live layout is `'none'` and this is
+  still the operative guarantee for the whole layout in practice.
+
+> A point lock guarantees **"no other authority will command this point."**
+> It does **not** guarantee the point is physically in the required
+> position: `IDccController.setPoint` resolves on send, `PointState`'s
+> `commandedPosition` is commanded, not confirmed, and nothing re-asserts a
+> point's position once the command is sent. A point that fails to throw
+> (servo stall, disconnected wire, mechanical bind, dead controller) is
+> indistinguishable from one that threw correctly. Every place in this
+> codebase that could be read as claiming otherwise — the resume flow (D8),
+> the force-override cancel (D6) — is documented as an authority guarantee,
+> not a position guarantee.
+
+The gap this section used to describe outright — "true position confirmation
+... is a real gap" — is closed for any point an operator opts in to. It
+remains true, by design, for a point left `'none'`: `docs/point-feedback.md`
+D4's escape hatch (flip a point back to `'none'` to clear its fault immediately)
+only makes sense because `'none'` keeps meaning exactly what it always meant.
 
 ## D12 — No MQTT contract change is required
 

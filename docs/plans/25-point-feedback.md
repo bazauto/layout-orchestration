@@ -306,3 +306,43 @@ the check is against the *fault*, never against `confirmation === 'pending'`,
 which would deadlock because resuming re-commands every held point.
 `docs/route-locking.md` D11 is rewritten to the per-point split, and #4's
 acceptance criterion is tightened back on the issue.
+
+> **Shipped**, 2026-08-15, with notes:
+>
+> 1. **The consequence method lives next to its sibling, not next to
+>    `raisePointFault`.** `LayoutService#handlePointNotConfirmed` sits directly
+>    after `handleRouteOccupancyUnknown`, ahead of the "Setting the road"
+>    section — the plan didn't say where, and grouping it with the method it
+>    was explicitly asked to be the sibling of read better than grouping it
+>    with the point-confirmation machinery it also touches.
+> 2. **The suspend itself is not a direct call.** `handlePointNotConfirmed`
+>    latches the `RouteFault` via `raiseRouteFault`, which re-evaluates
+>    Safe-Stop; Safe-Stop's entry path (`evaluateAndApplySafeStop`) is what
+>    actually suspends every active reservation, with locks retained — the
+>    same mechanism `handleRouteOccupancyUnknown` already relied on rather
+>    than a targeted `suspendOne`. This was a straight read of "matches
+>    `handleRouteOccupancyUnknown`'s existing behaviour" in D8, not a new
+>    decision, but it means a `point-not-confirmed` fault suspends *every*
+>    active route in the layout the first time it transitions the system into
+>    Safe-Stop, not only the one holding the faulted point — exactly as
+>    `occupancy-unknown` and `unexpected-occupancy` already do. Recorded here
+>    because it's easy to misread the D8 text as a route-scoped suspend.
+> 3. **`ReservationService.routesHoldingPoint` returns an array**, matching
+>    the scope wording exactly, even though D2's exclusivity means there is
+>    normally at most one match — the same defence-in-depth posture
+>    `onOccupancyChange`'s block lookup already takes, documented on the
+>    method rather than assumed.
+> 4. **Scenario tests landed in a new file**,
+>    `tests/scenario/point-feedback-routes.scenario.test.ts`, not a `describe`
+>    block inside `point-feedback.scenario.test.ts`. That file's own comment
+>    says its scenarios seed no sensors or locos and grant no routes "because
+>    they are about the confirmation channel itself" — this PR's scenarios
+>    need both, so a new file keeps that boundary intact rather than quietly
+>    invalidating the existing file's fixture comment.
+> 5. **`RoutesPanel.tsx` was not changed.** The scope item asked for
+>    `RouteFault`/`RouteFaultView` (backend and frontend) to gain `pointId`,
+>    which they do; the reason string already names the point
+>    (`pointLabel`), so the operator-facing banner is not silent about it
+>    even though the panel itself does not render the new field separately —
+>    left as a follow-up if a future change wants `pointId` broken out
+>    visually rather than folded into the sentence.

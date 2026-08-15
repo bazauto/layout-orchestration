@@ -684,6 +684,7 @@ export class LayoutService extends EventEmitter {
       kind: 'point-command-rejected',
       reason,
       blockId: null,
+      pointId: null,
       locoAddress: reservation.locoAddress,
     });
 
@@ -712,13 +713,46 @@ export class LayoutService extends EventEmitter {
    * That re-commanding is **not** best-effort. D8 refuses a resume unless
    * every held point is re-commanded, so a rejected command rolls the route
    * straight back to `suspended` (locks retained) and leaves the D9 restart
-   * latch intact. A point lock is an authority lock rather than a physical
-   * position guarantee (D11) — which is exactly why a *rejected* command
-   * must not be swallowed: it is the only evidence available today that the
-   * road is not set.
+   * latch intact. A *rejected* command happens at send time, before any
+   * confirmation reading could ever arrive (#25 D8, `docs/route-locking.md`
+   * D11), so it is the only evidence available on EITHER kind of point that
+   * the road is not set, and must not be swallowed.
    */
   async resumeRoute(routeId: RouteId): Promise<ResumeResult> {
     if (!this.layoutId) throw new Error('[LayoutService] resumeRoute called before start()');
+
+    // #25 D8's resume precondition, checked here — never inside
+    // `ReservationService`, which has no `SystemHealth` access and must not
+    // gain any (docs/route-locking.md's existing boundary) — and BEFORE
+    // `reservations.resume` is ever called: refuse if any point this route
+    // holds carries a latched, unacknowledged `PointFault`.
+    //
+    // This is checked against the FAULT, deliberately never against
+    // `confirmation === 'pending'`. Checking `pending` would deadlock:
+    // resuming re-commands every held point below, which itself sets each
+    // one back to `pending` as an unavoidable side effect of the resume — a
+    // `pending` check would then refuse the very resume that was about to
+    // clear it. Do not "simplify" this into a `pending` check.
+    const reservation = this.reservations.getRoute(this.layoutId, routeId);
+    if (reservation) {
+      const faultedPointIds = reservation.holds
+        .filter((h) => h.kind === 'point' && !h.released)
+        .map((h) => h.targetId)
+        .filter((pointId) => this.health.pointFaults[pointId] !== undefined);
+
+      if (faultedPointIds.length > 0) {
+        const reason = `resume refused — ${pluralise(faultedPointIds.length, 'point')} still faulted: ${faultedPointIds
+          .map((pointId) => pointLabel(pointId, this.names.get()))
+          .join(', ')}`;
+        this.log.warn('[LayoutService] Resume refused — point fault latched', {
+          layoutId: this.layoutId,
+          routeId,
+          pointIds: faultedPointIds,
+        });
+        return { resumed: false, reason };
+      }
+    }
+
     const result = await this.reservations.resume(this.layoutId, routeId);
     if (!result.resumed) {
       this.log.warn('[LayoutService] Resume refused', { routeId, reason: result.reason });
@@ -1363,7 +1397,7 @@ export class LayoutService extends EventEmitter {
     this.emit('event', { type: 'POINT_STATE', payload: outcome.point } satisfies LayoutEvent);
 
     if (outcome.point.confirmation === 'mismatch' || outcome.point.confirmation === 'indeterminate') {
-      await this.raisePointFault(
+      await this.handlePointNotConfirmed(
         topicPointId,
         outcome.point.confirmation,
         `Point ${pointLabel(topicPointId, this.names.get())} failed to confirm: ${outcome.point.confirmation}`,
@@ -1427,7 +1461,7 @@ export class LayoutService extends EventEmitter {
       this.publishPointState(point);
       this.emit('event', { type: 'POINT_STATE', payload: point } satisfies LayoutEvent);
       if (point.confirmation === 'timed-out') {
-        await this.raisePointFault(
+        await this.handlePointNotConfirmed(
           point.pointId,
           'timeout',
           `Point ${pointLabel(point.pointId, this.names.get())} failed to confirm within the timeout — no reading received`,
@@ -1722,6 +1756,7 @@ export class LayoutService extends EventEmitter {
       kind: 'unexpected-occupancy',
       reason: `Route ${reservation.id} violated: unexpected occupancy in block ${blockLabel(blockId, this.names.get())}`,
       blockId,
+      pointId: null,
       locoAddress: reservation.locoAddress,
     });
   }
@@ -1754,8 +1789,57 @@ export class LayoutService extends EventEmitter {
       kind: 'occupancy-unknown',
       reason: `Route ${reservation.id} suspended: block ${blockLabel(blockId, this.names.get())} occupancy became unknown`,
       blockId,
+      pointId: null,
       locoAddress: reservation.locoAddress,
     });
+  }
+
+  /**
+   * D8 (docs/point-feedback.md): the consequence of a point transitioning to
+   * `timeout`, `mismatch`, or `indeterminate` while a route holds it — the
+   * point-fault sibling of `handleRouteOccupancyUnknown`. Never called for
+   * `malformed-payload`/`id-mismatch` (the caller narrows `kind` to the three
+   * D8 names): those leave the point's own confirmation untouched, so the
+   * road may still be genuinely set and there is nothing for a route to
+   * react to.
+   *
+   * Always latches the `PointFault` first (`raisePointFault`, unconditional —
+   * a point with no route on it still faults, per D4/PR A). Then, for every
+   * `active`/`suspended` reservation still holding this point
+   * (`ReservationService.routesHoldingPoint`): stop that route's loco
+   * unconditionally — not gated on `authority === 'auto'`, matching
+   * `handleRouteOccupancyUnknown` — and latch a `RouteFault` naming this
+   * point. The route itself is never cancelled here: `raiseRouteFault`
+   * re-evaluates Safe-Stop, and Safe-Stop suspends every active reservation
+   * with its locks retained (D8, `docs/route-locking.md` D8) — the same
+   * mechanism `handleRouteOccupancyUnknown` already relies on rather than
+   * suspending the one route directly.
+   *
+   * Two separate latches for one event, deliberately: "this point motor is
+   * dead" (`PointFault`) and "route R's road is no longer known to be set"
+   * (`RouteFault`) are different facts an operator may resolve at different
+   * times, by different actions.
+   */
+  private async handlePointNotConfirmed(
+    pointId: PointId,
+    kind: 'timeout' | 'mismatch' | 'indeterminate',
+    pointFaultReason: string,
+  ): Promise<void> {
+    await this.raisePointFault(pointId, kind, pointFaultReason);
+
+    if (!this.layoutId) return;
+    const routes = this.reservations.routesHoldingPoint(this.layoutId, pointId);
+    for (const route of routes) {
+      await this.stopLoco(route.locoAddress);
+      await this.raiseRouteFault({
+        routeId: route.id,
+        kind: 'point-not-confirmed',
+        reason: `Route ${route.id} suspended: point ${pointLabel(pointId, this.names.get())} failed to confirm (${kind})`,
+        blockId: null,
+        pointId,
+        locoAddress: route.locoAddress,
+      });
+    }
   }
 
   // ─── Private: Setting the road (#4) ──────────────────────────────────────────

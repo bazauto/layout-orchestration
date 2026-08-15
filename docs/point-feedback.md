@@ -30,7 +30,7 @@ here rather than restate it (that update lands with PR B, see below).
 |---|---|
 | Contract amendment (`docs/mqtt-contract.md`) | **Shipped** — `b2b6641` |
 | PR A — the channel | **Shipped** 2026-08-15 |
-| PR B — route interaction (D8) | Open |
+| PR B — route interaction (D8) | **Shipped** 2026-08-15 |
 | ESP firmware (`bazauto/esp-layout-controller`) | Not started — see `docs/project-plan.md` |
 
 Nothing on the live layout has feedback hardware fitted, so every point on
@@ -254,7 +254,7 @@ continues to deliberately ignore point *positions* when searching
 so the search must not treat an unthrown point as a reason a path doesn't
 exist. Do not "fix" that as part of this feature.
 
-## D8 — Route interaction (PR B)
+## D8 — Route interaction (PR B, shipped)
 
 `requestRoute` continues to return `granted: true` immediately as it does
 today, the route goes `active`, and any `'required'` point it holds goes

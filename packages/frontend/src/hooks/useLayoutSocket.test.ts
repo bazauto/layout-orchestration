@@ -55,6 +55,7 @@ const ROUTE_FAULT: RouteFaultView = {
   kind: 'unexpected-occupancy',
   reason: 'train where it should not be',
   blockId: 'block-1',
+  pointId: null,
   locoAddress: 3,
   faultedAt: '2026-08-08T00:00:00.000Z',
 };

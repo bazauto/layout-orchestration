@@ -57,6 +57,7 @@ function routeFault(overrides: Partial<RouteFault> = {}): RouteFault {
     kind: 'unexpected-occupancy',
     reason: 'Route r1 violated: unexpected occupancy in block b3',
     blockId: 'b3',
+    pointId: null,
     locoAddress: 3,
     faultedAt: new Date('2026-01-01T00:00:00.000Z'),
     ...overrides,

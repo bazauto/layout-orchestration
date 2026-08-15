@@ -486,6 +486,27 @@ export class ReservationService implements IRouteLockView {
     );
   }
 
+  /**
+   * Every `active`/`suspended` reservation with an unreleased `point` hold on
+   * `pointId` (#25 D8) — the point-confirmation consequence path's version of
+   * `onOccupancyChange`'s block lookup. Returns every match rather than the
+   * first, unlike `onOccupancyChange`'s find: D2's exclusivity means there is
+   * normally at most one, but `LayoutService` needs to stop each holder's
+   * loco and latch a fault against each, so this stays defence in depth
+   * rather than an assumption. No `SystemHealth` access here — this service
+   * stays storage-and-policy for reservations, per the boundary
+   * `docs/route-locking.md` already draws.
+   */
+  routesHoldingPoint(layoutId: LayoutId, pointId: PointId): RouteReservation[] {
+    return this.stateManager
+      .listRoutes(['active', 'suspended'])
+      .filter(
+        (r) =>
+          r.layoutId === layoutId &&
+          r.holds.some((h) => h.kind === 'point' && h.targetId === pointId && !h.released),
+      );
+  }
+
   listRoutes(layoutId: LayoutId, statuses?: RouteStatus[]): RouteReservation[] {
     return this.stateManager.listRoutes(statuses).filter((r) => r.layoutId === layoutId);
   }

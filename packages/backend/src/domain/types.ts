@@ -725,8 +725,18 @@ export type PathBlocker =
  *  - 'point-command-rejected' — the DCC adapter refused a point command while
  *    setting the road. The route is cancelled; some points may already have
  *    moved, which is precisely why this is a Safe-Stop and not a retry.
+ *  - 'point-not-confirmed' — a held `positionFeedback: 'required'` point
+ *    transitioned to `timeout`, `mismatch`, or `indeterminate` (#25, D8 in
+ *    docs/point-feedback.md). Suspend semantics, matching
+ *    'occupancy-unknown': the route is suspended, never cancelled — releasing
+ *    its locks would make the track look free while a train may still be
+ *    standing on it.
  */
-export type RouteFaultKind = 'unexpected-occupancy' | 'occupancy-unknown' | 'point-command-rejected';
+export type RouteFaultKind =
+  | 'unexpected-occupancy'
+  | 'occupancy-unknown'
+  | 'point-command-rejected'
+  | 'point-not-confirmed';
 
 /**
  * A latched fault against one route. Keyed by `routeId` in
@@ -744,6 +754,8 @@ export interface RouteFault {
   reason: string;
   /** The block whose occupancy caused this, for the two occupancy kinds. */
   blockId: BlockId | null;
+  /** The point that failed to confirm, for 'point-not-confirmed' only (#25). Every other kind carries `null` — a point is not a block, and an operator told "route R is suspended" must be told which. */
+  pointId: PointId | null;
   locoAddress: LocoAddress;
   faultedAt: Date;
 }
@@ -754,6 +766,7 @@ export interface RouteFaultView {
   kind: RouteFaultKind;
   reason: string;
   blockId: BlockId | null;
+  pointId: PointId | null;
   locoAddress: LocoAddress;
   faultedAt: string;
 }
