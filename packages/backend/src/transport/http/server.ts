@@ -95,7 +95,7 @@ export async function buildServer(
   await layoutRoutes(fastify, repo);
   await locoRoutes(fastify, repo, nameBook);
   await blockRoutes(fastify, repo, topologyService, nameBook);
-  await pointRoutes(fastify, repo, topologyService, nameBook);
+  await pointRoutes(fastify, repo, topologyService, nameBook, layoutService);
   await sensorRoutes(fastify, repo, layoutService);
   // #70: constructed here rather than plumbed in from `index.ts` because it
   // holds no state and depends on nothing but the repository — the same

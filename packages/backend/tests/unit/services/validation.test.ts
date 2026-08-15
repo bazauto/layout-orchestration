@@ -11,6 +11,10 @@ import {
   SessionRowInvalidError,
   parseSensorRow,
   SensorRowInvalidError,
+  parsePointRow,
+  PointRowInvalidError,
+  pointCreateSchema,
+  pointUpdateSchema,
   userCreateSchema,
   userRoleUpdateSchema,
   passwordResetSchema,
@@ -218,6 +222,80 @@ describe('parseSensorRow', () => {
     const rowWithoutInService: Record<string, unknown> = { ...validSensorRow };
     delete rowWithoutInService.inService;
     expect(() => parseSensorRow(rowWithoutInService)).toThrow(SensorRowInvalidError);
+  });
+});
+
+const validPointRow = {
+  id: 'p1',
+  layoutId: 'layout-1',
+  name: 'Point 1',
+  dccAddress: 3,
+  blockId: 'b1',
+  positionFeedback: 'none',
+};
+
+describe('parsePointRow (#25, docs/point-feedback.md D10)', () => {
+  it('parses a valid row into a PointRecord', () => {
+    expect(parsePointRow(validPointRow)).toEqual(validPointRow);
+  });
+
+  it('parses a NULL blockId to null', () => {
+    expect(parsePointRow({ ...validPointRow, blockId: null }).blockId).toBeNull();
+  });
+
+  it("parses positionFeedback: 'required'", () => {
+    expect(parsePointRow({ ...validPointRow, positionFeedback: 'required' }).positionFeedback).toBe('required');
+  });
+
+  it('throws PointRowInvalidError for an invalid positionFeedback such as "always"', () => {
+    expect(() => parsePointRow({ ...validPointRow, positionFeedback: 'always' })).toThrow(
+      PointRowInvalidError,
+    );
+  });
+
+  it('throws PointRowInvalidError for a non-positive dccAddress', () => {
+    expect(() => parsePointRow({ ...validPointRow, dccAddress: 0 })).toThrow(PointRowInvalidError);
+  });
+
+  it('never coerces — a row missing a required column throws rather than defaulting', () => {
+    const rowWithoutPositionFeedback: Record<string, unknown> = { ...validPointRow };
+    delete rowWithoutPositionFeedback.positionFeedback;
+    expect(() => parsePointRow(rowWithoutPositionFeedback)).toThrow(PointRowInvalidError);
+  });
+});
+
+describe('pointCreateSchema', () => {
+  it("defaults positionFeedback to 'none'", () => {
+    expect(pointCreateSchema.parse({ name: 'Point 1', dccAddress: 3 })).toEqual({
+      name: 'Point 1',
+      dccAddress: 3,
+      blockId: null,
+      positionFeedback: 'none',
+    });
+  });
+
+  it("accepts an explicit positionFeedback: 'required'", () => {
+    expect(
+      pointCreateSchema.parse({ name: 'Point 1', dccAddress: 3, positionFeedback: 'required' }).positionFeedback,
+    ).toBe('required');
+  });
+
+  it('rejects an invalid positionFeedback value', () => {
+    expect(() =>
+      pointCreateSchema.parse({ name: 'Point 1', dccAddress: 3, positionFeedback: 'always' }),
+    ).toThrow();
+  });
+});
+
+describe('pointUpdateSchema', () => {
+  it('accepts a positionFeedback-only update, leaving other fields alone', () => {
+    expect(pointUpdateSchema.parse({ positionFeedback: 'required' })).toEqual({
+      positionFeedback: 'required',
+    });
+  });
+
+  it('does not default positionFeedback when omitted — an update never resets it', () => {
+    expect(pointUpdateSchema.parse({ name: 'renamed' })).toEqual({ name: 'renamed' });
   });
 });
 

@@ -61,6 +61,30 @@ export const config = {
     full: process.env.USE_SIMULATOR === 'true',
     /** Only DCC is simulated — connects to a real MQTT broker. */
     dccOnly: process.env.DCC_SIMULATOR === 'true',
+    /**
+     * #25 D9: how long (ms), on the process's real clock, `SimulatedPointController`
+     * waits before publishing a `point/{id}/reading` in response to a
+     * `point/{id}/query` or an in-process `noteCommanded` — the simulated
+     * twin of a servo's physical travel time. Default 150ms is comfortably
+     * inside D5's 8000ms confirmation timeout.
+     */
+    pointConfirmDelayMs: parseInt(process.env.POINT_SIM_CONFIRM_DELAY_MS ?? '150', 10),
+  },
+  points: {
+    /**
+     * D5 (docs/point-feedback.md): how long (ms) a point configured
+     * `positionFeedback: "required"` may go unconfirmed after a command
+     * before it faults.
+     */
+    confirmTimeoutMs: parseInt(process.env.POINT_CONFIRM_TIMEOUT_MS ?? '8000', 10),
+    /** D5: how often (ms) the confirmation sweep evaluates the timeout predicate. */
+    sweepIntervalMs: parseInt(process.env.POINT_CONFIRM_SWEEP_MS ?? '250', 10),
+    /**
+     * D4: consecutive confirming readings a latched `PointFault` needs before
+     * an operator may acknowledge it. Layout-wide, not per-point — the
+     * point-side twin of `sensors.clearAfterValidReadings`.
+     */
+    faultClearAfterConfirmations: parseInt(process.env.POINT_FAULT_CLEAR_CONFIRMATIONS ?? '1', 10),
   },
   sensors: {
     /**

@@ -49,6 +49,14 @@ export interface PointRecord {
   name: string;
   dccAddress: number;
   blockId: string | null;
+  /**
+   * Mirrors `points.position_feedback` (#25). Configuration, not runtime
+   * state: `'required'` means the backend refuses to trust this point's
+   * commanded position until its controller confirms it, `'none'` means it
+   * trusts the command as it always did. The runtime counterpart is
+   * `PointState.positionFeedback`.
+   */
+  positionFeedback: PointFeedbackMode;
 }
 
 export interface SensorRecord {
@@ -523,12 +531,63 @@ export interface BlockState {
   lastUpdated: string;
 }
 
+/**
+ * Mirrors the backend's `PointConfirmation` (#25, docs/point-feedback.md D3):
+ * `'unreported'` — no reading has ever landed; `'pending'` — a command is
+ * outstanding, a confirmation deadline is running; `'confirmed'` — the last
+ * reading matched what was commanded (or nothing was commanded to disagree
+ * with); `'mismatch'` — a well-formed reading that did NOT match what was
+ * commanded, `confirmedPosition` holding the reported value; `'indeterminate'`
+ * — the last reading reported `'unknown'`, or was `'driver'`-sourced on a
+ * `'required'` point; `'timed-out'` — the confirmation deadline elapsed with
+ * no reading.
+ */
+export type PointConfirmation = 'unreported' | 'pending' | 'confirmed' | 'mismatch' | 'indeterminate' | 'timed-out';
+
+/**
+ * Mirrors `PointFeedbackMode` — whether a point is configured to require a
+ * confirmed reading before its position is trusted (D10). Opt-in per point,
+ * defaulting to `'none'`.
+ */
+export type PointFeedbackMode = 'none' | 'required';
+
+/**
+ * Mirrors the backend's `PointState` (#25, docs/point-feedback.md D3). The
+ * pre-#25 single `position` field is **gone**, replaced by
+ * `commandedPosition`/`confirmedPosition`/`confirmation` — see D3 for why the
+ * conflation it carried was the defect. Dates are ISO 8601 strings on the
+ * wire, as every other mirror in this file does it.
+ */
 export interface PointState {
   pointId: string;
-  position: PointPosition;
+  /** Last position the backend commanded this session. `null` = never commanded. NOT a confirmation of anything physical. */
+  commandedPosition: 'normal' | 'reverse' | null;
+  /** Last position the point controller reported. `'unknown'` until a reading lands, and again after a confirmation timeout. */
+  confirmedPosition: PointPosition;
+  confirmation: PointConfirmation;
+  /** Configuration, not runtime state — mirrors `points.position_feedback` (D10). */
+  positionFeedback: PointFeedbackMode;
+  /** Non-null iff `confirmation === 'pending'`. */
+  awaitingSince: string | null;
+  lastReadingAt: string | null;
   locked: boolean;
   lockedByRoute: string | null;
   lastUpdated: string;
+}
+
+/**
+ * Wire projection of the backend's `PointFault` (#25, docs/point-feedback.md
+ * D4). `faultedAt` is ISO 8601; `armed`/`requiredConfirmations` are
+ * precomputed server-side, mirroring `SensorFaultView` exactly.
+ */
+export interface PointFaultView {
+  pointId: string;
+  kind: 'timeout' | 'mismatch' | 'indeterminate' | 'malformed-payload' | 'id-mismatch';
+  reason: string;
+  faultedAt: string;
+  consecutiveConfirmations: number;
+  requiredConfirmations: number;
+  armed: boolean;
 }
 
 export interface LocoState {
@@ -550,6 +609,8 @@ export interface StateSnapshot {
   routes: Record<string, RouteReservation>;
   /** #34: current per-sensor faults, always the complete set, never a delta. */
   sensorFaults: SensorFaultView[];
+  /** #25: current latched point faults, likewise always the complete set. See docs/point-feedback.md D4. */
+  pointFaults: PointFaultView[];
   /** #4: current latched route faults, likewise always the complete set. */
   routeFaults: RouteFaultView[];
 }
@@ -563,6 +624,7 @@ export type ServerMessage =
   | { type: 'LOCO_STATE'; payload: LocoState }
   | { type: 'SYSTEM_STATUS'; payload: { status: SystemStatus; mode: SystemMode; reason: string | null } }
   | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
+  | { type: 'POINT_FAULTS'; payload: { faults: PointFaultView[] } }
   | { type: 'ROUTE_STATE'; payload: RouteReservation }
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } }

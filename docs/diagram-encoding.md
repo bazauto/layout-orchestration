@@ -125,11 +125,19 @@ What is left faint is the road that is not set.
 and needs both roads legible; it has no set road to distinguish them by
 anyway.
 
-**Commanded versus confirmed is deliberately not invented here.** It needs a
-third non-colour treatment, and it gets one when #25 gives it something to
-distinguish. Until then every point position on a diagram is commanded, and
-drawing a distinction before there is anything to distinguish would be a lie
-about the railway.
+**Commanded versus confirmed now has something to distinguish, and it is
+encoded away from the tile.** #25 landed the feedback channel, so a point
+carries a `confirmation` (`unreported`, `pending`, `confirmed`, `mismatch`,
+`indeterminate`, `timed-out`) alongside its commanded and confirmed positions.
+`POINT_CONFIRMATION` in `encoding.ts` gives each of the six a glyph and a word,
+so the state is never carried by colour alone — but that mark is drawn in the
+**Layout panel and the point key**, not on the tile. The road a tile draws
+comes from `effectivePosition` (`docs/point-feedback.md` D7), which is the one
+place that decides what is trusted: a `'required'` point whose confirmation
+lapsed draws **no** set road, because its position is genuinely unknown, and
+that absence is the honest encoding. A fourth mark inside a 40px cell already
+carrying occupancy, a lock and two labels would cost legibility for a
+distinction the operator reads at the point key anyway.
 
 ---
 

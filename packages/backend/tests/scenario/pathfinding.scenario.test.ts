@@ -40,7 +40,13 @@ const BLOCKS = [
   { id: 'b3', layoutId: LAYOUT_ID, name: 'Block 3', lengthMm: 100 },
   { id: 'b4', layoutId: LAYOUT_ID, name: 'Block 4', lengthMm: 500 },
 ];
-const POINTS = [{ id: 'p1', layoutId: LAYOUT_ID, name: 'Point 1', dccAddress: 10, blockId: 'b1' }];
+// positionFeedback: 'none' — this fixture is about pathfinding and setting
+// the road (#4/P3), not point confirmation (#25); 'none' is byte-for-byte
+// today's pre-#25 behaviour (docs/point-feedback.md D10), which is what
+// keeps these scenarios about the thing they are named for.
+const POINTS = [
+  { id: 'p1', layoutId: LAYOUT_ID, name: 'Point 1', dccAddress: 10, blockId: 'b1', positionFeedback: 'none' as const },
+];
 const SENSORS = ['b1', 'b2', 'b3', 'b4'].map((blockId, i) => ({
   id: `s${i + 1}`,
   layoutId: LAYOUT_ID,
@@ -114,7 +120,9 @@ describe('scenario: pathfinding and setting the road', () => {
     // p1 starts in the wrong position for the short road. The search must
     // route over it anyway — setting the road is what a route does (P3).
     await h.service.handlePointCommand({ pointId: 'p1', position: 'reverse' });
-    expect(h.service.getAllState().points.get('p1')?.position).toBe('reverse');
+    // What was commanded, not what the system trusts (#25 D3) — the point
+    // of this assertion is that the manual override took.
+    expect(h.service.getAllState().points.get('p1')?.commandedPosition).toBe('reverse');
 
     const grant = await h.service.requestRoute({
       locoAddress: 3,
@@ -138,7 +146,9 @@ describe('scenario: pathfinding and setting the road', () => {
     expect(h.service.getAllState().blocks.get('b4')?.lockedByRoute).toBeNull();
 
     // The road was actually SET — this is the half #3 deliberately left out.
-    expect(h.service.getAllState().points.get('p1')?.position).toBe('normal');
+    // What the route COMMANDED, again (#25 D3) — no confirmation channel is
+    // in play on this 'none' point.
+    expect(h.service.getAllState().points.get('p1')?.commandedPosition).toBe('normal');
 
     expect(h.service.getSystemStatus().status).toBe('online');
     await h.service.stop();
@@ -160,7 +170,8 @@ describe('scenario: pathfinding and setting the road', () => {
     if (!grant.granted) throw new Error('expected grant');
 
     expect(await blockIdsOnPath(h, grant.reservation.id)).toEqual(['b1', 'b4', 'b3']);
-    expect(h.service.getAllState().points.get('p1')?.position).toBe('reverse');
+    // Commanded, not trusted (#25 D3) — same reasoning as scenario 1.
+    expect(h.service.getAllState().points.get('p1')?.commandedPosition).toBe('reverse');
     expect(h.service.getAllState().blocks.get('b2')?.lockedByRoute).toBeNull();
 
     await h.service.stop();

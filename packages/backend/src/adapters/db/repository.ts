@@ -27,6 +27,7 @@ import {
 } from '../../domain/types';
 import {
   parseBlockEdgeRow,
+  parsePointRow,
   parseReservationRow,
   parseSensorRow,
 } from '../../services/validation';
@@ -154,14 +155,15 @@ export class DrizzleRepository implements ILayoutRepository {
   // ─── Points ─────────────────────────────────────────────────────────────────
 
   async listPoints(layoutId: string): Promise<PointRecord[]> {
-    return this.db.select().from(points).where(eq(points.layoutId, layoutId)).all();
+    const rows = this.db.select().from(points).where(eq(points.layoutId, layoutId)).all();
+    return rows.map(parsePointRow);
   }
 
   async createPoint(data: Omit<PointRecord, 'id'>): Promise<PointRecord> {
     const id = randomUUID();
     const record = { id, ...data };
     this.db.insert(points).values(record).run();
-    return record;
+    return parsePointRow(record);
   }
 
   async updatePoint(
@@ -171,7 +173,7 @@ export class DrizzleRepository implements ILayoutRepository {
     this.db.update(points).set(data).where(eq(points.id, id)).run();
     const rows = this.db.select().from(points).where(eq(points.id, id)).all();
     if (!rows.length) throw new Error(`Point ${id} not found after update`);
-    return rows[0];
+    return parsePointRow(rows[0]);
   }
 
   async deletePoint(layoutId: string, id: string): Promise<void> {

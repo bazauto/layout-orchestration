@@ -18,4 +18,11 @@ export class SystemClock implements IClock {
       cancel: () => clearTimeout(handle),
     };
   }
+
+  setInterval(fn: () => void, everyMs: number): ClockTimer {
+    const handle = setInterval(fn, everyMs);
+    return {
+      cancel: () => clearInterval(handle),
+    };
+  }
 }

@@ -12,7 +12,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installMockWebSocket, MockWebSocket, restoreWebSocket } from '../test/mockWebSocket';
 import { useLayoutSocket } from './useLayoutSocket';
-import { RouteFaultView, RouteReservation, SensorFaultView } from '../types';
+import { PointFaultView, RouteFaultView, RouteReservation, SensorFaultView } from '../types';
 
 function currentSocket(): MockWebSocket {
   const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1];
@@ -33,6 +33,21 @@ const SENSOR_FAULT: SensorFaultView = {
 const SENSOR_FAULT_2: SensorFaultView = {
   ...SENSOR_FAULT,
   sensorId: 'sensor-2',
+};
+
+const POINT_FAULT: PointFaultView = {
+  pointId: 'point-1',
+  kind: 'timeout',
+  reason: 'no reading within 8000ms',
+  faultedAt: '2026-08-08T00:00:00.000Z',
+  consecutiveConfirmations: 0,
+  requiredConfirmations: 1,
+  armed: false,
+};
+
+const POINT_FAULT_2: PointFaultView = {
+  ...POINT_FAULT,
+  pointId: 'point-2',
 };
 
 const ROUTE_FAULT: RouteFaultView = {
@@ -85,6 +100,7 @@ describe('useLayoutSocket', () => {
       expect(result.current.snapshot.locos).toEqual({});
       expect(result.current.snapshot.routes).toEqual({});
       expect(result.current.snapshot.sensorFaults).toEqual([]);
+      expect(result.current.snapshot.pointFaults).toEqual([]);
       expect(result.current.snapshot.routeFaults).toEqual([]);
     });
 
@@ -142,6 +158,7 @@ describe('useLayoutSocket', () => {
             locos: {},
             routes: {},
             sensorFaults: [SENSOR_FAULT],
+            pointFaults: [POINT_FAULT],
             routeFaults: [ROUTE_FAULT],
           },
         });
@@ -151,6 +168,7 @@ describe('useLayoutSocket', () => {
       expect(result.current.snapshot.systemMode).toBe('auto');
       expect(result.current.snapshot.blocks).toHaveProperty('block-1');
       expect(result.current.snapshot.sensorFaults).toEqual([SENSOR_FAULT]);
+      expect(result.current.snapshot.pointFaults).toEqual([POINT_FAULT]);
       expect(result.current.snapshot.routeFaults).toEqual([ROUTE_FAULT]);
     });
 
@@ -192,30 +210,59 @@ describe('useLayoutSocket', () => {
       const { result } = renderHook(() => useLayoutSocket());
       const ws = currentSocket();
 
+      const base = {
+        commandedPosition: null,
+        confirmedPosition: 'unknown',
+        confirmation: 'unreported',
+        positionFeedback: 'none',
+        awaitingSince: null,
+        lastReadingAt: null,
+      } as const;
+
       act(() => {
         ws.open();
         ws.emit({
           type: 'POINT_STATE',
-          payload: { pointId: 'point-1', position: 'normal', locked: false, lockedByRoute: null, lastUpdated: 't1' },
+          payload: {
+            ...base,
+            pointId: 'point-1',
+            confirmedPosition: 'normal',
+            confirmation: 'confirmed',
+            locked: false,
+            lockedByRoute: null,
+            lastUpdated: 't1',
+          },
         });
       });
       act(() => {
         ws.emit({
           type: 'POINT_STATE',
-          payload: { pointId: 'point-2', position: 'reverse', locked: true, lockedByRoute: 'route-1', lastUpdated: 't2' },
+          payload: {
+            ...base,
+            pointId: 'point-2',
+            confirmedPosition: 'reverse',
+            confirmation: 'confirmed',
+            locked: true,
+            lockedByRoute: 'route-1',
+            lastUpdated: 't2',
+          },
         });
       });
 
       expect(result.current.snapshot.points['point-1']).toEqual({
+        ...base,
         pointId: 'point-1',
-        position: 'normal',
+        confirmedPosition: 'normal',
+        confirmation: 'confirmed',
         locked: false,
         lockedByRoute: null,
         lastUpdated: 't1',
       });
       expect(result.current.snapshot.points['point-2']).toEqual({
+        ...base,
         pointId: 'point-2',
-        position: 'reverse',
+        confirmedPosition: 'reverse',
+        confirmation: 'confirmed',
         locked: true,
         lockedByRoute: 'route-1',
         lastUpdated: 't2',
@@ -292,6 +339,23 @@ describe('useLayoutSocket', () => {
       // The complete current set, never a delta — the second frame's single
       // fault must fully replace the first frame's two, not merge with them.
       expect(result.current.snapshot.sensorFaults).toEqual([SENSOR_FAULT]);
+    });
+
+    it('POINT_FAULTS replaces the list wholesale, not a merge', () => {
+      const { result } = renderHook(() => useLayoutSocket());
+      const ws = currentSocket();
+
+      act(() => {
+        ws.open();
+        ws.emit({ type: 'POINT_FAULTS', payload: { faults: [POINT_FAULT, POINT_FAULT_2] } });
+      });
+      expect(result.current.snapshot.pointFaults).toHaveLength(2);
+
+      act(() => {
+        ws.emit({ type: 'POINT_FAULTS', payload: { faults: [POINT_FAULT] } });
+      });
+
+      expect(result.current.snapshot.pointFaults).toEqual([POINT_FAULT]);
     });
 
     it('ROUTE_FAULTS replaces the list wholesale, not a merge', () => {
@@ -416,10 +480,10 @@ describe('useLayoutSocket', () => {
     });
 
     it('latched faults survive a drop — the single most important assertion in this file', () => {
-      // Pins the comment at useLayoutSocket.ts:84-90: a sensor fault (#34) or
-      // route fault (#4) is latched on the backend, not on this connection,
-      // so dropping the socket must not show the operator an all-clear that
-      // isn't true.
+      // Pins the comment at useLayoutSocket.ts:84-90: a sensor fault (#34),
+      // point fault (#25), or route fault (#4) is latched on the backend, not
+      // on this connection, so dropping the socket must not show the operator
+      // an all-clear that isn't true.
       const { result } = renderHook(() => useLayoutSocket());
       const ws = currentSocket();
 
@@ -436,6 +500,7 @@ describe('useLayoutSocket', () => {
             locos: {},
             routes: {},
             sensorFaults: [SENSOR_FAULT],
+            pointFaults: [POINT_FAULT],
             routeFaults: [ROUTE_FAULT],
           },
         });
@@ -447,6 +512,7 @@ describe('useLayoutSocket', () => {
 
       expect(result.current.snapshot.systemStatus).toBe('offline');
       expect(result.current.snapshot.sensorFaults).toEqual([SENSOR_FAULT]);
+      expect(result.current.snapshot.pointFaults).toEqual([POINT_FAULT]);
       expect(result.current.snapshot.routeFaults).toEqual([ROUTE_FAULT]);
     });
 

@@ -540,9 +540,9 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
               {/*
                 #73 — which leg each position selects, drawn as a letter at
                 the leg's outer edge. Static: the editor draws the mapping,
-                not a live position. Until #25 there is no confirmed
-                position to draw at all, and a mimic that implied one would
-                be asserting a physical fact the system does not have.
+                not a live position — the live road below is what carries
+                #25's confirmed-vs-commanded distinction; this letter is
+                authored geometry and stays the same regardless.
               */}
               <g transform={`rotate(${rotation}, ${H}, ${H})`}>
                 {(meta.pointRoads ?? []).map((road, i) => {
@@ -591,9 +591,15 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                 the tile's **unrotated** frame (`diagram/pointRoads.ts`) —
                 the same reason the letters above are.
 
-                Every position drawn here is **commanded**, never confirmed.
-                There is no feedback channel until #25, and the view says so
-                once rather than qualifying each point.
+                The position drawn here is `effectivePosition` (#25, D7) —
+                trusted, not the raw commanded field: a `'required'` point
+                draws only a confirmed reading, and a `'none'` point falls
+                back to what was commanded, same as before #25. Per-point
+                confirmation detail (pending/mismatch/timed-out) is not drawn
+                on the tile itself — that would be a fourth non-colour
+                treatment competing for a 40px cell already carrying occupancy,
+                a lock and two labels — and lives in the point key and the
+                Layout panel instead, where there is room to say it in words.
               */}
               {live && (meta.pointRoads?.length ?? 0) > 0 && (
                 <g transform={`rotate(${rotation}, ${H}, ${H})`}>
@@ -620,7 +626,7 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                         <title>
                           {`road ${roadLabel(road)}: ${
                             selection === 'selected'
-                              ? 'set (commanded)'
+                              ? 'set'
                               : selection === 'unselected'
                                 ? 'not set'
                                 : 'position unknown'

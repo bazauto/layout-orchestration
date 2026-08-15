@@ -7,7 +7,14 @@ import {
   TopologyRejectedError,
   TopologyService,
 } from '../../../services/TopologyService';
+import {
+  LayoutService,
+  PointFaultNotArmedError,
+  PointNotFaultedError,
+  PointNotFoundError,
+} from '../../../services/LayoutService';
 import { pointCreateSchema, pointUpdateSchema } from '../../../services/validation';
+import { layoutLabel } from '../../../domain/naming';
 import { requireAdmin } from '../auth/hook';
 
 export async function pointRoutes(
@@ -15,6 +22,7 @@ export async function pointRoutes(
   repo: ILayoutRepository,
   topologyService: TopologyService,
   nameBook: INameBook,
+  layoutService: LayoutService,
 ): Promise<void> {
   fastify.get<{ Params: { layoutId: string } }>(
     '/api/layouts/:layoutId/points',
@@ -42,6 +50,7 @@ export async function pointRoutes(
         name: parsed.data.name,
         dccAddress: parsed.data.dccAddress,
         blockId: parsed.data.blockId,
+        positionFeedback: parsed.data.positionFeedback,
       });
       // D5: refresh after the write so the new point's name is available to
       // the next operator-facing string that renders it.
@@ -106,6 +115,52 @@ export async function pointRoutes(
         }
         if (err instanceof TopologyRejectedError) {
           return reply.status(422).send({ error: err.message, violations: err.violations });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // Authenticated, any role — a read, like GET .../sensor-faults (mirrors sensors.ts).
+  fastify.get<{ Params: { layoutId: string } }>(
+    '/api/layouts/:layoutId/point-faults',
+    async (req, reply) => {
+      if (req.params.layoutId !== layoutService.getLayoutId()) {
+        return reply.status(404).send({
+          error: `Layout ${layoutLabel(req.params.layoutId, layoutService.getNames())} is not the running layout`,
+        });
+      }
+      return { faults: layoutService.getPointFaults() };
+    },
+  );
+
+  /**
+   * Deliberately NO `preHandler` here (mirrors sensors.ts's
+   * acknowledge-fault exactly, docs/point-feedback.md D4): still
+   * authenticated by the global onRequest hook, but any role — operator
+   * included — may acknowledge once a fault has armed.
+   */
+  fastify.post<{ Params: { layoutId: string; id: string } }>(
+    '/api/layouts/:layoutId/points/:id/acknowledge-fault',
+    async (req, reply) => {
+      try {
+        const result = await layoutService.acknowledgePointFault(req.params.layoutId, req.params.id);
+        return reply.status(200).send(result);
+      } catch (err) {
+        if (err instanceof PointNotFoundError) {
+          return reply.status(404).send({ error: err.message });
+        }
+        if (err instanceof PointNotFaultedError) {
+          return reply.status(409).send({ error: err.message, pointId: err.pointId });
+        }
+        if (err instanceof PointFaultNotArmedError) {
+          return reply.status(409).send({
+            error: err.message,
+            pointId: err.pointId,
+            consecutiveConfirmations: err.consecutiveConfirmations,
+            requiredConfirmations: err.requiredConfirmations,
+            outstanding: err.outstanding,
+          });
         }
         throw err;
       }

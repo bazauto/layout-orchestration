@@ -12,6 +12,8 @@ import {
   BlockEdgeRecord,
   BlockRecord,
   LocoRecord,
+  PointFaultView,
+  PointFeedbackMode,
   PointRecord,
   RouteFaultView,
   RouteReservation,
@@ -198,6 +200,19 @@ export interface AcknowledgeFaultResponse {
   faults: SensorFaultView[];
 }
 
+/**
+ * Response of `POST .../points/:id/acknowledge-fault` (#25) — mirrors
+ * `AcknowledgeFaultResponse` above exactly, same posture as
+ * `docs/point-feedback.md` D4 mirrors `docs/sensor-fault-recovery.md` D1/D5.
+ */
+export interface AcknowledgePointFaultResponse {
+  pointId: string;
+  cleared: true;
+  systemStatus: SystemStatus;
+  safeStopReason: string | null;
+  faults: PointFaultView[];
+}
+
 export function useLayoutConfig(layoutId: string | null) {
   const [config, setConfig] = useState<LayoutConfig>(EMPTY);
   const [loading, setLoading] = useState(false);
@@ -297,7 +312,12 @@ export function useLayoutConfig(layoutId: string | null) {
 
   const updatePoint = async (
     id: string,
-    data: { name?: string; dccAddress?: number; blockId?: string | null },
+    data: {
+      name?: string;
+      dccAddress?: number;
+      blockId?: string | null;
+      positionFeedback?: PointFeedbackMode;
+    },
   ): Promise<MutationResult<PointRecord>> => {
     const result = await mutate<PointRecord>(`/api/layouts/${layoutId}/points/${id}`, {
       method: 'PUT',
@@ -367,6 +387,14 @@ export function useLayoutConfig(layoutId: string | null) {
   // isn't armed yet or has already been cleared.
   const acknowledgeSensorFault = async (sensorId: string): Promise<MutationResult<AcknowledgeFaultResponse>> =>
     mutate<AcknowledgeFaultResponse>(`/api/layouts/${layoutId}/sensors/${sensorId}/acknowledge-fault`, {
+      method: 'POST',
+    });
+
+  // Same posture as acknowledgeSensorFault above: no refresh() on success — a
+  // fault is not config, and the authoritative update arrives over the WS
+  // POINT_FAULTS frame (#25).
+  const acknowledgePointFault = async (pointId: string): Promise<MutationResult<AcknowledgePointFaultResponse>> =>
+    mutate<AcknowledgePointFaultResponse>(`/api/layouts/${layoutId}/points/${pointId}/acknowledge-fault`, {
       method: 'POST',
     });
 
@@ -480,6 +508,7 @@ export function useLayoutConfig(layoutId: string | null) {
     updateSensor,
     deleteSensor,
     acknowledgeSensorFault,
+    acknowledgePointFault,
     simulateSensorReading,
     requestRoute,
     cancelRoute,

@@ -80,7 +80,7 @@ function makeRepo(): ILayoutRepository {
     updateBlock: vi.fn(),
     deleteBlock: vi.fn(),
     listPoints: vi.fn().mockResolvedValue([
-      { id: 'p1', layoutId: 'test', name: 'Point 1', dccAddress: 10, blockId: 'b1' },
+      { id: 'p1', layoutId: 'test', name: 'Point 1', dccAddress: 10, blockId: 'b1', positionFeedback: 'none' },
     ]),
     createPoint: vi.fn(),
     updatePoint: vi.fn(),
@@ -321,7 +321,10 @@ describe('LayoutService — point commands', () => {
 
     expect(dcc.commandLog).toHaveLength(1);
     expect(dcc.commandLog[0].type).toBe('SET_POINT');
-    expect(stateManager.getPoint('p1')?.position).toBe('reverse');
+    // p1 is `positionFeedback: 'none'` — commandedPosition is set, but D7's
+    // trust model for an uninstrumented point falls back to it (there is no
+    // reading yet to disagree).
+    expect(stateManager.getPoint('p1')?.commandedPosition).toBe('reverse');
     await service.stop();
   });
 
@@ -360,7 +363,7 @@ describe('LayoutService — point commands', () => {
     expect(stateManager.getBlock('b1')?.lockedByRoute).toBeNull();
     expect(stateManager.getBlock('b2')?.lockedByRoute).toBeNull();
     // The point command itself still goes through.
-    expect(stateManager.getPoint('p1')?.position).toBe('reverse');
+    expect(stateManager.getPoint('p1')?.commandedPosition).toBe('reverse');
     // Its (auto-authority) loco is stopped.
     expect(dcc.commandLog.some((c) => c.type === 'SET_SPEED' && c.data.speed === 0)).toBe(true);
     // No system-wide Safe-Stop — a deliberate, authorised operator action.
@@ -385,6 +388,161 @@ describe('LayoutService — point commands', () => {
     ).rejects.toThrow(/force/i);
     // The route survives the refused override.
     expect(service.listRoutes(['active'])).toHaveLength(1);
+    await service.stop();
+  });
+});
+
+describe('LayoutService — point confirmation ingestion (see docs/point-feedback.md)', () => {
+  /** A started service with p1 and p2 both `positionFeedback: 'required'` — the failure paths below need a topic/payload id-mismatch pair and a lone unknown point. */
+  async function buildServiceWithRequiredPoints() {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    vi.mocked(repo.listPoints).mockResolvedValue([
+      { id: 'p1', layoutId: 'test', name: 'Point 1', dccAddress: 10, blockId: 'b1', positionFeedback: 'required' },
+      { id: 'p2', layoutId: 'test', name: 'Point 2', dccAddress: 11, blockId: 'b1', positionFeedback: 'required' },
+    ]);
+    const stateManager = new LayoutStateManager('test');
+    const reservations = new ReservationService(repo, stateManager, silentLogger);
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, reservations, silentLogger);
+    await service.start('test');
+    return { service, dcc, mqtt, repo, stateManager, reservations };
+  }
+
+  it('a malformed reading enters Safe-Stop with a populated safeStopReason', async () => {
+    const { service, mqtt } = await buildServiceWithRequiredPoints();
+
+    mqtt.simulateIncoming('layout/test/point/p1/reading', { garbage: true });
+    await new Promise((r) => setImmediate(r));
+
+    const status = service.getSystemStatus();
+    expect(status.status).toBe('safe-stop');
+    expect(status.reason).toBeTruthy();
+    expect(service.getPointFaults()).toHaveLength(1);
+    expect(service.getPointFaults()[0]).toMatchObject({ pointId: 'p1', kind: 'malformed-payload' });
+
+    await service.stop();
+  });
+
+  it('a payload/topic id mismatch enters Safe-Stop and leaves both points state untouched', async () => {
+    const { service, mqtt, stateManager } = await buildServiceWithRequiredPoints();
+    const before1 = stateManager.getPoint('p1');
+    const before2 = stateManager.getPoint('p2');
+
+    mqtt.simulateIncoming('layout/test/point/p1/reading', {
+      pointId: 'p2',
+      position: 'normal',
+      source: 'sensor',
+    });
+    await new Promise((r) => setImmediate(r));
+
+    const status = service.getSystemStatus();
+    expect(status.status).toBe('safe-stop');
+    // Latched against the TOPIC point id (p1), never the payload-named one (p2).
+    expect(service.getPointFaults().map((f) => f.pointId)).toEqual(['p1']);
+    expect(stateManager.getPoint('p1')).toEqual(before1);
+    expect(stateManager.getPoint('p2')).toEqual(before2);
+
+    await service.stop();
+  });
+
+  it('a reading for an unknown point logs and does not Safe-Stop', async () => {
+    const { service, mqtt } = await buildServiceWithRequiredPoints();
+
+    mqtt.simulateIncoming('layout/test/point/ghost/reading', {
+      pointId: 'ghost',
+      position: 'normal',
+      source: 'sensor',
+    });
+    await new Promise((r) => setImmediate(r));
+
+    expect(service.getSystemStatus().status).toBe('online');
+    expect(service.getPointFaults()).toEqual([]);
+
+    await service.stop();
+  });
+
+  // The order of the two checks above is load-bearing, so it gets its own
+  // case: a decommissioned controller nobody unplugged is exactly the thing
+  // that publishes garbage under a point id this layout has never heard of,
+  // and halting the railway over it is the nuisance trip #25's plan
+  // (decision 4) refused. Parse-before-registry would Safe-Stop here.
+  it('a malformed reading for an unknown point is dropped, not a Safe-Stop', async () => {
+    const { service, mqtt } = await buildServiceWithRequiredPoints();
+
+    mqtt.simulateIncoming('layout/test/point/ghost/reading', { garbage: true });
+    await new Promise((r) => setImmediate(r));
+
+    expect(service.getSystemStatus().status).toBe('online');
+    expect(service.getPointFaults()).toEqual([]);
+
+    await service.stop();
+  });
+
+  it('a retained reading changes nothing', async () => {
+    const { service, mqtt, stateManager } = await buildServiceWithRequiredPoints();
+    await service.handlePointCommand({ pointId: 'p1', position: 'normal' });
+    const before = stateManager.getPoint('p1');
+
+    mqtt.simulateIncoming(
+      'layout/test/point/p1/reading',
+      { pointId: 'p1', position: 'normal', source: 'sensor' },
+      true,
+    );
+    await new Promise((r) => setImmediate(r));
+
+    expect(stateManager.getPoint('p1')).toEqual(before);
+    expect(service.getPointFaults()).toEqual([]);
+    expect(service.getSystemStatus().status).toBe('online');
+
+    await service.stop();
+  });
+
+  it("queryPointPositions publishes retain: false and skips 'none' points", async () => {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    vi.mocked(repo.listPoints).mockResolvedValue([
+      { id: 'p1', layoutId: 'test', name: 'Point 1', dccAddress: 10, blockId: 'b1', positionFeedback: 'required' },
+      { id: 'p2', layoutId: 'test', name: 'Point 2', dccAddress: 11, blockId: 'b1', positionFeedback: 'none' },
+    ]);
+    const stateManager = new LayoutStateManager('test');
+    const reservations = new ReservationService(repo, stateManager, silentLogger);
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, reservations, silentLogger);
+
+    await service.start('test');
+
+    const queries = mqtt.publishLog.filter((p) => p.topic.endsWith('/query'));
+    expect(queries).toHaveLength(1);
+    expect(queries[0].topic).toBe('layout/test/point/p1/query');
+    expect(queries[0].retain).toBe(false);
+    expect(queries[0].qos).toBe(1);
+
+    await service.stop();
+  });
+
+  it('queries are re-issued on MQTT reconnect', async () => {
+    const dcc = new SimulatedDccAdapter(silentLogger);
+    const mqtt = new SimulatedMqttAdapter();
+    const repo = makeRepo();
+    vi.mocked(repo.listPoints).mockResolvedValue([
+      { id: 'p1', layoutId: 'test', name: 'Point 1', dccAddress: 10, blockId: 'b1', positionFeedback: 'required' },
+    ]);
+    const stateManager = new LayoutStateManager('test');
+    const reservations = new ReservationService(repo, stateManager, silentLogger);
+    const service = new LayoutService(dcc, mqtt, repo, stateManager, reservations, silentLogger);
+    await service.start('test');
+    mqtt.clearLog();
+
+    await mqtt.disconnect();
+    await new Promise((r) => setImmediate(r));
+    await mqtt.connect();
+    await new Promise((r) => setImmediate(r));
+
+    const queries = mqtt.publishLog.filter((p) => p.topic.endsWith('/query'));
+    expect(queries).toHaveLength(1);
+    expect(queries[0].topic).toBe('layout/test/point/p1/query');
+
     await service.stop();
   });
 });

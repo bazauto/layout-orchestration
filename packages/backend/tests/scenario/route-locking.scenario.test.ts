@@ -36,7 +36,12 @@ const BLOCKS = [
   { id: 'b3', layoutId: LAYOUT_ID, name: 'Block 3' },
   { id: 'b4', layoutId: LAYOUT_ID, name: 'Block 4' },
 ];
-const POINTS = [{ id: 'p1', layoutId: LAYOUT_ID, name: 'Point 1', dccAddress: 10, blockId: 'b1' }];
+// positionFeedback: 'none' — this fixture is about route locking (D1-D14),
+// not point confirmation (#25); 'none' is byte-for-byte today's pre-#25
+// behaviour (docs/point-feedback.md D10).
+const POINTS = [
+  { id: 'p1', layoutId: LAYOUT_ID, name: 'Point 1', dccAddress: 10, blockId: 'b1', positionFeedback: 'none' as const },
+];
 const SENSORS = [
   { id: 's1', layoutId: LAYOUT_ID, name: 'Sensor 1', type: 'block_detection' as const, blockId: 'b1', mqttTopic: `layout/${LAYOUT_ID}/sensor/s1/reading`, inService: true },
   { id: 's2', layoutId: LAYOUT_ID, name: 'Sensor 2', type: 'block_detection' as const, blockId: 'b2', mqttTopic: `layout/${LAYOUT_ID}/sensor/s2/reading`, inService: true },
@@ -201,7 +206,9 @@ describe('scenario: route locking', () => {
     expect(h.service.listRoutes(['active']).map((r) => r.id)).not.toContain(grant.reservation.id);
     expect(h.service.getAllState().blocks.get('b1')?.lockedByRoute).toBeNull();
     expect(h.service.getAllState().blocks.get('b2')?.lockedByRoute).toBeNull();
-    expect(h.service.getAllState().points.get('p1')?.position).toBe('reverse');
+    // What the force-override commanded (#25 D3) — no confirmation channel
+    // is in play on this 'none' point.
+    expect(h.service.getAllState().points.get('p1')?.commandedPosition).toBe('reverse');
     expect(
       h.dcc.commandLog.some((c) => c.type === 'SET_SPEED' && c.data.speed === 0 && c.data.address === 3),
     ).toBe(true);

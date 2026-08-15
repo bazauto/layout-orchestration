@@ -7,6 +7,7 @@
 
 import {
   BlockEdge,
+  PointFeedbackMode,
   RouteHoldKind,
   RouteId,
   RouteReservation,
@@ -55,6 +56,8 @@ export interface PointRecord {
   dccAddress: number;
   /** Block this point belongs to. */
   blockId: string | null;
+  /** Whether this point requires a confirmed reading before its position is trusted (#25, docs/point-feedback.md D10). */
+  positionFeedback: PointFeedbackMode;
 }
 
 export interface SensorRecord {

@@ -91,22 +91,34 @@ describe('LayoutStateManager', () => {
     });
   });
 
-  describe('point management', () => {
-    it('registers a point with unknown position', () => {
-      const point = manager.registerPoint('p1');
+  describe('point management (see docs/point-feedback.md)', () => {
+    const NOW = new Date('2026-08-14T00:00:00.000Z');
+
+    it("registers a point unreported, confirmedPosition 'unknown', via initialPointState", () => {
+      const point = manager.registerPoint('p1', 'required', NOW);
       expect(point.pointId).toBe('p1');
-      expect(point.position).toBe('unknown');
+      expect(point.commandedPosition).toBeNull();
+      expect(point.confirmedPosition).toBe('unknown');
+      expect(point.confirmation).toBe('unreported');
+      expect(point.positionFeedback).toBe('required');
       expect(point.locked).toBe(false);
     });
 
-    it('updates point position', () => {
-      manager.registerPoint('p1');
-      const updated = manager.updatePointPosition('p1', 'reverse');
-      expect(updated.position).toBe('reverse');
+    it('carries the configured feedback mode through unchanged', () => {
+      const point = manager.registerPoint('p1', 'none', NOW);
+      expect(point.positionFeedback).toBe('none');
+    });
+
+    it('setPointState stores whatever it is given for a registered point', () => {
+      const registered = manager.registerPoint('p1', 'none', NOW);
+      const next = { ...registered, commandedPosition: 'reverse' as const, confirmedPosition: 'reverse' as const };
+      const stored = manager.setPointState('p1', next);
+      expect(stored).toBe(next);
+      expect(manager.getPoint('p1')).toEqual(next);
     });
 
     it('locks and unlocks a point', () => {
-      manager.registerPoint('p1');
+      manager.registerPoint('p1', 'none', NOW);
       manager.lockPoint('p1', 'route-2');
       expect(manager.getPoint('p1')?.locked).toBe(true);
       expect(manager.getPoint('p1')?.lockedByRoute).toBe('route-2');
@@ -117,6 +129,17 @@ describe('LayoutStateManager', () => {
     it('lockPoint on an unregistered point id is a silent no-op', () => {
       expect(() => manager.lockPoint('ghost', 'route-1')).not.toThrow();
       expect(manager.getPoint('ghost')).toBeUndefined();
+    });
+
+    // ── Failure path ────────────────────────────────────────────────────
+
+    it('setPointState for an UNREGISTERED point id is a no-op returning the passed state without inserting — PointConfirmationService relies on this', () => {
+      const phantom = manager.registerPoint('template', 'none', NOW); // borrow a well-formed PointState shape
+      const ghostState = { ...phantom, pointId: 'ghost' };
+      const result = manager.setPointState('ghost', ghostState);
+      expect(result).toBe(ghostState); // returns the passed state unchanged
+      expect(manager.getPoint('ghost')).toBeUndefined(); // but nothing was inserted
+      expect(manager.getState().points.size).toBe(1); // only 'template' is registered
     });
   });
 

@@ -12,10 +12,21 @@ function block(overrides: Partial<BlockState> & { blockId: string }): BlockState
   };
 }
 
-function point(pointId: string, position: PointState['position']): PointState {
+/**
+ * Builds a `'none'`-feedback point whose `effectivePosition` reads
+ * `position` — the pre-#25 trust model, and the simplest fixture for a test
+ * that only cares about `roadSelection`'s own logic. `positionFeedback:
+ * 'required'` points are covered by `pointConfirmation.test.ts`.
+ */
+function point(pointId: string, position: PointState['confirmedPosition']): PointState {
   return {
     pointId,
-    position,
+    commandedPosition: null,
+    confirmedPosition: position,
+    confirmation: position === 'unknown' ? 'unreported' : 'confirmed',
+    positionFeedback: 'none',
+    awaitingSince: null,
+    lastReadingAt: null,
     locked: false,
     lockedByRoute: null,
     lastUpdated: '2026-08-14T00:00:00.000Z',

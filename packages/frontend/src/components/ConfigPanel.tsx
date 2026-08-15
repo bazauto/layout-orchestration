@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useLayoutConfig } from '../hooks/useLayoutConfig';
 import { useUsers } from '../hooks/useUsers';
-import { BlockRecord, PointRecord, Role, SensorRecord } from '../types';
+import { BlockRecord, PointFeedbackMode, PointRecord, Role, SensorRecord } from '../types';
 import { EdgesTab } from './EdgesTab';
 import { UsersTab } from './UsersTab';
 
@@ -417,7 +417,7 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
       {feedback && <p style={s.error}>{feedback}</p>}
       <table style={s.table}>
         <thead><tr>
-          {['Name', 'DCC Addr', 'Block', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
+          {['Name', 'DCC Addr', 'Block', 'Feedback', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
         </tr></thead>
         <tbody>
           {points.map((p) => (
@@ -444,6 +444,29 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
                 >
                   <option value="">— none —</option>
                   {blocks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </td>
+              {/*
+                #25: the only place `positionFeedback` is authored. Flipping a
+                point to 'required' says a position sensor is fitted and the
+                backend must stop trusting the commanded position without one;
+                flipping it back to 'none' is also the documented escape hatch
+                from a point whose feedback is unreliable, and clears any
+                latched fault (docs/point-feedback.md D4).
+              */}
+              <td style={s.td}>
+                <select
+                  value={p.positionFeedback}
+                  onChange={(e) =>
+                    runUpdate(
+                      ops.updatePoint(p.id, { positionFeedback: e.target.value as PointFeedbackMode }),
+                    )
+                  }
+                  style={s.inlineSelect}
+                  aria-label={`Position feedback for ${p.name}`}
+                >
+                  <option value="none">none</option>
+                  <option value="required">required</option>
                 </select>
               </td>
               <td style={s.td}><button onClick={() => runUpdate(ops.deletePoint(p.id))} style={s.delBtn}>×</button></td>

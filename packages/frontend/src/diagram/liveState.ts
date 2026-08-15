@@ -34,11 +34,15 @@
  * A route highlight drawn *in addition to* the outline would still be wrong,
  * for exactly the reason the original rule gave.
  *
- * **3. Every point position on this diagram is commanded, not confirmed.**
- * There is no feedback channel until #25. `roadSelection` therefore reports
- * `'selected' | 'unselected' | 'indeterminate'` about the *commanded* road and
- * says nothing about blades. The view states that once, prominently, rather
- * than qualifying each point — see `docs/liveness.md`.
+ * **3. A point's road is drawn against `effectivePosition`, not the raw
+ * commanded field.** `domain/pointConfirmation.ts#effectivePosition` (D7,
+ * `docs/point-feedback.md`, mirrored here as `diagram/pointConfirmation.ts`)
+ * is the single place that decides what a point's position is trusted to be:
+ * a `'required'` point trusts only a confirmed reading, a `'none'` point
+ * falls back to what was commanded — the same trust model the diagram used
+ * for every point before #25. `roadSelection` reports
+ * `'selected' | 'unselected' | 'indeterminate'` about that trusted position
+ * and says nothing about blades.
  */
 
 import {
@@ -50,6 +54,7 @@ import {
   SystemStatus,
   TilePointRoad,
 } from '../types';
+import { effectivePosition } from './pointConfirmation';
 
 // ─── Occupants ────────────────────────────────────────────────────────────────
 
@@ -176,13 +181,14 @@ export function roadSelection(
 
   for (const clause of road.when) {
     const state = points.get(clause.pointId);
-    if (!state || state.position === 'unknown') {
+    const position = state ? effectivePosition(state) : 'unknown';
+    if (position === 'unknown') {
       sawUnknown = true;
       continue;
     }
     // A definite disagreement settles it: this road is not the set road, and
     // that is true regardless of what any other clause turns out to be.
-    if (state.position !== clause.position) return 'unselected';
+    if (position !== clause.position) return 'unselected';
   }
 
   return sawUnknown ? 'indeterminate' : 'selected';

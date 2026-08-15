@@ -22,7 +22,7 @@ import {
 } from '../domain/types';
 import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from '../domain/auth';
 import { SessionRecord, UserRecord } from '../ports/IAuthRepository';
-import { SensorRecord } from '../ports/ILayoutRepository';
+import { PointRecord, SensorRecord } from '../ports/ILayoutRepository';
 
 export const sensorReadingSchema = z.object({
   state: z.enum(['occupied', 'clear']),
@@ -212,19 +212,65 @@ export const blockUpdateSchema = blockCreateSchema.partial().strict();
 
 export type BlockUpdateInput = z.infer<typeof blockUpdateSchema>;
 
-// ─── Points ─────────────────────────────────────────────────────────────
+// ─── Points (see docs/point-feedback.md) ───────────────────────────────────
+
+export const pointFeedbackModeSchema = z.enum(['none', 'required']);
+
+/**
+ * Full-row schema for a `points` DB row — every column, matching the
+ * posture of `sensorRowSchema`/`blockEdgeRowSchema`. `listPoints` used to do
+ * a bare cast with no validation at all, even though `positionFeedback` (#25)
+ * now decides what a point's confirmation state means.
+ */
+export const pointRowSchema = z.object({
+  id: z.string().min(1),
+  layoutId: z.string().min(1),
+  name: z.string().min(1),
+  dccAddress: z.number().int().positive(),
+  blockId: z.string().min(1).nullable(),
+  positionFeedback: pointFeedbackModeSchema,
+});
+
+/** Thrown by `parsePointRow` when a `points` row fails validation. */
+export class PointRowInvalidError extends Error {
+  readonly rowId: string;
+  readonly issues: z.ZodIssue[];
+
+  constructor(rowId: string, issues: z.ZodIssue[]) {
+    super(`points row ${rowId} failed validation: ${issues.map((i) => i.message).join('; ')}`);
+    this.name = 'PointRowInvalidError';
+    this.rowId = rowId;
+    this.issues = issues;
+  }
+}
+
+/**
+ * Parses a raw `points` DB row into a `PointRecord`. Same posture as
+ * `parseSensorRow`: no coercion, no defaults — a row already in the
+ * database is either valid or it is corruption, and corruption must throw.
+ */
+export function parsePointRow(row: unknown): PointRecord {
+  const parsed = pointRowSchema.safeParse(row);
+  if (!parsed.success) {
+    throw new PointRowInvalidError(extractRowId(row), parsed.error.issues);
+  }
+  return parsed.data;
+}
 
 /**
  * Write schema for creating a point (`POST .../points`). `dccAddress` is the
  * reason this matters more than it looks: it is the accessory address a
  * physical point motor is thrown on, so the string `"3"` reaching Drizzle
- * unchecked is bad config driving real hardware.
+ * unchecked is bad config driving real hardware. `positionFeedback` defaults
+ * to `'none'` (#25, D10) — the create form need not force an operator to
+ * decide up front, and every existing point behaves unchanged if they never do.
  */
 export const pointCreateSchema = z
   .object({
     name: z.string().min(1),
     dccAddress: z.number().int().positive(),
     blockId: z.string().min(1).nullable().default(null),
+    positionFeedback: pointFeedbackModeSchema.default('none'),
   })
   .strict();
 
@@ -237,14 +283,16 @@ export type PointCreateInput = z.infer<typeof pointCreateSchema>;
  * a silently ignored write. Same posture as `edgeUpdateSchema`.
  *
  * Deliberately not `pointCreateSchema.partial()`: that would carry create's
- * `.default(null)` on `blockId` into the update path, turning an omitted
- * `blockId` into an explicit "unassign this point from its block".
+ * `.default(null)` on `blockId` (and now `.default('none')` on
+ * `positionFeedback`) into the update path, turning an omitted field into an
+ * explicit reset.
  */
 export const pointUpdateSchema = z
   .object({
     name: z.string().min(1).optional(),
     dccAddress: z.number().int().positive().optional(),
     blockId: z.string().min(1).nullable().optional(),
+    positionFeedback: pointFeedbackModeSchema.optional(),
   })
   .strict();
 

@@ -1,5 +1,6 @@
 import { BlockState, BlockRecord, ClientMessage, PointState, PointRecord } from '../types';
-import { LOCK, OCCUPANCY, POINT_POSITION, type StateEncoding } from '../diagram/encoding';
+import { LOCK, OCCUPANCY, POINT_CONFIRMATION, type StateEncoding } from '../diagram/encoding';
+import { effectivePosition } from '../diagram/pointConfirmation';
 
 interface Props {
   blocks: Record<string, BlockState>;
@@ -20,6 +21,16 @@ interface Props {
  * the sole carrier on this screen — the glyph is added because the state word
  * is the first thing to be dropped when a layout gets tight, and the glyph
  * survives that.
+ *
+ * The Points table's badge (#25, docs/point-feedback.md D3) shows
+ * `confirmedPosition` — what was actually reported, `'unknown'` until a
+ * reading lands — as the primary value, with `commandedPosition` alongside it
+ * only when the two disagree: a mismatch, or a `'required'` point still
+ * `pending`. The badge's colour and glyph come from `POINT_CONFIRMATION`, not
+ * from the position itself, because the fact worth surfacing at a glance is
+ * how far the position can be trusted — `mismatch`, `indeterminate` and
+ * `timed-out` all read as fault-coloured but carry distinct glyphs and words,
+ * never colour alone.
  */
 const UNSET = '#6c7086';
 
@@ -34,7 +45,13 @@ export function LayoutPanel({ blocks, points, blockRecords, pointRecords, disabl
   const blockName = (id: string) => blockRecords.find((b) => b.id === id)?.name ?? id;
   const pointName = (id: string) => pointRecords.find((p) => p.id === id)?.name ?? id;
 
-  const throwPoint = (pointId: string, current: string) => {
+  // Targets the opposite of the *displayed* (effective, D7) position, never
+  // the raw commanded field — a `'none'` point that was thrown and never
+  // reported would otherwise show `confirmedPosition: 'unknown'` forever and
+  // toggle to the same value on every click. Falls back to `'normal'` on an
+  // unknown/never-commanded point, same as before #25.
+  const throwPoint = (pointId: string, point: PointState) => {
+    const current = effectivePosition(point);
     const next = current === 'normal' ? 'reverse' : 'normal';
     send({ type: 'POINT_COMMAND', payload: { pointId, position: next as 'normal' | 'reverse' } });
   };
@@ -93,42 +110,75 @@ export function LayoutPanel({ blocks, points, blockRecords, pointRecords, disabl
               </tr>
             </thead>
             <tbody>
-              {pointList.map((p) => (
-                <tr key={p.pointId}>
-                  <td style={styles.td}>{pointName(p.pointId)}</td>
-                  <td style={styles.td}>
-                    <span
-                      style={{
-                        ...styles.badge,
-                        background: badgeOf(POINT_POSITION, p.position)?.colour ?? UNSET,
-                        color: '#1e1e2e',
-                      }}
-                    >
-                      <span aria-hidden="true">{badgeOf(POINT_POSITION, p.position)?.glyph}</span>{' '}
-                      {p.position}
-                    </span>
-                  </td>
-                  <td style={styles.td}>
-                    {p.locked ? (
-                      <span title={`${LOCK.label} by route ${p.lockedByRoute}`}>
-                        {LOCK.glyph} {LOCK.label}
+              {pointList.map((p) => {
+                const confEnc = badgeOf(POINT_CONFIRMATION, p.confirmation);
+                const pending = p.confirmation === 'pending';
+                // Secondary text only when there is something to disagree
+                // with: a `commandedPosition` that differs from what was
+                // actually reported (a mismatch, or a `'required'` point
+                // still pending and reset to `'unknown'`).
+                const showCommanded = p.commandedPosition !== null && p.commandedPosition !== p.confirmedPosition;
+                return (
+                  <tr key={p.pointId}>
+                    <td style={styles.td}>{pointName(p.pointId)}</td>
+                    <td style={styles.td}>
+                      <span
+                        style={{
+                          ...styles.badge,
+                          background: confEnc?.colour ?? UNSET,
+                          color: '#1e1e2e',
+                        }}
+                        title={confEnc?.label ?? p.confirmation}
+                      >
+                        <span aria-hidden="true">{confEnc?.glyph}</span> {p.confirmedPosition}
                       </span>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                  <td style={styles.td}>
-                    <button
-                      onClick={() => throwPoint(p.pointId, p.position)}
-                      disabled={disabled || p.locked}
-                      title={p.locked ? `Locked by route ${p.lockedByRoute}` : 'Throw point'}
-                      style={styles.throwBtn}
-                    >
-                      Throw
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                      {/* The word, never colour alone (#81) — mismatch, timed-out
+                          and indeterminate all read fault-coloured and must stay
+                          distinct without it. */}
+                      <span style={styles.confirmationLabel}>{confEnc?.label ?? p.confirmation}</span>
+                      {showCommanded && (
+                        <span style={styles.secondary}>commanded {p.commandedPosition}</span>
+                      )}
+                      {/* D2 open question 1: an automated route may still hold
+                          this point, with a reduced guarantee — stated here,
+                          per point, rather than in a footnote. */}
+                      {p.positionFeedback === 'none' && (
+                        <span
+                          style={styles.noFeedback}
+                          title="This point is not configured to confirm its position — its reported position is not independently verified."
+                        >
+                          no feedback
+                        </span>
+                      )}
+                    </td>
+                    <td style={styles.td}>
+                      {p.locked ? (
+                        <span title={`${LOCK.label} by route ${p.lockedByRoute}`}>
+                          {LOCK.glyph} {LOCK.label}
+                        </span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td style={styles.td}>
+                      <button
+                        onClick={() => throwPoint(p.pointId, p)}
+                        disabled={disabled || p.locked || pending}
+                        title={
+                          p.locked
+                            ? `Locked by route ${p.lockedByRoute}`
+                            : pending
+                              ? 'Waiting for this point to confirm its last command'
+                              : 'Throw point'
+                        }
+                        style={styles.throwBtn}
+                      >
+                        Throw
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -178,6 +228,23 @@ const styles = {
     borderRadius: 10,
     fontSize: 11,
     fontWeight: 700,
+  } as React.CSSProperties,
+  confirmationLabel: {
+    display: 'block',
+    fontSize: 10,
+    color: '#a6adc8',
+    marginTop: 2,
+  } as React.CSSProperties,
+  secondary: {
+    display: 'block',
+    fontSize: 10,
+    color: '#a6adc8',
+  } as React.CSSProperties,
+  noFeedback: {
+    display: 'block',
+    fontSize: 10,
+    color: '#6c7086',
+    fontStyle: 'italic',
   } as React.CSSProperties,
   throwBtn: {
     background: '#313244',

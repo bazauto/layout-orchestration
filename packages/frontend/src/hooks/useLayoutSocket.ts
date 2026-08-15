@@ -30,6 +30,7 @@ const INITIAL_SNAPSHOT: StateSnapshot = {
   locos: {},
   routes: {},
   sensorFaults: [],
+  pointFaults: [],
   routeFaults: [],
 };
 
@@ -105,11 +106,11 @@ export function useLayoutSocket() {
       // `live` for up to one stale-window, showing pre-drop state as current.
       setLastMessageAt(null);
       // Deliberately spread `s` rather than reset to INITIAL_SNAPSHOT: a
-      // sensor fault (#34) or route fault (#4) is latched on the backend, not
-      // on this connection, so a drop must not clear `sensorFaults` /
-      // `routeFaults` — that would show the operator an all-clear that isn't
-      // true. A reconnect's STATE_SNAPSHOT replaces both lists with the
-      // authoritative current sets.
+      // sensor fault (#34), point fault (#25), or route fault (#4) is latched
+      // on the backend, not on this connection, so a drop must not clear
+      // `sensorFaults` / `pointFaults` / `routeFaults` — that would show the
+      // operator an all-clear that isn't true. A reconnect's STATE_SNAPSHOT
+      // replaces all three lists with the authoritative current sets.
       setSnapshot((s) => ({ ...s, systemStatus: 'offline' }));
       const delay = reconnectDelay.current;
       reconnectDelay.current = Math.min(delay * 2, MAX_RECONNECT_MS);
@@ -169,6 +170,10 @@ function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
     case 'SENSOR_FAULTS':
       // Always the complete current set, never a delta — replace wholesale.
       return { ...prev, sensorFaults: msg.payload.faults };
+
+    case 'POINT_FAULTS':
+      // Same posture as SENSOR_FAULTS above (#25).
+      return { ...prev, pointFaults: msg.payload.faults };
 
     case 'ROUTE_STATE': {
       // Unlike the fault lists, this IS a delta: one reservation at whatever

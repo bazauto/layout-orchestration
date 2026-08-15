@@ -12,10 +12,11 @@
  * resolves every abbreviation at once, without the diagram having to carry the
  * full names.
  *
- * It grew past a key on the way: the same row can carry the point's commanded
- * position and whether a route holds it, which is what an operator actually
- * wants when they look a point up. So this is a key *and* a status table, and
- * the diagram stays uncluttered because of it rather than in spite of it.
+ * It grew past a key on the way: the same row can carry the point's trusted
+ * position, how far that can be trusted, and whether a route holds it, which
+ * is what an operator actually wants when they look a point up. So this is a
+ * key *and* a status table, and the diagram stays uncluttered because of it
+ * rather than in spite of it.
  *
  * ## Two degradations, both deliberate
  *
@@ -28,9 +29,16 @@
  * That is `docs/naming.md` D8's degradation: a missing name falls back to the
  * identifier rather than to nothing, because a point the layout is reporting on
  * and the table silently omits is worse than an ugly row.
+ *
+ * **The position row is the *effective* position (#25, D7), not the raw
+ * commanded field.** A wall display cannot hover to check whether a position
+ * is trustworthy, so `confirmation` and `positionFeedback` ride alongside it
+ * — a point whose confirmation is not `'confirmed'` must say so in the row
+ * itself, legible without interaction, rather than reading as settled.
  */
 
-import { PointPosition, PointRecord, PointState } from '../types';
+import { PointConfirmation, PointFeedbackMode, PointPosition, PointRecord, PointState } from '../types';
+import { effectivePosition } from './pointConfirmation';
 import { shortPointLabel } from './pointLabels';
 
 export interface PointKeyRow {
@@ -39,8 +47,12 @@ export interface PointKeyRow {
   short: string;
   /** The full operator-facing name, or the raw id if there is no record. */
   name: string;
-  /** Commanded, never confirmed — there is no feedback channel until #25. */
+  /** `effectivePosition` (D7) — what is actually trusted, not the raw commanded field. */
   position: PointPosition;
+  /** Whether `position` above is a confirmed reading, a fallback, or worse. */
+  confirmation: PointConfirmation;
+  /** Whether this point is configured to confirm its position at all — see `docs/point-feedback.md` open question 1. */
+  positionFeedback: PointFeedbackMode;
   /** The route holding this point, or `null`. */
   lockedByRoute: string | null;
 }
@@ -73,7 +85,9 @@ export function buildPointKey(
       pointId: id,
       short: shortPointLabel(name),
       name,
-      position: state?.position ?? 'unknown',
+      position: state ? effectivePosition(state) : 'unknown',
+      confirmation: state?.confirmation ?? 'unreported',
+      positionFeedback: state?.positionFeedback ?? 'none',
       lockedByRoute: state?.lockedByRoute ?? null,
     });
   }

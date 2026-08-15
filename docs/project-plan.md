@@ -50,5 +50,5 @@ A control system requires rigorous, layered testing:
 - **CI/CD:** GitHub Actions configured from day one to run tests and linters on every push.
 
 ## Further Considerations
-1. **ESP Controller Refactor:** You will need to update the `bazauto/esp-layout-controller` repo to replace WiThrottle with an MQTT client (like PubSubClient) that respects the JSON payload contracts defined in Phase 0.
+1. **ESP Controller Refactor:** You will need to update the `bazauto/esp-layout-controller` repo to replace WiThrottle with an MQTT client (like PubSubClient) that respects the JSON payload contracts defined in Phase 0. A **second firmware obligation** now sits alongside it (#25): a point controller must subscribe to `layout/{layoutId}/point/+/query` and publish `layout/{layoutId}/point/{pointId}/reading` — QoS 1, **retain false**, on every observed position change and in answer to a query — reporting `position: "unknown"` when it cannot tell, and setting `source` honestly (`"sensor"` only when independently sensed). The two are disjoint topic sets and neither blocks the other, but each is a flash-and-test cycle on the layout, so batch them into one firmware release.
 2. **State Recovery:** If the system restarts, does it auto-poll the layout or assume an empty layout until sensors are tripped?

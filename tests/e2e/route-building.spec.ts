@@ -78,6 +78,7 @@ const ONLINE_SNAPSHOT = {
   locos: {},
   routes: {},
   sensorFaults: [],
+  pointFaults: [],
   routeFaults: [],
 };
 

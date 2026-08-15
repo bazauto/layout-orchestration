@@ -22,8 +22,9 @@
  * Left uncovered, and left to the reader that this is a deliberate scope cut
  * rather than an oversight: points and sensors CRUD (identical shape to
  * blocks — same `mutate()` call, same refresh-on-success),
- * `acknowledgeSensorFault`, `cancelRoute`/`resumeRoute`/`acknowledgeRouteFault`
- * beyond the one asymmetry test above, and `updateEdge`.
+ * `acknowledgeSensorFault`/`acknowledgePointFault` (#25 — identical shape to
+ * each other), `cancelRoute`/`resumeRoute`/`acknowledgeRouteFault` beyond the
+ * one asymmetry test above, and `updateEdge`.
  *
  * `apiFetch` (api.ts) is a thin wrapper over the global `fetch`, so `fetch`
  * itself is stubbed here rather than the `api` module — the request shape
