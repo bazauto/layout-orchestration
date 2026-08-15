@@ -29,7 +29,11 @@ import {
   LocoState,
   NameBook,
   PointCommand,
+  PointFault,
+  PointFaultView,
   PointId,
+  PointPosition,
+  PointReading,
   PointState,
   RouteFault,
   RouteFaultView,
@@ -58,6 +62,12 @@ import {
 } from '../domain/safety';
 import { deriveBlockOccupancy, isSensorFaultArmed, toSensorFaultView } from '../domain/occupancy';
 import { isEmptySensorPayload } from '../domain/sensorPayload';
+import {
+  buildPointPositionMap,
+  isPointFaultArmed,
+  toPointFaultView,
+} from '../domain/pointConfirmation';
+import { pointReadingSchema } from '../domain/pointPayload';
 import { TrackGraph } from '../domain/graph';
 import { toRouteFaultView } from '../domain/routeLocking';
 import { blockLabel, layoutLabel, pluralise, pointLabel, sensorLabel } from '../domain/naming';
@@ -65,6 +75,7 @@ import { IDccController } from '../ports/IDccController';
 import { IMqttAdapter } from '../ports/IMqttAdapter';
 import { ILayoutRepository, PointRecord, SensorRecord } from '../ports/ILayoutRepository';
 import { INameBook } from '../ports/INameBook';
+import { ClockTimer, IClock } from '../ports/IClock';
 import {
   IGraphCompletenessView,
   INERT_GRAPH_COMPLETENESS,
@@ -72,6 +83,8 @@ import {
 import { SensorCreateInput, sensorReadingSchema, SensorUpdateInput } from './validation';
 import { INERT_NAME_BOOK } from './nameBook';
 import { loadTopology, TopologyLoadResult } from './topologyLoader';
+import { PointConfirmationService } from './PointConfirmationService';
+import { SystemClock } from '../adapters/clock/SystemClock';
 import {
   GrantOutcome,
   GrantRequest,
@@ -88,9 +101,17 @@ import {
  */
 export interface LayoutServiceOptions {
   clearAfterValidReadings: number;
+  /** D5 (docs/point-feedback.md): how often, in ms, the confirmation sweep applies `evaluateTimeout` to every registered point. */
+  pointSweepIntervalMs: number;
+  /** D4: consecutive confirming readings a latched `PointFault` needs before an operator may acknowledge it — the point-side twin of `clearAfterValidReadings`. */
+  pointFaultClearAfterConfirmations: number;
 }
 
-export const DEFAULT_LAYOUT_SERVICE_OPTIONS: LayoutServiceOptions = { clearAfterValidReadings: 3 };
+export const DEFAULT_LAYOUT_SERVICE_OPTIONS: LayoutServiceOptions = {
+  clearAfterValidReadings: 3,
+  pointSweepIntervalMs: 250,
+  pointFaultClearAfterConfirmations: 1,
+};
 
 export interface LayoutServiceLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -154,6 +175,48 @@ export class SensorFaultNotArmedError extends Error {
   }
 }
 
+/** Thrown by point-fault-recovery methods when a point id does not resolve in the given layout (mirrors `SensorNotFoundError`). */
+export class PointNotFoundError extends Error {
+  constructor(
+    readonly pointId: string,
+    pointLabelText?: string,
+  ) {
+    super(`Point ${pointLabelText ?? pointId} not found`);
+    this.name = 'PointNotFoundError';
+  }
+}
+
+/** Thrown by `acknowledgePointFault` when the named point has no fault latched. */
+export class PointNotFaultedError extends Error {
+  constructor(
+    readonly pointId: string,
+    pointLabelText?: string,
+  ) {
+    super(`Point ${pointLabelText ?? pointId} has no active fault`);
+    this.name = 'PointNotFaultedError';
+  }
+}
+
+/** Thrown by `acknowledgePointFault` when the fault has not yet accumulated `pointFaultClearAfterConfirmations` consecutive confirming readings (D4). */
+export class PointFaultNotArmedError extends Error {
+  constructor(
+    readonly pointId: string,
+    readonly consecutiveConfirmations: number,
+    readonly requiredConfirmations: number,
+    pointLabelText?: string,
+  ) {
+    super(
+      // Mirrors SensorFaultNotArmedError's message shape exactly (D8 degradation contract).
+      `Point ${pointLabelText ?? pointId} fault is not yet armed: ${requiredConfirmations - consecutiveConfirmations} more consecutive confirming reading(s) required`,
+    );
+    this.name = 'PointFaultNotArmedError';
+  }
+
+  get outstanding(): number {
+    return this.requiredConfirmations - this.consecutiveConfirmations;
+  }
+}
+
 /** One point command that did not take effect while setting a route's road (#4). */
 interface PointCommandFailure {
   pointId: PointId;
@@ -178,6 +241,7 @@ export class LayoutService extends EventEmitter {
     topologyValid: true,
     topologyReason: null,
     sensorFaults: {},
+    pointFaults: {},
     routeFaults: {},
     recoveredRouteCount: 0,
   };
@@ -187,6 +251,8 @@ export class LayoutService extends EventEmitter {
    * emptying this set is what lets the D9 Safe-Stop latch clear. */
   private recoveredRouteIds = new Set<RouteId>();
   private readonly options: LayoutServiceOptions;
+  /** #25 D5: the confirmation-sweep handle, started next to the heartbeat and stopped in `stop()`. `null` when not running. */
+  private confirmationSweepTimer: ClockTimer | null = null;
 
   constructor(
     private readonly dcc: IDccController,
@@ -203,6 +269,32 @@ export class LayoutService extends EventEmitter {
      * nothing has told it anything about completeness.
      */
     private readonly completeness: IGraphCompletenessView = INERT_GRAPH_COMPLETENESS,
+    /**
+     * #25: time and timers for the point-confirmation sweep (D5). Defaults to
+     * a real `SystemClock` — every existing call site keeps behaving exactly
+     * as it does today (the sweep runs on a real interval, the same way the
+     * heartbeat always has); a caller that needs to control time (tests)
+     * passes a `ManualClock` explicitly.
+     */
+    private readonly clock: IClock = new SystemClock(),
+    /**
+     * #25: owns point-confirmation policy (docs/point-feedback.md). Defaults
+     * to one scoped to this instance's own `stateManager` with D5's 8000ms
+     * timeout — `index.ts` constructs and passes its own, built from
+     * `config.points.confirmTimeoutMs`, so this fallback only matters to a
+     * call site that does not care.
+     */
+    private readonly pointConfirmations: PointConfirmationService = new PointConfirmationService(stateManager, {
+      timeoutMs: 8000,
+    }),
+    /**
+     * D9: the in-process hook `SimulatedPointController` (and, one day, a
+     * real command-observing controller) learns of a point command through.
+     * `LayoutService` never reads or imports anything about the simulator —
+     * `index.ts` is the only thing that wires this, which is what keeps the
+     * dependency one-way.
+     */
+    private readonly onPointCommanded?: (pointId: PointId, position: 'normal' | 'reverse') => void,
   ) {
     super();
     this.options = { ...DEFAULT_LAYOUT_SERVICE_OPTIONS, ...options };
@@ -215,6 +307,25 @@ export class LayoutService extends EventEmitter {
     ) {
       throw new Error(
         `[LayoutService] clearAfterValidReadings must be an integer >= 1, got ${this.options.clearAfterValidReadings}`,
+      );
+    }
+    // Same posture, extended to #25's point-confirmation thresholds — a
+    // nonsense sweep interval or arming threshold fails at boot, not silently
+    // at the first point fault.
+    if (
+      !Number.isInteger(this.options.pointSweepIntervalMs) ||
+      this.options.pointSweepIntervalMs < 1
+    ) {
+      throw new Error(
+        `[LayoutService] pointSweepIntervalMs must be an integer >= 1, got ${this.options.pointSweepIntervalMs}`,
+      );
+    }
+    if (
+      !Number.isInteger(this.options.pointFaultClearAfterConfirmations) ||
+      this.options.pointFaultClearAfterConfirmations < 1
+    ) {
+      throw new Error(
+        `[LayoutService] pointFaultClearAfterConfirmations must be an integer >= 1, got ${this.options.pointFaultClearAfterConfirmations}`,
       );
     }
   }
@@ -246,15 +357,26 @@ export class LayoutService extends EventEmitter {
 
     // Subscribe to sensor topics
     await this.subscribeSensors(layoutId);
+    // #25: one wildcard subscription for every point's reading, mirroring
+    // subscribeSensors' per-topic shape but collapsed to one topic pattern —
+    // there is no per-point in-service gate to honour the way sensors have.
+    await this.subscribePointReadings(layoutId);
 
     this.publishSystemStatus();
     this.startHeartbeat();
+    this.startConfirmationSweep();
+
+    // #25 D2: recovers position live from every 'required' point — the only
+    // recovery consistent with D1's retention argument, since nothing about
+    // confirmation persists across a restart.
+    await this.queryPointPositions();
 
     this.log.info('[LayoutService] Started', { layoutId });
   }
 
   async stop(): Promise<void> {
     this.stopHeartbeat();
+    this.stopConfirmationSweep();
 
     if (this.layoutId) {
       this.stateManager.setOffline();
@@ -387,9 +509,16 @@ export class LayoutService extends EventEmitter {
 
     await this.dcc.setPoint(pointRecord.dccAddress, cmd.position);
 
-    const updated = this.stateManager.updatePointPosition(cmd.pointId, cmd.position);
-    this.publishPointState(updated);
-    this.emit('event', { type: 'POINT_STATE', payload: updated } satisfies LayoutEvent);
+    // #25: arms a confirmation deadline on a 'required' point (D5); a no-op
+    // on `confirmation` for 'none' (D7). `onPointCommanded` — D9's in-process
+    // hook, wired to the simulated point controller from index.ts — fires
+    // regardless of feedback mode, same as the real command itself.
+    const updated = this.pointConfirmations.noteCommanded(cmd.pointId, cmd.position, this.clock.now());
+    if (updated) {
+      this.publishPointState(updated);
+      this.emit('event', { type: 'POINT_STATE', payload: updated } satisfies LayoutEvent);
+    }
+    this.onPointCommanded?.(cmd.pointId, cmd.position);
     this.log.info('[LayoutService] Point command applied', {
       pointId: cmd.pointId,
       pointName: this.names.get().points.get(cmd.pointId),
@@ -762,8 +891,13 @@ export class LayoutService extends EventEmitter {
     for (const block of dbBlocks) {
       this.stateManager.registerBlock(block.id);
     }
+    // #25 D2: every point starts 'unreported'/'unknown' this session,
+    // regardless of what it was doing before a restart — and publishing its
+    // state here overwrites any stale old-shape retained `point/*/state`
+    // message the pre-#25 backend left on the broker.
     for (const point of dbPoints) {
-      this.stateManager.registerPoint(point.id);
+      const registered = this.stateManager.registerPoint(point.id, point.positionFeedback, this.clock.now());
+      this.publishPointState(registered);
     }
 
     this.log.info('[LayoutService] Layout state initialised', {
@@ -1125,6 +1259,307 @@ export class LayoutService extends EventEmitter {
     };
   }
 
+  // ─── Private: Point Confirmation Ingestion (see docs/point-feedback.md) ───────
+
+  /**
+   * One wildcard subscription for every point's reading — unlike sensors
+   * there is no per-point in-service gate to honour, so this collapses to a
+   * single `point/+/reading` subscribe rather than sensors' per-topic loop.
+   * The callback does exactly what the plan requires and nothing else:
+   * extract the point id from the topic and delegate.
+   */
+  private async subscribePointReadings(layoutId: LayoutId): Promise<void> {
+    const topic = `${this.topicBase()}/point/+/reading`;
+    await this.mqtt.subscribe(topic, (payload, receivedTopic, retained) => {
+      const topicPointId = receivedTopic.split('/')[3];
+      void this.handlePointReading(topicPointId, payload, retained);
+    });
+    this.log.info('[LayoutService] Point reading subscription registered', { layoutId, topic });
+  }
+
+  /**
+   * A `point/{pointId}/reading` landed on the wildcard subscription above.
+   * See docs/point-feedback.md D1/D3/D4 and the #25 plan's decision 4.
+   *
+   * Order, and why — this mirrors `handleSensorReading`'s, step for step:
+   *  1. **Registry lookup, BEFORE the Zod parse.** The subscription is a
+   *     wildcard, so anything on the broker publishing under `point/+/reading`
+   *     reaches here, including a decommissioned controller nobody has
+   *     unplugged. Such a device has no bearing on any point this layout
+   *     tracks, and Safe-Stopping the railway over its garbage is the
+   *     nuisance trip that teaches operators to ignore Safe-Stops (#25 plan
+   *     decision 4, the same argument DD4 makes for an unregistered sensor).
+   *     Warn and drop, latching nothing. Getting this order wrong is not
+   *     theoretical: with the parse first, one stray retained message from a
+   *     dead device halts the layout at every backend start.
+   *  2. **Zod parse.** For a point this layout DOES have, a malformed payload
+   *     is a Fail-Safe Trigger (mqtt-contract.md item 3) independent of
+   *     retention — so a garbage payload cannot be waved through by also
+   *     setting `retain`.
+   *  3. `PointConfirmationService.applyReading` decides the rest: id-mismatch
+   *     (a Fail-Safe Trigger, latched against the TOPIC point id, with the
+   *     payload-named point's own state left untouched), or retained (D1 —
+   *     drop, arms nothing, faults nothing on its own).
+   */
+  private async handlePointReading(topicPointId: PointId, rawPayload: unknown, retained: boolean): Promise<void> {
+    if (!this.stateManager.getPoint(topicPointId)) {
+      this.log.warn('[LayoutService] Point reading for a point not in this layout — dropping', {
+        layoutId: this.layoutId,
+        pointId: topicPointId,
+      });
+      return;
+    }
+
+    const parsed = pointReadingSchema.safeParse(rawPayload);
+    if (!parsed.success) {
+      await this.raisePointFault(
+        topicPointId,
+        'malformed-payload',
+        `Malformed point reading payload on point ${pointLabel(topicPointId, this.names.get())}: ${parsed.error.message}`,
+      );
+      return;
+    }
+
+    const reading: PointReading = {
+      pointId: parsed.data.pointId,
+      position: parsed.data.position,
+      source: parsed.data.source,
+      reportedAt: parsed.data.updatedAt ? new Date(parsed.data.updatedAt) : null,
+    };
+
+    const outcome = this.pointConfirmations.applyReading(topicPointId, reading, this.clock.now(), retained);
+
+    if (outcome.rejection?.kind === 'unknown-point') {
+      // Defence in depth: step 1 above already dropped this case, and the
+      // service refuses it independently so nothing that calls `applyReading`
+      // by another route can write state for a point that does not exist.
+      this.log.warn('[LayoutService] Point reading for an unregistered point — dropping', {
+        layoutId: this.layoutId,
+        pointId: topicPointId,
+      });
+      return;
+    }
+
+    if (outcome.rejection?.kind === 'id-mismatch') {
+      await this.raisePointFault(
+        topicPointId,
+        'id-mismatch',
+        `Point reading id mismatch: topic named ${pointLabel(topicPointId, this.names.get())} but payload named ${pointLabel(outcome.rejection.payloadPointId, this.names.get())}`,
+      );
+      return;
+    }
+
+    if (!outcome.point) {
+      // D1: retained — confirms nothing, arms nothing, faults nothing on its own.
+      this.log.warn('[LayoutService] Retained point reading — dropping, confirms nothing', {
+        layoutId: this.layoutId,
+        pointId: topicPointId,
+        pointName: this.names.get().points.get(topicPointId),
+      });
+      return;
+    }
+
+    this.publishPointState(outcome.point);
+    this.emit('event', { type: 'POINT_STATE', payload: outcome.point } satisfies LayoutEvent);
+
+    if (outcome.point.confirmation === 'mismatch' || outcome.point.confirmation === 'indeterminate') {
+      await this.raisePointFault(
+        topicPointId,
+        outcome.point.confirmation,
+        `Point ${pointLabel(topicPointId, this.names.get())} failed to confirm: ${outcome.point.confirmation}`,
+      );
+      return;
+    }
+
+    // D4: while already faulted, a reading that does not itself re-fault the
+    // point still counts toward (or resets) the arming counter — the same
+    // "valid reading while faulted" bookkeeping `handleSensorReading` does,
+    // gated on `confirmationArms` (`outcome.arms`) rather than re-checking
+    // the reading's shape here.
+    const fault = this.health.pointFaults[topicPointId];
+    if (fault) {
+      const updatedFault: PointFault = {
+        ...fault,
+        consecutiveConfirmations: outcome.arms ? fault.consecutiveConfirmations + 1 : 0,
+      };
+      this.health = { ...this.health, pointFaults: { ...this.health.pointFaults, [topicPointId]: updatedFault } };
+      this.log.info('[LayoutService] Reading applied while point faulted', {
+        layoutId: this.layoutId,
+        pointId: topicPointId,
+        pointName: this.names.get().points.get(topicPointId),
+        arms: outcome.arms,
+        consecutiveConfirmations: updatedFault.consecutiveConfirmations,
+        requiredConfirmations: this.options.pointFaultClearAfterConfirmations,
+      });
+      this.emitPointFaults();
+    }
+  }
+
+  /**
+   * Latches (or re-latches, keeping the FIRST cause — D4) a `PointFault` and
+   * re-evaluates Safe-Stop. The only path a point-confirmation problem
+   * enters Safe-Stop through — never `stateManager.enterSafeStop` directly
+   * (CLAUDE.md Traps). Mirrors `raiseRouteFault`/`tripSensorFault`.
+   */
+  private async raisePointFault(pointId: PointId, kind: PointFault['kind'], reason: string): Promise<void> {
+    const existing = this.health.pointFaults[pointId];
+    const fault: PointFault = existing
+      ? { ...existing, consecutiveConfirmations: 0 }
+      : { pointId, kind, reason, faultedAt: this.clock.now(), consecutiveConfirmations: 0 };
+
+    this.log.error('[LayoutService] Point fault latched — entering Safe-Stop', {
+      layoutId: this.layoutId,
+      pointId,
+      pointName: this.names.get().points.get(pointId),
+      kind,
+      reason,
+    });
+
+    this.health = { ...this.health, pointFaults: { ...this.health.pointFaults, [pointId]: fault } };
+    await this.evaluateAndApplySafeStop();
+    this.emitPointFaults();
+  }
+
+  /** D5: applies `evaluateTimeout` to every registered point via the sweep, publishing and fault-latching each transition. */
+  private async runConfirmationSweep(): Promise<void> {
+    const transitioned = this.pointConfirmations.sweep(this.clock.now());
+    for (const point of transitioned) {
+      this.publishPointState(point);
+      this.emit('event', { type: 'POINT_STATE', payload: point } satisfies LayoutEvent);
+      if (point.confirmation === 'timed-out') {
+        await this.raisePointFault(
+          point.pointId,
+          'timeout',
+          `Point ${pointLabel(point.pointId, this.names.get())} failed to confirm within the timeout — no reading received`,
+        );
+      }
+    }
+  }
+
+  /** D5: started next to the heartbeat, stopped in `stop()`. Runs on `this.clock`, never a bare `setInterval` — the seam `ManualClock` drives in tests. */
+  private startConfirmationSweep(): void {
+    this.confirmationSweepTimer = this.clock.setInterval(() => {
+      void this.runConfirmationSweep();
+    }, this.options.pointSweepIntervalMs);
+  }
+
+  private stopConfirmationSweep(): void {
+    this.confirmationSweepTimer?.cancel();
+    this.confirmationSweepTimer = null;
+  }
+
+  private emitPointFaults(): void {
+    this.emit('event', {
+      type: 'POINT_FAULTS',
+      payload: { faults: this.getPointFaults() },
+    } satisfies LayoutEvent);
+  }
+
+  // ─── Public: Point Confirmation (see docs/point-feedback.md) ──────────────────
+
+  /**
+   * Publishes `point/{id}/query` `{ requestedAt }` at `{ qos: 1, retain:
+   * false }` for every 'required' point (D2) — at the end of `start()` and
+   * on every MQTT reconnect. `noteQueried` first, so a query never arms a
+   * confirmation deadline (D6) even though it touches `lastUpdated`.
+   */
+  async queryPointPositions(): Promise<void> {
+    if (!this.layoutId) return;
+    const pointIds = this.pointConfirmations.pointsRequiringFeedback();
+    const requestedAt = this.clock.now();
+
+    for (const pointId of pointIds) {
+      this.pointConfirmations.noteQueried(pointId, requestedAt);
+      await this.mqtt
+        .publish(
+          `${this.topicBase()}/point/${pointId}/query`,
+          { requestedAt: requestedAt.toISOString() },
+          { qos: 1, retain: false },
+        )
+        .catch((err: Error) =>
+          this.log.error('[LayoutService] Failed to publish point query', {
+            layoutId: this.layoutId,
+            pointId,
+            pointName: this.names.get().points.get(pointId),
+            error: err.message,
+          }),
+        );
+    }
+
+    if (pointIds.length > 0) {
+      this.log.info('[LayoutService] Point positions queried', { layoutId: this.layoutId, count: pointIds.length });
+    }
+  }
+
+  /** The current latched point faults, oldest first — the first cause leads, matching `getSensorFaults`. */
+  getPointFaults(): PointFaultView[] {
+    return Object.values(this.health.pointFaults)
+      .map((fault) => toPointFaultView(fault, this.options.pointFaultClearAfterConfirmations))
+      .sort((a, b) => a.faultedAt.localeCompare(b.faultedAt));
+  }
+
+  /**
+   * D4: accepted only once the fault has armed
+   * (`pointFaultClearAfterConfirmations` consecutive confirming, non-retained
+   * readings since the fault). Mirrors `acknowledgeSensorFault` exactly.
+   * Deliberately does NOT touch the point's own `confirmation`/
+   * `confirmedPosition` — those stay whatever the last reading (or timeout)
+   * left them; only the latch clears.
+   */
+  async acknowledgePointFault(
+    layoutId: LayoutId,
+    pointId: PointId,
+  ): Promise<{
+    pointId: PointId;
+    cleared: true;
+    systemStatus: SystemStatus;
+    safeStopReason: string | null;
+    faults: PointFaultView[];
+  }> {
+    if (this.layoutId !== layoutId) throw new PointNotFoundError(pointId, pointLabel(pointId, this.names.get()));
+    const point = this.stateManager.getPoint(pointId);
+    if (!point) throw new PointNotFoundError(pointId, pointLabel(pointId, this.names.get()));
+
+    const fault = this.health.pointFaults[pointId];
+    if (!fault) throw new PointNotFaultedError(pointId, pointLabel(pointId, this.names.get()));
+
+    if (!isPointFaultArmed(fault, this.options.pointFaultClearAfterConfirmations)) {
+      throw new PointFaultNotArmedError(
+        pointId,
+        fault.consecutiveConfirmations,
+        this.options.pointFaultClearAfterConfirmations,
+        pointLabel(pointId, this.names.get()),
+      );
+    }
+
+    const remaining = { ...this.health.pointFaults };
+    delete remaining[pointId];
+    this.health = { ...this.health, pointFaults: remaining };
+
+    await this.evaluateAndApplySafeStop();
+    this.emitPointFaults();
+
+    const state = this.stateManager.getState();
+    this.log.info('[LayoutService] Point fault acknowledged', {
+      layoutId,
+      pointId,
+      pointName: this.names.get().points.get(pointId),
+    });
+
+    return {
+      pointId,
+      cleared: true,
+      systemStatus: state.systemStatus,
+      safeStopReason: state.safeStopReason,
+      faults: this.getPointFaults(),
+    };
+  }
+
+  /** `effectivePosition` (D7) over every registered point — what a road-confirmation check or the UI wants, never `commandedPosition` directly. */
+  getPointPositions(): ReadonlyMap<PointId, PointPosition> {
+    return buildPointPositionMap(this.stateManager.getState().points);
+  }
+
   /**
    * Config write path (DD12) — the route parses and delegates here, no
    * decisions in the transport layer (safety rule 2).
@@ -1364,9 +1799,15 @@ export class LayoutService extends EventEmitter {
 
       try {
         await this.dcc.setPoint(pointRecord.dccAddress, hold.requiredPosition);
-        const updated = this.stateManager.updatePointPosition(hold.targetId, hold.requiredPosition);
-        this.publishPointState(updated);
-        this.emit('event', { type: 'POINT_STATE', payload: updated } satisfies LayoutEvent);
+        // #25: same noteCommanded/onPointCommanded pair as handlePointCommand
+        // — a route's own point commands arm/skip a confirmation deadline
+        // exactly the same way a manual command does (D5/D7).
+        const updated = this.pointConfirmations.noteCommanded(hold.targetId, hold.requiredPosition, this.clock.now());
+        if (updated) {
+          this.publishPointState(updated);
+          this.emit('event', { type: 'POINT_STATE', payload: updated } satisfies LayoutEvent);
+        }
+        this.onPointCommanded?.(hold.targetId, hold.requiredPosition);
       } catch (err) {
         failures.push({
           pointId: hold.targetId,
@@ -1531,6 +1972,16 @@ export class LayoutService extends EventEmitter {
     this.evaluateAndApplySafeStop().catch((err: Error) =>
       this.log.error('[LayoutService] evaluateAndApplySafeStop failed', { error: err.message }),
     );
+    // #25 D2: a reconnect (including the initial connect inside start(),
+    // which is a harmless no-op — no points are registered yet at that
+    // point) re-issues every 'required' point's query, the same recovery
+    // moment a retained-cache alternative would have relied on a broker
+    // replay for.
+    if (connected) {
+      this.queryPointPositions().catch((err: Error) =>
+        this.log.error('[LayoutService] queryPointPositions failed', { error: err.message }),
+      );
+    }
   }
 
   private handleDccConnectionChange(connected: boolean): void {
@@ -1632,8 +2083,18 @@ export class LayoutService extends EventEmitter {
       .catch((err: Error) => this.log.error('[LayoutService] Failed to publish loco state', { error: err.message }));
   }
 
+  /** Publishes exactly the contract's field set (docs/mqtt-contract.md `point/{pointId}/state`) — `awaitingSince` and `lastReadingAt` stay off MQTT, internal-only bookkeeping. */
   private publishPointState(point: PointState): void {
-    const payload = { ...point, updatedAt: point.lastUpdated.toISOString() };
+    const payload = {
+      pointId: point.pointId,
+      commandedPosition: point.commandedPosition,
+      confirmedPosition: point.confirmedPosition,
+      confirmation: point.confirmation,
+      positionFeedback: point.positionFeedback,
+      locked: point.locked,
+      lockedByRoute: point.lockedByRoute,
+      updatedAt: point.lastUpdated.toISOString(),
+    };
     this.mqtt
       .publish(`${this.topicBase()}/point/${point.pointId}/state`, payload, {
         qos: 1,

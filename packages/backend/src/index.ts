@@ -10,6 +10,8 @@ import { LayoutStateManager } from './domain/layoutState';
 import { SimulatedDccAdapter } from './adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from './adapters/mqtt/SimulatedMqttAdapter';
 import { MqttAdapter } from './adapters/mqtt/MqttAdapter';
+import { SystemClock } from './adapters/clock/SystemClock';
+import { SimulatedPointController } from './adapters/simulator/SimulatedPointController';
 import { openDatabase } from './adapters/db/connection';
 import { DrizzleRepository } from './adapters/db/repository';
 import { DrizzleAuthRepository } from './adapters/db/authRepository';
@@ -18,6 +20,7 @@ import { TopologyService } from './services/TopologyService';
 import { CompileService } from './services/CompileService';
 import { IGraphCompletenessView } from './ports/IGraphCompletenessView';
 import { ReservationService } from './services/ReservationService';
+import { PointConfirmationService } from './services/PointConfirmationService';
 import { SensorSimulationService } from './services/SensorSimulationService';
 import { NameBookCache } from './services/nameBook';
 import { AuthService } from './services/AuthService';
@@ -130,6 +133,44 @@ async function main() {
   // services (and the transport layer below) — see docs/naming.md D4.
   const nameBook = new NameBookCache(repo, activeLayoutId);
   const reservationService = new ReservationService(repo, stateManager, adapterLogger, nameBook);
+
+  // #25: one clock and one PointConfirmationService for the whole process,
+  // constructed before LayoutService (which owns the confirmation sweep and
+  // ingestion) and before the simulated point controller (which needs the
+  // same clock so a test driving both from one ManualClock stays coherent).
+  const clock = new SystemClock();
+  const pointConfirmations = new PointConfirmationService(stateManager, {
+    timeoutMs: config.points.confirmTimeoutMs,
+  });
+
+  // #25 D9: a genuine simulated twin of the ESP point controller — ships
+  // whenever either simulator mode is active (CLAUDE.md safety rule 5),
+  // never against real hardware. Its `noteCommanded` hook is wired below as
+  // LayoutService's optional `onPointCommanded` callback, captured by
+  // reference so it is safe for the variable to be assigned AFTER
+  // LayoutService is constructed (the dccOnly branch below) — nothing
+  // commands a point before `layoutService.start()` has resolved.
+  //
+  // SUBSCRIBE TIMING differs by mode. `SimulatedMqttAdapter.subscribe` is
+  // synchronous/local and safe before `connect()`, so in FULL simulator mode
+  // the controller subscribes right away — early enough to catch
+  // `layoutService.start()`'s own startup `point/*/query` (D2), not only
+  // ones sent on a later reconnect. The real `MqttAdapter.subscribe` gives no
+  // such guarantee before its client has connected (it would hang awaiting a
+  // subscribe callback that never fires), so in HYBRID (dccOnly) mode the
+  // controller is constructed and subscribed only once `layoutService.start()`
+  // has connected the real broker — the cost is that the very first startup
+  // query can race the subscription and go unanswered, which is not a safety
+  // concern (D6: the backend stays correct with no answer, and D2 re-issues
+  // the same query on the next reconnect).
+  let simulatedPointController: SimulatedPointController | undefined;
+  if (config.simulator.full) {
+    simulatedPointController = new SimulatedPointController(mqtt, clock, activeLayoutId, adapterLogger, {
+      confirmDelayMs: config.simulator.pointConfirmDelayMs,
+    });
+    await simulatedPointController.start();
+  }
+
   // #103: `LayoutService` needs the gap count to gate `auto`, `CompileService`
   // needs `TopologyService` to apply, and `TopologyService` needs
   // `layoutService.reloadTopology` — a three-way cycle broken here, at the one
@@ -151,9 +192,17 @@ async function main() {
     // #65 R6: narrowed rather than passing `config.sensors` wholesale —
     // structural typing would let `simulationEnabled` compile straight
     // through, which is misleading: LayoutService has no use for the flag.
-    { clearAfterValidReadings: config.sensors.clearAfterValidReadings },
+    {
+      clearAfterValidReadings: config.sensors.clearAfterValidReadings,
+      pointSweepIntervalMs: config.points.sweepIntervalMs,
+      pointFaultClearAfterConfirmations: config.points.faultClearAfterConfirmations,
+    },
     nameBook,
     completeness,
+    clock,
+    pointConfirmations,
+    // D9: captured by reference — see the comment above `simulatedPointController`.
+    (pointId, position) => simulatedPointController?.noteCommanded(pointId, position),
   );
   const topologyService = new TopologyService(
     repo,
@@ -179,6 +228,16 @@ async function main() {
   }
 
   await layoutService.start(activeLayoutId);
+
+  // HYBRID mode's real broker connection is only guaranteed live once
+  // layoutService.start() above has resolved — see the comment on
+  // `simulatedPointController`'s construction.
+  if (config.simulator.dccOnly && !simulatedPointController) {
+    simulatedPointController = new SimulatedPointController(mqtt, clock, activeLayoutId, adapterLogger, {
+      confirmDelayMs: config.simulator.pointConfirmDelayMs,
+    });
+    await simulatedPointController.start();
+  }
 
   const server = await buildServer(
     layoutService,

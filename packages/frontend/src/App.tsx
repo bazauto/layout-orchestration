@@ -14,6 +14,7 @@ import { ConfigPanel } from './components/ConfigPanel';
 import { GridEditor } from './components/GridEditor';
 import { MonitorView } from './components/MonitorView';
 import { SensorFaultBanner } from './components/SensorFaultBanner';
+import { PointFaultBanner } from './components/PointFaultBanner';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { apiFetch, API_BASE } from './api';
 import { ClientMessage, Role, SystemMode } from './types';
@@ -90,8 +91,18 @@ function AuthenticatedApp({
   // auth state back to LoginScreen the same way a deliberate "Log out" does.
   const capabilities = useCapabilities();
   const { snapshot, connectionState, lastMessageAt, send } = useLayoutSocket();
-  const { systemStatus, systemMode, safeStopReason, blocks, points, locos, routes, sensorFaults, routeFaults } =
-    snapshot;
+  const {
+    systemStatus,
+    systemMode,
+    safeStopReason,
+    blocks,
+    points,
+    locos,
+    routes,
+    sensorFaults,
+    pointFaults,
+    routeFaults,
+  } = snapshot;
 
   // One derived list feeds both the nav and the render guards below, rather
   // than scattering role checks — a panel must not render even if `appTab`
@@ -138,6 +149,8 @@ function AuthenticatedApp({
   // bare id (#34). Falls back to the id inside SensorFaultBanner itself if a
   // sensor's config hasn't loaded yet (or was deleted after the fault fired).
   const sensorNames = Object.fromEntries(layoutConfig.config.sensors.map((s) => [s.id, s.name]));
+  // Point id → name, same posture as sensorNames above (#25).
+  const pointNames = Object.fromEntries(layoutConfig.config.points.map((p) => [p.id, p.name]));
 
   return (
     <div style={styles.root}>
@@ -155,6 +168,15 @@ function AuthenticatedApp({
         sensorNames={sensorNames}
         onAcknowledge={async (sensorId) => {
           const result = await layoutConfig.acknowledgeSensorFault(sensorId);
+          return { ok: result.ok, message: result.message };
+        }}
+      />
+
+      <PointFaultBanner
+        faults={pointFaults}
+        pointNames={pointNames}
+        onAcknowledge={async (pointId) => {
+          const result = await layoutConfig.acknowledgePointFault(pointId);
           return { ok: result.ok, message: result.message };
         }}
       />

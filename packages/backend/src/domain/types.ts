@@ -470,13 +470,102 @@ export interface BlockState {
   lastUpdated: Date;
 }
 
+/**
+ * Whether a point is configured to require a confirmed reading (#25,
+ * docs/point-feedback.md). Opt-in per point, defaulting to `'none'` so the
+ * live layout is unaffected until an operator instruments a specific motor
+ * (D10).
+ */
+export type PointFeedbackMode = 'none' | 'required';
+
+/**
+ * The confirmation status of a point's `commandedPosition` against its
+ * `confirmedPosition` (docs/point-feedback.md D3):
+ *  - `'unreported'`    — no reading has ever landed for this point.
+ *  - `'pending'`       — a command is outstanding; a confirmation deadline
+ *    is running (`awaitingSince`).
+ *  - `'confirmed'`     — the last reading matched what was commanded (or
+ *    nothing was commanded to disagree with).
+ *  - `'mismatch'`      — the last reading was well-formed but did NOT match
+ *    what was commanded. `confirmedPosition` holds the reported value, not
+ *    the commanded one — the report is authoritative.
+ *  - `'indeterminate'` — the last reading reported `'unknown'`, or was a
+ *    `'driver'`-sourced reading on a `'required'` point (D3).
+ *  - `'timed-out'`     — the confirmation deadline elapsed with no reading
+ *    (D5).
+ */
+export type PointConfirmation = 'unreported' | 'pending' | 'confirmed' | 'mismatch' | 'indeterminate' | 'timed-out';
+
+/**
+ * A point's live confirmation state (#25). Replaces the pre-#25 single
+ * `position` field, which conflated "what we told it to be" with "what it
+ * is" — the defect this issue exists to remove (D3). `position` is
+ * **removed**, not deprecated: nothing outside this repository subscribes to
+ * `point/*\/state`, so the rename is a clean break (see
+ * `docs/mqtt-contract.md`'s "Breaking change" callout).
+ */
 export interface PointState {
   pointId: PointId;
-  position: PointPosition;
+  /** Last position the backend commanded this session. `null` = never commanded. NOT a confirmation of anything physical. */
+  commandedPosition: 'normal' | 'reverse' | null;
+  /** Last position the point controller reported. `'unknown'` until a reading lands, and again after a confirmation timeout. */
+  confirmedPosition: PointPosition;
+  confirmation: PointConfirmation;
+  /** Configuration, not runtime state — mirrors `points.position_feedback` (D10). */
+  positionFeedback: PointFeedbackMode;
+  /** Non-null iff `confirmation === 'pending'` — the invariant `applyPointReading`/`evaluateTimeout`/`onPointCommanded` maintain. */
+  awaitingSince: Date | null;
+  lastReadingAt: Date | null;
   /** Whether this point is locked by an active route. */
   locked: boolean;
   lockedByRoute: RouteId | null;
   lastUpdated: Date;
+}
+
+/**
+ * A validated `point/{pointId}/reading` payload, ready for the domain
+ * (#25, docs/point-feedback.md). `reportedAt` is the controller's own
+ * timestamp — advisory only, "never used as a clock" (the backend always
+ * timestamps from its own injected `IClock`, per D1/mqtt-contract.md).
+ */
+export interface PointReading {
+  pointId: PointId;
+  position: PointPosition;
+  source: 'sensor' | 'driver';
+  reportedAt: Date | null;
+}
+
+/**
+ * Why a point failed to confirm (#25, docs/point-feedback.md D4). All five
+ * kinds Safe-Stop the whole system — see D4 for the reasoning against a
+ * two-tier model.
+ */
+export type PointFaultKind = 'timeout' | 'mismatch' | 'indeterminate' | 'malformed-payload' | 'id-mismatch';
+
+/**
+ * A latched fault on one point (D4). `reason`/`faultedAt` are the FIRST
+ * cause and do not move on a re-fault — only `consecutiveConfirmations`
+ * resets. Held in `SystemHealth.pointFaults`, keyed by `pointId`, mirroring
+ * `SensorFault`/`SystemHealth.sensorFaults` exactly.
+ */
+export interface PointFault {
+  pointId: PointId;
+  kind: PointFaultKind;
+  reason: string;
+  faultedAt: Date;
+  /** Consecutive confirming readings since the fault — D4's arming counter. */
+  consecutiveConfirmations: number;
+}
+
+/** Wire projection of `PointFault` (D4). Dates as ISO 8601; `armed`/`requiredConfirmations` precomputed, mirroring `SensorFaultView`. */
+export interface PointFaultView {
+  pointId: PointId;
+  kind: PointFaultKind;
+  reason: string;
+  faultedAt: string;
+  consecutiveConfirmations: number;
+  requiredConfirmations: number;
+  armed: boolean;
 }
 
 export interface LocoState {
@@ -832,6 +921,7 @@ export type LayoutEvent =
       payload: { status: SystemStatus; mode: SystemMode; reason: string | null };
     }
   | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
+  | { type: 'POINT_FAULTS'; payload: { faults: PointFaultView[] } }
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
   | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } };
 
@@ -853,6 +943,7 @@ export interface StateSnapshot {
   locos: Record<LocoAddress, LocoState>;
   routes: Record<RouteId, RouteReservation>;
   sensorFaults: SensorFaultView[];
+  pointFaults: PointFaultView[];
   routeFaults: RouteFaultView[];
 }
 
@@ -873,6 +964,7 @@ export type ServerMessage =
       payload: { status: SystemStatus; mode: SystemMode; reason: string | null };
     }
   | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
+  | { type: 'POINT_FAULTS'; payload: { faults: PointFaultView[] } }
   | { type: 'ROUTE_STATE'; payload: RouteReservation }
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } }

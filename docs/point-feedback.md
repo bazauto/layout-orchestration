@@ -24,6 +24,20 @@ correctly. This decision record closes that gap for any point the operator
 configures as requiring it; D11 in `docs/route-locking.md` is updated to point
 here rather than restate it (that update lands with PR B, see below).
 
+## Status
+
+| | |
+|---|---|
+| Contract amendment (`docs/mqtt-contract.md`) | **Shipped** — `b2b6641` |
+| PR A — the channel | **Shipped** 2026-08-15 |
+| PR B — route interaction (D8) | Open |
+| ESP firmware (`bazauto/esp-layout-controller`) | Not started — see `docs/project-plan.md` |
+
+Nothing on the live layout has feedback hardware fitted, so every point on
+Westgate Hollow is `positionFeedback: 'none'` and behaves exactly as it did
+before PR A. The feature is opt-in per point, from the Configure screen's
+Points tab.
+
 ## Scope: two PRs
 
 **PR A — the channel.** The contract amendment, `positionFeedback` config,
@@ -361,14 +375,21 @@ see.
 
 ---
 
-## Open questions (carried forward, not decided here)
+## Open questions
 
 1. **May an automated route be granted over a `positionFeedback: 'none'`
-   point?** Recommendation from the original design work: **yes**, with the
-   reduced guarantee made visible in the UI — refusing would make automation
-   impossible until every point on the layout is instrumented. This is
-   product scope, not implementation, and is deferred to be decided alongside
-   PR B, before #6 (braking) starts driving anything automatically.
+   point? — decided: yes** (2026-08-15, with PR A). `planReservation` is
+   untouched and gains no new rejection: `positionFeedback` decides *what a
+   confirmation means*, never *whether a route may be granted*. Refusing would
+   have made automation impossible until every point on the layout carries a
+   sensor, which is a standard nobody set and the live layout does not meet.
+   The reduced guarantee is not hidden behind that: it is stated per point
+   where an operator reads position — the Layout panel's "no feedback" marker
+   and the monitor's point key — because the honest statement of this
+   feature's guarantee has always been per point, not per system. The
+   consequence to keep in view when #6 and #7 start driving trains: an
+   automated route over a `'none'` point is running on commanded position,
+   exactly as every route did before this feature existed.
 2. **Firmware `pointId` ↔ hardware mapping.** The firmware must publish this
    repository's `points.id` (a UUID) on `point/{pointId}/reading`. A
    compile-time lookup table in the firmware is acceptable for now;

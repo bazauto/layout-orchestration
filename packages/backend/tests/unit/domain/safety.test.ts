@@ -3,6 +3,7 @@ import {
   evaluateSafeStop,
   evaluateSystemSafeStop,
   oldestSensorFault,
+  oldestPointFault,
   oldestRouteFault,
   canIssueAutoCommand,
   canIssueManualCommand,
@@ -12,7 +13,7 @@ import {
   isValidSpeed,
   isValidLocoAddress,
 } from '../../../src/domain/safety';
-import { RouteFault, SensorFault } from '../../../src/domain/types';
+import { PointFault, RouteFault, SensorFault } from '../../../src/domain/types';
 
 describe('evaluateSafeStop', () => {
   it('returns no safe-stop when both connections are healthy', () => {
@@ -62,6 +63,29 @@ function routeFault(overrides: Partial<RouteFault> = {}): RouteFault {
   };
 }
 
+function pointFault(overrides: Partial<PointFault> = {}): PointFault {
+  return {
+    pointId: 'p1',
+    kind: 'timeout',
+    reason: 'Point p1 failed to confirm: timed out waiting for a reading',
+    faultedAt: new Date('2026-01-01T00:00:00.000Z'),
+    consecutiveConfirmations: 0,
+    ...overrides,
+  };
+}
+
+describe('oldestPointFault', () => {
+  it('returns null for an empty collection', () => {
+    expect(oldestPointFault({})).toBeNull();
+  });
+
+  it('returns the fault with the earliest faultedAt', () => {
+    const older = pointFault({ pointId: 'p1', faultedAt: new Date('2026-01-01T00:00:00.000Z') });
+    const newer = pointFault({ pointId: 'p2', faultedAt: new Date('2026-01-02T00:00:00.000Z') });
+    expect(oldestPointFault({ p2: newer, p1: older })).toBe(older);
+  });
+});
+
 describe('oldestRouteFault', () => {
   it('returns null for an empty collection', () => {
     expect(oldestRouteFault({})).toBeNull();
@@ -102,13 +126,14 @@ describe('oldestSensorFault', () => {
 });
 
 describe('evaluateSystemSafeStop', () => {
-  it('returns no safe-stop when connections, topology, sensor health, and route recovery are all healthy', () => {
+  it('returns no safe-stop when connections, topology, sensor, point, and route health are all healthy', () => {
     const result = evaluateSystemSafeStop({
       mqttConnected: true,
       dccConnected: true,
       topologyValid: true,
       topologyReason: null,
       sensorFaults: {},
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
     });
@@ -123,6 +148,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation — edge e1 is a self-loop on block b1',
       sensorFaults: {},
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
     });
@@ -139,6 +165,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation — edge e1 is a self-loop on block b1',
       sensorFaults: {},
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
     });
@@ -153,6 +180,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s1: fault() },
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
     });
@@ -169,6 +197,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s1: fault() },
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
     });
@@ -183,6 +212,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: false,
       topologyReason: 'Topology invalid: 1 violation — edge e1 is a self-loop on block b1',
       sensorFaults: { s1: fault() },
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
     });
@@ -207,6 +237,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s2: newer, s1: older },
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
     });
@@ -235,6 +266,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults,
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
     });
@@ -256,11 +288,98 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s2 }, // s1 already resolved/removed
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
     expect(result.reason).toMatch(/s2 reason/);
+  });
+
+  // ── Point faults (#25, D4) ───────────────────────────────────────────────
+
+  it('stops with the point-fault reason when everything above it (MQTT, DCC, topology, sensor faults) is healthy', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      pointFaults: { p1: pointFault() },
+      routeFaults: {},
+      recoveredRouteCount: 0,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/failed to confirm/);
+  });
+
+  it('lets a sensor fault win over a point fault — the sensor is the more systemic failure', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: { s1: fault() },
+      pointFaults: { p1: pointFault() },
+      routeFaults: {},
+      recoveredRouteCount: 0,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/Malformed sensor payload/);
+  });
+
+  it('lets a point fault win over a route fault — the point failure is the cause, the route fault the symptom', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      pointFaults: { p1: pointFault() },
+      routeFaults: { r1: routeFault() },
+      recoveredRouteCount: 0,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/failed to confirm/);
+  });
+
+  it('lets a point fault win over recovered routes', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      pointFaults: { p1: pointFault() },
+      routeFaults: {},
+      recoveredRouteCount: 3,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/failed to confirm/);
+  });
+
+  it('reports the OLDEST point fault when several are latched (the first cause)', () => {
+    const older = pointFault({
+      pointId: 'p1',
+      reason: 'older point fault',
+      faultedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    const newer = pointFault({
+      pointId: 'p2',
+      reason: 'newer point fault',
+      faultedAt: new Date('2026-01-02T00:00:00.000Z'),
+    });
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      pointFaults: { p2: newer, p1: older },
+      routeFaults: {},
+      recoveredRouteCount: 0,
+    });
+    expect(result.reason).toBe('older point fault');
   });
 
   // ── Route faults (#4) ──────────────────────────────────────────────────
@@ -272,6 +391,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: {},
+      pointFaults: {},
       routeFaults: { r1: routeFault() },
       recoveredRouteCount: 0,
     });
@@ -286,6 +406,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s1: fault() },
+      pointFaults: {},
       routeFaults: { r1: routeFault() },
       recoveredRouteCount: 0,
     });
@@ -300,6 +421,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: {},
+      pointFaults: {},
       routeFaults: { r1: routeFault() },
       recoveredRouteCount: 3,
     });
@@ -324,6 +446,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: {},
+      pointFaults: {},
       routeFaults: { r2: newer, r1: older },
       recoveredRouteCount: 0,
     });
@@ -337,6 +460,7 @@ describe('evaluateSystemSafeStop', () => {
       topologyValid: true,
       topologyReason: null,
       sensorFaults: {},
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 2,
     });
@@ -344,13 +468,14 @@ describe('evaluateSystemSafeStop', () => {
     expect(result.reason).toMatch(/2 route reservation\(s\) survived a restart/i);
   });
 
-  it('lets a sensor fault win over recovered routes (full check order: MQTT, DCC, topology, sensor fault, then recovered routes)', () => {
+  it('lets a sensor fault win over recovered routes (full check order: MQTT, DCC, topology, sensor fault, point fault, route fault, then recovered routes)', () => {
     const result = evaluateSystemSafeStop({
       mqttConnected: true,
       dccConnected: true,
       topologyValid: true,
       topologyReason: null,
       sensorFaults: { s1: fault() },
+      pointFaults: {},
       routeFaults: {},
       recoveredRouteCount: 1,
     });

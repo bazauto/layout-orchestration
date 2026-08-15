@@ -14,6 +14,7 @@ import {
   LocoAddress,
   LocoState,
   Occupancy,
+  PointFeedbackMode,
   PointId,
   PointState,
   RouteId,
@@ -24,6 +25,7 @@ import {
   SensorType,
   SystemMode,
 } from './types';
+import { initialPointState } from './pointConfirmation';
 
 export class LayoutStateManager {
   private state: LayoutRuntimeState;
@@ -134,32 +136,35 @@ export class LayoutStateManager {
     }
   }
 
-  // ─── Point Updates ────────────────────────────────────────────────────────────
+  // ─── Point Updates (see docs/point-feedback.md) ───────────────────────────────
 
-  /** Registers a point in state. Called during layout initialisation. */
-  registerPoint(pointId: PointId): PointState {
-    const initial: PointState = {
-      pointId,
-      position: 'unknown',
-      locked: false,
-      lockedByRoute: null,
-      lastUpdated: new Date(),
-    };
+  /**
+   * Registers a point in state via `initialPointState` (#25). Called during
+   * layout initialisation. `feedback` is the point's configured
+   * `positionFeedback` — carried straight through, never defaulted here (the
+   * caller resolves the default).
+   */
+  registerPoint(pointId: PointId, feedback: PointFeedbackMode, now: Date): PointState {
+    const initial = initialPointState(pointId, feedback, now);
     this.state.points.set(pointId, initial);
     return initial;
   }
 
-  updatePointPosition(pointId: PointId, position: 'normal' | 'reverse'): PointState {
-    const existing = this.state.points.get(pointId);
-    const updated: PointState = {
-      pointId,
-      position,
-      locked: existing?.locked ?? false,
-      lockedByRoute: existing?.lockedByRoute ?? null,
-      lastUpdated: new Date(),
-    };
-    this.state.points.set(pointId, updated);
-    return updated;
+  /**
+   * Stores whatever the domain decided (#25) — same posture as
+   * `upsertRoute`: this class holds state, it does not compute it.
+   * `PointConfirmationService` is the only caller, via
+   * `domain/pointConfirmation.ts`'s pure transition functions.
+   *
+   * A `setPointState` for an UNREGISTERED point id is a no-op that returns
+   * `next` unchanged without inserting — `PointConfirmationService` relies
+   * on this: a reading or command naming a point this layout does not have
+   * must not silently create a phantom entry.
+   */
+  setPointState(pointId: PointId, next: PointState): PointState {
+    if (!this.state.points.has(pointId)) return next;
+    this.state.points.set(pointId, next);
+    return next;
   }
 
   lockPoint(pointId: PointId, routeId: RouteId): void {

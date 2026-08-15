@@ -201,15 +201,43 @@ export function routeStyle(styleIndex: number): { colour: string; dash: string |
  * encoding, which is why it is the right presentation — keep it that way.
  * `unknown` gets the cross-hatch treatment for the same reason as occupancy.
  *
- * Commanded-versus-confirmed (#25, #63) will need a *third* non-colour
- * treatment when a feedback channel exists. It is deliberately not invented
- * here: until #25 lands every position on a diagram is commanded, and a
- * distinction drawn before there is anything to distinguish would be a lie.
+ * Commanded-versus-confirmed was deliberately not invented here before #25:
+ * until then every position on a diagram was commanded, and a distinction
+ * drawn before there was anything to distinguish would have been a lie.
+ * `POINT_CONFIRMATION` below is that third treatment, now that #25 gives it
+ * something real to distinguish.
  */
 export const POINT_POSITION: Record<'normal' | 'reverse' | 'unknown', StateEncoding> = {
   normal: { colour: '#89b4fa', pattern: null, glyph: '─', label: 'normal' },
   reverse: { colour: '#cba6f7', pattern: 'diag-reverse', glyph: '╱', label: 'reverse' },
   unknown: { colour: '#f9e2af', pattern: 'cross-unknown', glyph: '?', label: 'unknown' },
+};
+
+/**
+ * Point position **confirmation** (#25, docs/point-feedback.md D3/D4/D7) — a
+ * distinct state from `POINT_POSITION` above and never a substitute for it.
+ * `POINT_POSITION` says what a road is; this says how much the position it
+ * is drawn from can be trusted, and is what a point badge's colour/glyph are
+ * keyed on rather than on the raw position (`LayoutPanel`, `PointKeyPanel`).
+ *
+ * Six members, six glyphs — `mismatch`, `indeterminate` and `timed-out` all
+ * sit in "known bad" territory and must stay visibly distinct from one
+ * another without relying on their (deliberately similar) fault colour, per
+ * #81's rule that colour is never the sole carrier. `unreported` and
+ * `pending` are both "no verdict yet" but for different reasons (never
+ * commanded this session, vs. a deadline actively running) and get their own
+ * glyphs for the same reason.
+ */
+export const POINT_CONFIRMATION: Record<
+  'unreported' | 'pending' | 'confirmed' | 'mismatch' | 'indeterminate' | 'timed-out',
+  StateEncoding
+> = {
+  unreported: { colour: '#6c7086', pattern: null, glyph: '–', label: 'unreported' },
+  pending: { colour: '#89b4fa', pattern: null, glyph: '…', label: 'pending' },
+  confirmed: { colour: '#a6e3a1', pattern: null, glyph: '✓', label: 'confirmed' },
+  mismatch: { colour: '#f38ba8', pattern: 'diag-occupied', glyph: '✗', label: 'mismatch' },
+  indeterminate: { colour: '#f9e2af', pattern: 'cross-unknown', glyph: '?', label: 'indeterminate' },
+  'timed-out': { colour: '#f38ba8', pattern: 'cross-unknown', glyph: '⏱', label: 'timed-out' },
 };
 
 /**

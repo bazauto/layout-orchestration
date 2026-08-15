@@ -204,7 +204,7 @@ describe('App — monitor role nav (#63)', () => {
     // strip rather than the canvas, because the canvas needs a layout and
     // this mock deliberately serves none — the strip is mounted either way,
     // which is itself the behaviour an unattended display depends on.
-    expect(screen.queryByText(/not confirmed/)).not.toBeNull();
+    expect(screen.queryByText(/trusted/)).not.toBeNull();
   });
 
   it('keeps the liveness badge on screen even when no layout loads', async () => {

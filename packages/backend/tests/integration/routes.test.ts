@@ -35,7 +35,7 @@ const LAYOUT = {
 };
 
 const BLOCK  = { id: 'b1', layoutId: 'layout-1', name: 'Platform 1' };
-const POINT  = { id: 'pt1', layoutId: 'layout-1', name: 'Point 1', dccAddress: 10, blockId: 'b1' };
+const POINT  = { id: 'pt1', layoutId: 'layout-1', name: 'Point 1', dccAddress: 10, blockId: 'b1', positionFeedback: 'none' as const };
 const SENSOR = { id: 's1', layoutId: 'layout-1', name: 'Sensor 1', type: 'block_detection' as const, blockId: 'b1', mqttTopic: 'sensor/s1', inService: true };
 const TILE   = { id: 't1', layoutId: 'layout-1', x: 2, y: 3, tileType: 'straight-h', metadata: '{}' };
 
@@ -339,6 +339,7 @@ describe('Point routes', () => {
       name: 'Point A',
       dccAddress: 3,
       blockId: null,
+      positionFeedback: 'none',
     });
   });
 

@@ -8,6 +8,8 @@
 
 import {
   Occupancy,
+  PointFault,
+  PointId,
   RouteFault,
   RouteId,
   SensorFault,
@@ -38,18 +40,26 @@ export interface ConnectionHealth {
  * Safe-Stop until every entry is individually resolved (`LayoutService`'s
  * `acknowledgeSensorFault`, or a sensor going out of service — see D1/D5).
  *
+ * `pointFaults` is a keyed collection of the same shape (#25, D4,
+ * docs/point-feedback.md) — one latched `PointFault` per point that failed
+ * to confirm, required, not optional-defaulting-to-`{}`, latched the same
+ * way: nothing in this module clears an entry, only `LayoutService`'s
+ * `acknowledgePointFault`, or flipping the point back to `positionFeedback:
+ * 'none'` (D4's escape hatch).
+ *
  * `recoveredRouteCount` is likewise required, not optional (same posture as
  * `topologyValid`): the number of route reservations that survived a
  * restart and still await an operator's explicit cancel or resume (D9). It
- * is folded into `evaluateSystemSafeStop` LAST — after sensor faults — and
- * — like the topology and sensor-fault latches — does not clear on its own:
- * `LayoutService` decrements it only as `ReservationService` reports each
- * recovered route resolved.
+ * is folded into `evaluateSystemSafeStop` LAST — after sensor faults, point
+ * faults, and route faults — and — like the topology and fault latches —
+ * does not clear on its own: `LayoutService` decrements it only as
+ * `ReservationService` reports each recovered route resolved.
  */
 export interface SystemHealth extends ConnectionHealth {
   topologyValid: boolean;
   topologyReason: string | null;
   sensorFaults: Record<SensorId, SensorFault>;
+  pointFaults: Record<PointId, PointFault>;
   /**
    * Latched faults against granted routes (#4, see docs/pathfinding.md P8),
    * keyed by route id for the same reason `sensorFaults` is keyed by sensor.
@@ -75,6 +85,11 @@ export interface SystemHealth extends ConnectionHealth {
  * fault in place on a tie rather than letting a later one overwrite it.
  */
 export function oldestSensorFault(faults: Record<SensorId, SensorFault>): SensorFault | null {
+  return oldestFault(faults);
+}
+
+/** The first cause among latched point faults, by the same rule as `oldestSensorFault` (#25, D4). */
+export function oldestPointFault(faults: Record<PointId, PointFault>): PointFault | null {
   return oldestFault(faults);
 }
 
@@ -110,21 +125,29 @@ export function evaluateSafeStop(health: ConnectionHealth): {
 
 /**
  * Determines whether a Safe-Stop should be triggered based on connection
- * health, topology health, sensor-payload health, route health, and
- * restart-recovered routes. Check order is MQTT, then DCC, then topology,
- * then the oldest latched sensor fault, then the oldest latched route fault,
- * then recovered routes — a connection failure reason always wins over a
- * topology reason, which wins over a sensor fault, and so on down to the
- * recovered-route reason, so an operator investigating a Safe-Stop sees the
- * more systemic, more actionable cause first. With several faults latched at
- * once, only the oldest's reason is reported here (D2 — "the first cause");
- * the rest are visible via `LayoutService.getSensorFaults()` /
+ * health, topology health, sensor-payload health, point-confirmation health,
+ * route health, and restart-recovered routes. Check order is MQTT, then DCC,
+ * then topology, then the oldest latched sensor fault, then the oldest
+ * latched point fault, then the oldest latched route fault, then recovered
+ * routes — a connection failure reason always wins over a topology reason,
+ * which wins over a sensor fault, and so on down to the recovered-route
+ * reason, so an operator investigating a Safe-Stop sees the more systemic,
+ * more actionable cause first. With several faults latched at once, only the
+ * oldest's reason is reported here (D2 — "the first cause"); the rest are
+ * visible via `LayoutService.getSensorFaults()` / `getPointFaults()` /
  * `getRouteFaults()` and their `GET` routes.
  *
- * Route faults sit *below* sensor faults because a sensor fault is usually
- * the cause and the route fault the symptom: a detector that stopped
- * reporting is what made a route's block undeterminable. Naming the sensor
- * first points the operator at the thing to fix.
+ * Point faults sit below sensor faults (#25, D4) because a sensor fault is
+ * the more systemic failure — an entire class of block-detection evidence
+ * going untrustworthy, versus one point — and above route faults on
+ * cause-before-symptom: a point that failed to confirm is *why* a route
+ * gets suspended (PR B), not a peer fact.
+ *
+ * Route faults sit *below* sensor faults (and point faults) because a
+ * sensor fault is usually the cause and the route fault the symptom: a
+ * detector that stopped reporting is what made a route's block
+ * undeterminable. Naming the sensor first points the operator at the thing
+ * to fix.
  */
 export function evaluateSystemSafeStop(health: SystemHealth): {
   shouldStop: boolean;
@@ -140,6 +163,10 @@ export function evaluateSystemSafeStop(health: SystemHealth): {
   const oldest = oldestSensorFault(health.sensorFaults);
   if (oldest) {
     return { shouldStop: true, reason: oldest.reason };
+  }
+  const oldestPoint = oldestPointFault(health.pointFaults);
+  if (oldestPoint) {
+    return { shouldStop: true, reason: oldestPoint.reason };
   }
   const oldestRoute = oldestRouteFault(health.routeFaults);
   if (oldestRoute) {

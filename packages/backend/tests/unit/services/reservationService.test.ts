@@ -149,7 +149,7 @@ function seedState(stateManager: LayoutStateManager, locoAddress = 3) {
   stateManager.registerBlock('b1');
   stateManager.registerBlock('b2');
   stateManager.registerBlock('b3');
-  stateManager.registerPoint('p1');
+  stateManager.registerPoint('p1', 'none', new Date());
   stateManager.updateBlockOccupancy('b1', 'occupied', locoAddress);
   stateManager.updateBlockOccupancy('b2', 'clear');
   stateManager.updateBlockOccupancy('b3', 'clear');
@@ -206,7 +206,7 @@ describe('ReservationService — grant', () => {
     stateManager.registerBlock('b1');
     stateManager.registerBlock('b2');
     stateManager.registerBlock('b3');
-    stateManager.registerPoint('p1');
+    stateManager.registerPoint('p1', 'none', new Date());
     stateManager.updateBlockOccupancy('b1', 'clear');
     stateManager.updateBlockOccupancy('b2', 'clear');
     stateManager.updateBlockOccupancy('b3', 'clear');
@@ -458,7 +458,7 @@ describe('ReservationService — loadOnStartup', () => {
     freshState.registerBlock('b1');
     freshState.registerBlock('b2');
     freshState.registerBlock('b3');
-    freshState.registerPoint('p1');
+    freshState.registerPoint('p1', 'none', new Date());
     const freshService = new ReservationService(repo, freshState, silentLogger);
 
     const { recovered } = await freshService.loadOnStartup(LAYOUT);

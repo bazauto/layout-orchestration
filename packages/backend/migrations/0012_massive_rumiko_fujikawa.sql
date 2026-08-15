@@ -1,0 +1,1 @@
+ALTER TABLE `points` ADD `position_feedback` text DEFAULT 'none' NOT NULL;

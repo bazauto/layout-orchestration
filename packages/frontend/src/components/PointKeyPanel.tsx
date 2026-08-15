@@ -34,7 +34,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { PointKeyRow } from '../diagram/pointKey';
-import { INK, LOCK, POINT_POSITION } from '../diagram/encoding';
+import { INK, LOCK, POINT_CONFIRMATION, POINT_POSITION } from '../diagram/encoding';
 
 const panelKey = (layoutId: string) => `layout-orchestrator:monitorPointKey:${layoutId}`;
 
@@ -253,7 +253,8 @@ export function PointKeyPanel({
           ) : (
             <table style={st.table}>
               <caption style={st.caption}>
-                Point key. Positions are <strong>commanded</strong>, not confirmed.
+                Point key. Positions are shown as trusted (#25) — a point configured with no
+                feedback channel falls back to what was last commanded.
               </caption>
               <thead>
                 <tr>
@@ -264,7 +265,7 @@ export function PointKeyPanel({
                     Name
                   </th>
                   <th scope="col" style={st.th}>
-                    Set
+                    Position
                   </th>
                   <th scope="col" style={st.th}>
                     Held
@@ -274,6 +275,7 @@ export function PointKeyPanel({
               <tbody>
                 {rows.map((row) => {
                   const enc = POINT_POSITION[row.position];
+                  const confEnc = POINT_CONFIRMATION[row.confirmation];
                   return (
                     <tr key={row.pointId}>
                       {/* Monospace and italic, matching how the tile draws it —
@@ -282,9 +284,34 @@ export function PointKeyPanel({
                       <td style={st.td}>{row.name}</td>
                       {/* The word, not only the colour (#81). The glyph comes
                           from the encoding module so the table and the diagram
-                          cannot disagree about it. */}
+                          cannot disagree about it. `position` here is already
+                          `effectivePosition` (D7) — trusted, not raw commanded. */}
                       <td style={{ ...st.td, color: enc.colour }}>
                         <span style={st.glyph}>{enc.glyph}</span> {enc.label}
+                        {/*
+                          A wall display cannot hover, so a position that is not
+                          confirmed says so in the row itself rather than reading
+                          as settled — always shown, not only on a fault, so
+                          "confirmed" is as legible a statement as "mismatch".
+                        */}
+                        <span style={{ ...st.confirmation, color: confEnc.colour }}>
+                          <span style={st.glyph}>{confEnc.glyph}</span> {confEnc.label}
+                        </span>
+                        {/*
+                          A configuration fact, independent of the transient
+                          confirmation above: this point was never asked to
+                          prove its position at all (docs/point-feedback.md
+                          open question 1 — an automated route may still hold
+                          it, with a reduced guarantee stated here).
+                        */}
+                        {row.positionFeedback === 'none' && (
+                          <span
+                            style={st.noFeedback}
+                            title="This point is not configured to confirm its position — its reported position is not independently verified."
+                          >
+                            no feedback
+                          </span>
+                        )}
                       </td>
                       <td style={st.td}>
                         {row.lockedByRoute ? (
@@ -394,6 +421,13 @@ const st = {
     whiteSpace: 'nowrap',
   } as React.CSSProperties,
   td: { padding: '3px 8px', verticalAlign: 'top', whiteSpace: 'nowrap' } as React.CSSProperties,
+  confirmation: { display: 'block', fontSize: 10 } as React.CSSProperties,
+  noFeedback: {
+    display: 'block',
+    fontSize: 10,
+    color: INK.muted,
+    fontStyle: 'italic',
+  } as React.CSSProperties,
   tdShort: {
     padding: '3px 8px',
     verticalAlign: 'top',

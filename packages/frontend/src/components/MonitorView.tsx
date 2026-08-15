@@ -17,10 +17,14 @@
  * precision the system does not have — the same failure as drawing a
  * commanded point position as though it were confirmed.
  *
- * **Every point position here is commanded.** Until #25 there is no feedback
- * channel, so the caveat is stated once, persistently, in the status strip
- * rather than repeated on each point where it would become noise. When #25
- * lands the distinction becomes real and moves onto the points themselves.
+ * **A point position here is `effectivePosition` (#25, D7), not the raw
+ * commanded field.** A `'required'` point draws only a confirmed reading; a
+ * `'none'` point falls back to what was commanded, same as before #25. The
+ * caveat that this is not the same as a verified physical position is stated
+ * once, persistently, in the status strip rather than repeated on each point
+ * where it would become noise — the per-point confirmation detail
+ * (pending/mismatch/timed-out) lives in the point key instead, which has room
+ * to say it in words.
  *
  * **A stale diagram must not look like a quiet layout.** That is the whole of
  * #82: a frozen socket leaves every block showing its last known occupancy
@@ -158,8 +162,11 @@ export function MonitorView({
       <div style={st.strip}>
         <FreshnessBadge freshness={freshness} />
 
-        <span style={st.caveat} title="There is no point-position feedback channel yet (#25)">
-          Point positions are <strong>commanded</strong>, not confirmed
+        <span
+          style={st.caveat}
+          title="A point's trusted position depends on how it is configured — see the point key (#25)"
+        >
+          Point positions shown are <strong>trusted</strong>, per point — see the key
         </span>
 
         {loading && <span style={st.status}>Loading…</span>}
@@ -272,7 +279,7 @@ export function MonitorView({
             labelsVisible={() => true}
             live={live}
             routeSegments={routeSegments}
-            accessibleName="Live track diagram. Read-only: this view shows block occupancy, route locks and commanded point positions, and has no controls."
+            accessibleName="Live track diagram. Read-only: this view shows block occupancy, route locks and point positions (commanded, or confirmed where a point is configured to report), and has no controls."
             accessibleTitle="Live track diagram — read-only. Middle-drag to pan, wheel to zoom."
             onKeyDown={noop}
             // Pan and zoom only. A left-drag pans here as well as a middle-drag

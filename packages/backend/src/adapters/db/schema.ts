@@ -91,6 +91,26 @@ export const points = sqliteTable('points', {
   /** DCC accessory address used to switch this point */
   dccAddress: integer('dcc_address').notNull(),
   blockId: text('block_id').references(() => blocks.id, { onDelete: 'set null' }),
+  /**
+   * Whether this point is configured to require a confirmed reading before
+   * its position is trusted (#25, docs/point-feedback.md D10). Defaults to
+   * `'none'` — every point on the live layout behaves identically the
+   * instant after this migration runs to how it behaved the instant before;
+   * an operator opts a specific point in.
+   *
+   * Deliberately no CHECK constraint, following DD9's call on
+   * `sensors.in_service`: a CHECK on an existing SQLite table forces
+   * drizzle-kit to emit a table-rebuild migration on a database that is
+   * deployed to a live layout and cannot be reset. The payoff — guarding a
+   * column `parsePointRow` already validates on every read — does not
+   * justify that risk.
+   *
+   * **Nothing about live confirmation state is persisted here or anywhere**
+   * (D2/D10): `confirmedPosition`, `confirmation`, `lastReadingAt` and the
+   * rest of `PointState` are rebuilt from scratch every time the process
+   * starts. Only this configuration choice survives a restart.
+   */
+  positionFeedback: text('position_feedback').notNull().default('none'),
 });
 
 // ─── Sensors ──────────────────────────────────────────────────────────────────

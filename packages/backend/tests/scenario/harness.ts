@@ -12,14 +12,17 @@
 
 import { vi } from 'vitest';
 import { randomUUID } from 'crypto';
-import { LayoutService, LayoutServiceLogger } from '../../src/services/LayoutService';
+import { LayoutService, LayoutServiceLogger, LayoutServiceOptions } from '../../src/services/LayoutService';
 import { TopologyService, TopologyServiceLogger } from '../../src/services/TopologyService';
 import { ReservationService, ReservationServiceLogger } from '../../src/services/ReservationService';
 import { SensorSimulationService } from '../../src/services/SensorSimulationService';
+import { PointConfirmationService } from '../../src/services/PointConfirmationService';
 import { NameBookCache } from '../../src/services/nameBook';
 import { LayoutStateManager } from '../../src/domain/layoutState';
 import { SimulatedDccAdapter } from '../../src/adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from '../../src/adapters/mqtt/SimulatedMqttAdapter';
+import { ManualClock } from '../../src/adapters/clock/ManualClock';
+import { SimulatedPointController } from '../../src/adapters/simulator/SimulatedPointController';
 import {
   BlockRecord,
   CompiledGraphRecord,
@@ -32,12 +35,23 @@ import {
 import {
   BlockEdge,
   LayoutEvent,
+  PointId,
   RouteHoldKind,
   RouteReservation,
   RouteStatus,
   SimulatedReadingAction,
 } from '../../src/domain/types';
 import { parseBlockEdgeRow } from '../../src/services/validation';
+
+/**
+ * #25 D5/D9: the same defaults `config.points` carries in `index.ts` — a
+ * scenario exercising a timeout or a simulated controller response should
+ * advance the harness's `ManualClock` by a multiple of these, not invent its
+ * own numbers.
+ */
+export const POINT_CONFIRM_TIMEOUT_MS = 8000;
+export const POINT_CONFIRM_SWEEP_MS = 250;
+export const POINT_CONFIRM_DELAY_MS = 150;
 
 export const LAYOUT_ID = 'scenario-layout';
 
@@ -337,21 +351,54 @@ export interface ScenarioHarness {
   sensorSimulation: SensorSimulationService;
   /** The `INameBook` injected into `service` (and, from step 5, the other two) — exposed so a scenario can assert a rendered name reached a Safe-Stop reason or force a refresh directly. */
   nameBook: NameBookCache;
+  /**
+   * #25: the simulated twin of the ESP point controller, wired to `service`
+   * via the in-process `noteCommanded` hook exactly as `index.ts` wires it
+   * (D9). Exposed so a scenario can select a failure mode with
+   * `setMode`/`setDefaultMode` before commanding a point.
+   */
+  pointController: SimulatedPointController;
   /** All LayoutEvents emitted by `service`, in order, since harness creation. */
   events: LayoutEvent[];
   /**
    * Wall-clock source used for scenario assertions that need a
    * reference `Date` (e.g. comparing against a reservation's
    * `createdAt`/`updatedAt`). No scenario in this PR depends on
-   * *simulated* elapsed time — D5 explicitly forbids timeout-based
-   * release, so there is nothing time-dependent to fast-forward — but
-   * exposing it here, rather than scenario tests calling `new Date()`
-   * inline, keeps every timestamp reference in one place should that
-   * change.
+   * *simulated* elapsed time for ROUTE locking — D5 (docs/route-locking.md)
+   * explicitly forbids timeout-based release, so there is nothing
+   * time-dependent to fast-forward there — but exposing it here, rather
+   * than scenario tests calling `new Date()` inline, keeps every timestamp
+   * reference in one place should that change. Point confirmation (#25) is
+   * genuinely time-dependent and runs on its OWN clock — see `advance`.
    */
   clock(): Date;
   /** Starts the service against the layout the harness was seeded with. */
   start(): Promise<void>;
+  /**
+   * Advances the harness's `ManualClock` — the one `LayoutService`,
+   * `PointConfirmationService`'s sweep, and `pointController` all share
+   * (#25 D5/D9) — by `ms`, firing every due timer in order, then flushes two
+   * further macrotask hops so a simulated controller's publish and
+   * `LayoutService`'s own await chain settle before this resolves (mirrors
+   * `tests/integration/point-feedback.test.ts`'s documented double-flush).
+   * No real timers anywhere in this harness — this is the only way virtual
+   * time moves.
+   */
+  advance(ms: number): Promise<void>;
+  /**
+   * Issues a point command through `LayoutService.handlePointCommand` —
+   * shorthand for the common case (no `force`). A scenario that needs
+   * `force: true` calls `service.handlePointCommand` directly.
+   */
+  commandPoint(pointId: PointId, position: 'normal' | 'reverse'): Promise<void>;
+  /**
+   * The `retain` flag on the MOST RECENT publish to `topic`, reading
+   * `mqtt.publishLog` — `undefined` if `topic` was never published to.
+   * Control topics (`*\/command`, `*\/query`) must never be retained
+   * (CLAUDE.md safety rule 4); this is how a scenario checks that on the
+   * wire rather than trusting the adapter call site.
+   */
+  publishedRetained(topic: string): boolean | undefined;
   /**
    * Simulates an incoming reading from the named sensor (looked up via
    * `repo.listSensors`) and flushes microtasks so `LayoutService`'s
@@ -381,11 +428,12 @@ export interface ScenarioHarness {
  * `_setPoints` / `repo._setSensors` / `repo._setLocos` /
  * `repo.createBlockEdge` / `repo._insertRawEdgeRow` before calling `start()`.
  *
- * `options.clearAfterValidReadings` is passed straight through to
- * `LayoutService`'s constructor (DD8) — a scenario can use a small
- * threshold (e.g. 2) rather than three round trips of `sensorReports`.
+ * `options` is passed straight through to `LayoutService`'s constructor
+ * (DD8, extended by #25 to the point-confirmation thresholds) — a scenario
+ * can use a small `clearAfterValidReadings`/`pointFaultClearAfterConfirmations`
+ * rather than several round trips of `sensorReports`/readings.
  */
-export function createScenarioHarness(options?: { clearAfterValidReadings?: number }): ScenarioHarness {
+export function createScenarioHarness(options?: Partial<LayoutServiceOptions>): ScenarioHarness {
   const repo = makeInMemoryRepo();
   const dcc = new SimulatedDccAdapter(silentLogger);
   const mqtt = new SimulatedMqttAdapter();
@@ -395,6 +443,25 @@ export function createScenarioHarness(options?: { clearAfterValidReadings?: numb
   // not just that the id-only degradation path still works (unit-tested).
   const nameBook = new NameBookCache(repo, LAYOUT_ID);
   const reservationService = new ReservationService(repo, stateManager, silentLogger, nameBook);
+
+  // #25: one ManualClock for the whole harness — LayoutService's confirmation
+  // sweep, PointConfirmationService's deadline arithmetic, and
+  // pointController's response delay all read the SAME virtual clock, wired
+  // exactly the way `index.ts` wires one `SystemClock` across the three real
+  // equivalents. No real timers anywhere in this file.
+  const pointClock = new ManualClock(new Date('2026-01-01T00:00:00.000Z'));
+  const pointConfirmations = new PointConfirmationService(stateManager, {
+    timeoutMs: POINT_CONFIRM_TIMEOUT_MS,
+  });
+  // D9: a genuine simulated twin of the ESP point controller — subscribes to
+  // `point/+/query` and answers on `pointClock`, never a live MQTT command
+  // (the backend has never published `point/*/command` — see the "asymmetry"
+  // section of docs/point-feedback.md). `noteCommanded` is wired below as
+  // `service`'s `onPointCommanded` hook, exactly as `index.ts` wires it.
+  const pointController = new SimulatedPointController(mqtt, pointClock, LAYOUT_ID, silentLogger, {
+    confirmDelayMs: POINT_CONFIRM_DELAY_MS,
+  });
+
   const service = new LayoutService(
     dcc,
     mqtt,
@@ -404,6 +471,10 @@ export function createScenarioHarness(options?: { clearAfterValidReadings?: numb
     silentLogger,
     options,
     nameBook,
+    undefined, // completeness — INERT_GRAPH_COMPLETENESS default; no scenario here gates `auto` on gap count.
+    pointClock,
+    pointConfirmations,
+    (pointId, position) => pointController.noteCommanded(pointId, position),
   );
   const topologyService = new TopologyService(
     repo,
@@ -429,9 +500,40 @@ export function createScenarioHarness(options?: { clearAfterValidReadings?: numb
     reservationService,
     sensorSimulation,
     nameBook,
+    pointController,
     events,
     clock: () => new Date(),
-    start: () => service.start(LAYOUT_ID),
+    start: async () => {
+      // Safe before service.start()/mqtt.connect() — SimulatedMqttAdapter's
+      // subscribe is local/synchronous, so this is early enough to catch
+      // service.start()'s own startup point/*/query (D2), mirroring
+      // index.ts's full-simulator-mode ordering.
+      await pointController.start();
+      await service.start(LAYOUT_ID);
+      // The startup query's DELIVERY to pointController's subscription is a
+      // REAL setImmediate (SimulatedMqttAdapter.publish), queued while
+      // service.start() ran but not necessarily fired by the time it
+      // resolves. One more flush here lets that delivery happen — and so
+      // `pointController.scheduleResponse` register its ManualClock timer —
+      // WHILE the clock is still at the instant `start()` left it, so the
+      // very first `advance()` a scenario calls actually finds and fires it,
+      // rather than racing it and silently pushing its due time later.
+      await new Promise((r) => setImmediate(r));
+    },
+    advance: async (ms: number) => {
+      await pointClock.advance(ms);
+      // Two further macrotask hops for a simulated controller's publish and
+      // LayoutService's own await chain to settle — mirrors
+      // tests/integration/point-feedback.test.ts's documented advanceAndFlush.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+    },
+    commandPoint: (pointId: PointId, position: 'normal' | 'reverse') =>
+      service.handlePointCommand({ pointId, position }),
+    publishedRetained: (topic: string) => {
+      const entries = mqtt.publishLog.filter((entry) => entry.topic === topic);
+      return entries.length > 0 ? entries[entries.length - 1].retain : undefined;
+    },
     inject: async (sensorId: string, action: SimulatedReadingAction) => {
       await sensorSimulation.inject(LAYOUT_ID, sensorId, action, { username: 'scenario-test' });
       // One flush for the adapter's setImmediate delivery back into

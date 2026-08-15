@@ -43,6 +43,12 @@ Implemented:
 - Latched route faults (`SystemHealth.routeFaults`) with per-route operator acknowledge,
   covering an unexpected occupancy, a rejected point command, and a reserved block whose
   occupancy stops being determinable mid-route
+- Point position confirmation (#25) — a point controller reports its observed position on
+  `point/{pointId}/reading` (never retained; restart recovery is a live `point/*/query`),
+  and the backend keeps *commanded* and *confirmed* position as separate fields. Opt in per
+  point: `positionFeedback: 'required'` means commanded position is no longer trusted on its
+  own, and a point that fails to confirm within 8 seconds latches a fault and Safe-Stops —
+  see `docs/point-feedback.md`
 - WebSocket state streaming to the frontend
 - Local username/password authentication with role-based access (`admin` /
   `operator` / `monitor`) — see `docs/auth.md` for the scheme and its threat model
@@ -391,11 +397,23 @@ unroutable; the compiler disambiguates them by suffix and both carry edges.
 is the throttle — nothing drives the train along the road it has been given. That is #6
 (per-loco braking) and #7 (collision avoidance).
 
-**A point lock is an authority guarantee, not a physical position guarantee.** It promises
-no other software authority will command the point, not that the blades have moved. There
-is still no point-position feedback channel from the DCC controller (#25) — so **every
-point position the Monitor view draws is commanded, not confirmed**, and it says so
-permanently rather than qualifying each point.
+**A point lock is a position guarantee only for points configured to require feedback**
+(#25). The channel now exists: a point controller reports its observed position on
+`point/{pointId}/reading`, the backend distinguishes what it *commanded* from what was
+*confirmed*, and a point that does not confirm within 8 seconds goes `unknown` and
+Safe-Stops the layout. But that applies per point, not per system — `positionFeedback`
+defaults to `none`, and **every point on Westgate Hollow is `none` today** because no
+feedback hardware is fitted yet. For those the old statement stands exactly: the lock
+promises no other software authority will command the point, not that the blades have
+moved, and the position drawn is commanded. The Layout panel and the point key say which
+kind each point is rather than the system claiming one uniform level of trust it does not
+have. The firmware side is not written yet — see `docs/project-plan.md`.
+
+**A failed point does not yet name the route it invalidated.** A point fault Safe-Stops the
+system, which suspends every active route with its locks retained, so nothing moves. What is
+missing is the route-scoped fault that says *which* route's road is no longer known to be
+set, and the resume precondition that refuses to restart it until the point is fixed — #25
+PR B.
 
 **Loco position is block-granular and always will be.** The model is open-loop dead
 reckoning with no loco feedback (`docs/braking.md` B7), so the mimic highlights the block a
@@ -462,7 +480,8 @@ preamble in `docs/sensor-simulation.md`.
 ## Next Milestones
 
 1. Per-loco braking model (#6) and collision avoidance (#7)
-2. Point position confirmation (#25)
+2. Point position confirmation (#25) — the channel has landed; what remains is the
+   route-scoped half (PR B) and the ESP firmware that answers a `point/*/query`
 3. Automation engine / schedules
 4. A shared workspace package for the remaining backend↔frontend duplicates
    (`findBlockRuns`, `TILE_LEGS` vs `diagram/trackGeometry.ts`, and the heartbeat
