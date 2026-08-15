@@ -164,12 +164,14 @@ export interface RouteRejection {
   [field: string]: unknown;
 }
 
-/** Wire projection of the backend's `RouteFault` (#4). `faultedAt` is ISO 8601. */
+/** Wire projection of the backend's `RouteFault` (#4, extended #25 D8). `faultedAt` is ISO 8601. */
 export interface RouteFaultView {
   routeId: string;
-  kind: 'unexpected-occupancy' | 'occupancy-unknown' | 'point-command-rejected';
+  kind: 'unexpected-occupancy' | 'occupancy-unknown' | 'point-command-rejected' | 'point-not-confirmed';
   reason: string;
   blockId: string | null;
+  /** The point that failed to confirm, for 'point-not-confirmed' only — every other kind carries `null` (#25). */
+  pointId: string | null;
   locoAddress: number;
   faultedAt: string;
 }

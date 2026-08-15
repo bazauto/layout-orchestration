@@ -444,6 +444,7 @@ export function toRouteFaultView(fault: RouteFault): RouteFaultView {
     kind: fault.kind,
     reason: fault.reason,
     blockId: fault.blockId,
+    pointId: fault.pointId,
     locoAddress: fault.locoAddress,
     faultedAt: fault.faultedAt.toISOString(),
   };

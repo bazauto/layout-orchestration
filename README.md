@@ -41,8 +41,8 @@ Implemented:
   command the DCC adapter rejects invalidates the whole route and Safe-Stops — see
   `docs/pathfinding.md`
 - Latched route faults (`SystemHealth.routeFaults`) with per-route operator acknowledge,
-  covering an unexpected occupancy, a rejected point command, and a reserved block whose
-  occupancy stops being determinable mid-route
+  covering an unexpected occupancy, a rejected point command, a reserved block whose
+  occupancy stops being determinable mid-route, and a held point that fails to confirm
 - Point position confirmation (#25) — a point controller reports its observed position on
   `point/{pointId}/reading` (never retained; restart recovery is a live `point/*/query`),
   and the backend keeps *commanded* and *confirmed* position as separate fields. Opt in per
@@ -409,11 +409,12 @@ moved, and the position drawn is commanded. The Layout panel and the point key s
 kind each point is rather than the system claiming one uniform level of trust it does not
 have. The firmware side is not written yet — see `docs/project-plan.md`.
 
-**A failed point does not yet name the route it invalidated.** A point fault Safe-Stops the
-system, which suspends every active route with its locks retained, so nothing moves. What is
-missing is the route-scoped fault that says *which* route's road is no longer known to be
-set, and the resume precondition that refuses to restart it until the point is fixed — #25
-PR B.
+**A failed point names the route it invalidated, and that route cannot be resumed until the
+point is dealt with.** A held point that times out, reports the wrong position, or reports
+`unknown` stops its loco, suspends the route with its locks retained, and latches two
+separate faults — one against the point, one against the route — because "this point motor
+is dead" and "route R's road is no longer known to be set" are different problems an
+operator fixes by different means. Resume is refused while the point's fault stands.
 
 **Loco position is block-granular and always will be.** The model is open-loop dead
 reckoning with no loco feedback (`docs/braking.md` B7), so the mimic highlights the block a
@@ -480,8 +481,9 @@ preamble in `docs/sensor-simulation.md`.
 ## Next Milestones
 
 1. Per-loco braking model (#6) and collision avoidance (#7)
-2. Point position confirmation (#25) — the channel has landed; what remains is the
-   route-scoped half (PR B) and the ESP firmware that answers a `point/*/query`
+2. ESP firmware for point position feedback — #25 is complete in this repo, but nothing
+   answers a `point/*/query` yet and no point has a feedback switch wired. Batch it with
+   the WiThrottle→MQTT migration (#9); each is a flash-and-test cycle on the layout
 3. Automation engine / schedules
 4. A shared workspace package for the remaining backend↔frontend duplicates
    (`findBlockRuns`, `TILE_LEGS` vs `diagram/trackGeometry.ts`, and the heartbeat
