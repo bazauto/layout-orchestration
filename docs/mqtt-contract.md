@@ -29,7 +29,7 @@ layout/{layoutId}/system/heartbeat
 |---|---|---|---|---|
 | `loco/{address}/command` | Backend → ESP | 1 | **NO** | Throttle command for a specific DCC address |
 | `loco/{address}/state` | Backend → Subscribers | 1 | YES | Broadcast current loco state |
-| `sensor/{sensorId}/reading` | Sensor HW (or backend sim) → Backend | 1 | YES | Sensor occupancy change |
+| `sensor/{sensorId}/reading` | Sensor HW (or backend sim) → Backend | 1 | YES | Current sensor occupancy. Published on change **and** re-asserted at least every 30 s |
 | `point/{pointId}/command` | Backend → DCC | 1 | **NO** | Point position command |
 | `point/{pointId}/state` | Backend → Subscribers | 1 | YES | Broadcast current point state |
 | `point/{pointId}/reading` | Point Controller → Backend | 1 | **NO** | Physical position as observed by the point controller |
@@ -50,6 +50,29 @@ layout/{layoutId}/system/heartbeat
 > confident assertion with no correction path, and believing a stale point
 > position is the direct cause of a wrong-route movement. Restart recovery is
 > provided instead by `point/*/query`, which recovers position **live**.
+
+> **Critical — Retention Is Not Evidence of Liveness:**
+> A retained message tells a new subscriber what was last published. It says nothing
+> about whether the publisher is still alive. A sensor controller that died while
+> reporting `"clear"` replays that `"clear"` to every future subscriber, including a
+> backend that has just restarted and has no other information about that block.
+>
+> Therefore: **telemetry may be retained only where the publisher is contractually
+> obliged to re-assert it, and a retained delivery is never trusted on its own.**
+>
+> `sensor/*/reading` is retained *and* its publisher MUST re-assert it at least every
+> 30 s (see its payload section below), so the retained copy is a bootstrap for a value
+> that is about to be reconfirmed. `point/*/reading` is **not** retained, because
+> nothing re-asserts a point: its position can change while its controller is offline,
+> so a retained position is an archived belief with nothing behind it.
+>
+> The backend distinguishes a message delivered because of a **new subscription**
+> (RETAIN flag set, [MQTT-3.3.1-8]) from one delivered on an **established
+> subscription** (RETAIN flag clear, [MQTT-3.3.1-9]). The first is provisional: it is
+> recorded and displayed, but never counted as confirmation that track is clear.
+>
+> This rule is what makes the two `reading` topics' opposite retention one decision
+> rather than two. See `docs/sensor-trust.md`.
 
 ---
 
@@ -105,7 +128,19 @@ Published by the backend after every state change. Retained so new subscribers g
 ---
 
 ### `sensor/{sensorId}/reading`
-Published by sensor hardware (block detectors, IR sensors) when occupancy changes. The `sensorId` matches the sensor's configured identifier in the layout database.
+Published by sensor hardware (block detectors, IR sensors) whenever occupancy changes,
+**and** re-published unchanged at least every **30 seconds** as a liveness assertion.
+Both cases are the same message, published with retain set; the backend does not
+distinguish them by content, only by whether the broker delivered them live or as a
+retained replay.
+
+The re-assertion is a hard requirement, not an optimisation. A sensor from which the
+backend has received no **live** message inside its freshness window
+(`SENSOR_FRESHNESS_TIMEOUT_MS`, default 90 s) is untrusted, and every block it reports
+degrades to `"unknown"` — which, per the fail-safe rule, is treated as occupied.
+Silence is not consent.
+
+The `sensorId` matches the sensor's configured identifier in the layout database.
 
 ```json
 {
@@ -117,7 +152,7 @@ Published by sensor hardware (block detectors, IR sensors) when occupancy change
 | Field | Type | Description |
 |---|---|---|
 | `state` | `"occupied"` \| `"clear"` | Current sensor reading |
-| `updatedAt` | ISO 8601 string | Timestamp on the sensor device |
+| `updatedAt` | ISO 8601 string, **optional** | Timestamp from the sensor device's own clock. **Advisory and diagnostic only.** The backend measures freshness with its own receipt clock and never makes a safety decision from a device-supplied timestamp — that timestamp is produced by the same device whose liveness is in question. A device with no synchronised clock may omit the field; a wrong value degrades log quality, never safety. |
 
 #### Simulated readings (test only)
 
@@ -274,7 +309,9 @@ Published by the backend on startup and on any status change. Also configured as
 |---|---|
 | Backend restarts | Retained `system/status` LWT publishes `"offline"` automatically. On reconnect, backend publishes `"online"`. |
 | ESP controller restarts | It receives NO retained throttle command (non-retained), so no ghost movement. It reads retained `loco/*/state` to recover last known state. |
-| Sensor hardware restarts | Backend receives the retained `sensor/*/reading` on subscribe and re-validates block state. |
+| Sensor hardware restarts | Its first **live** reading after boot — a change or a re-assert — restores trust. Until one arrives, every block it reports reads `unknown`. |
+| Backend restarts, sensor alive | Retained readings arrive with the RETAIN flag set and are provisional. Those blocks read `unknown` until the first re-assert, i.e. within 30 s. |
+| Backend restarts, sensor dead | The same retained readings arrive, but no re-assert ever follows, so those blocks stay `unknown` indefinitely. Retention alone got this case wrong — it reported a dead sensor's last `clear` as live track (#28). |
 | Point controller restarts | The backend receives NO retained point reading. Every point configured `positionFeedback: "required"` remains or becomes `"unknown"` until it answers a live `point/*/query`. |
 | New frontend client connects | Receives all retained `block/*/state`, `point/*/state`, `loco/*/state`, and `system/status` immediately without needing a REST poll. |
 
@@ -292,3 +329,26 @@ The following MQTT conditions MUST trigger a Safe-Stop in the backend:
    reading)**.
 4. Receiving a `point/{pointId}/reading` whose payload `pointId` does not match
    the `{pointId}` topic segment.
+
+## Degradation Triggers
+
+The following conditions degrade **specific track** to `"unknown"` — which the domain
+layer already treats as occupied, so routes over it cannot be granted and a live route
+holding it is suspended — rather than triggering a system-wide Safe-Stop. The failure is
+scoped to the track the failing device actually observes, so a layout that is otherwise
+fully observed keeps running.
+
+1. No **live** sensor reading received inside the sensor freshness window
+   (`SENSOR_FRESHNESS_TIMEOUT_MS`, default 90 s = 3 × the 30 s re-assert interval).
+2. A sensor reading known only from a **retained** message, with no live reading since
+   the backend connected.
+
+Both set every affected block to `"unknown"` and emit a `BLOCK_STATE` event, so the
+condition is visible to the operator rather than silent.
+
+> **A malformed sensor payload is NOT in this list.** It remains Fail-Safe Trigger 3
+> above — a system-wide Safe-Stop, on the first message, with no tolerance. The two
+> failures are different and are answered differently: a malformed payload is a device
+> **lying**, which is immediate and sharp; an unrefreshed reading is a device **dying**,
+> which is a freshness window and a scoped degrade. Do not merge them into one rule.
+> See `docs/sensor-trust.md` and `docs/sensor-fault-recovery.md`.
