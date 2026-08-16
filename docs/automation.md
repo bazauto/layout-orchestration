@@ -1,11 +1,27 @@
 # Automation Engine — Decision Record (#7)
 
-> **Status: PR A shipped (the model).** A1–A13 below are decided. PR A landed
-> the pure half — the schema the operator configures automation with, the berth
-> geometry, the ramp-to-a-crawl extension to `domain/braking.ts`, and
-> `domain/automation.ts` itself. **Nothing is wired**: no sweep runs, no train
-> moves, and the live layout behaves exactly as it did before. PR B is the
-> engine that drives it; PR C is the operator surface.
+> **Status: PR A and PR B shipped.** A1–A13 are decided. PR A landed the pure
+> half — the schema an operator configures automation with, the berth geometry,
+> the ramp-to-a-crawl extension to `docs/braking.md`, and `domain/automation.ts`
+> itself. **PR B wired it**: `AutomationService`, the sweep on `IClock`, and
+> every command that comes out of it. Automation now departs, runs, brakes,
+> crawls and berths a train. PR C is the operator surface.
+>
+> Three decisions in this document were **found by building it**, not by
+> designing it, and each is called out where it belongs: A6's look-ahead trigger
+> (the first draft braked on distance alone, which would have let a train cross
+> the boundary past which nothing can plan), A7's departure check (do not start
+> a journey you cannot stop at the end of), and A7's refusal to require a
+> `LocoState` before departing (which made automation unusable from a cold
+> start, because the one way to establish one cancels the route). The first
+> draft of each is described alongside the correction — a decision record that
+> only shows the answer is worth less than one that shows what was wrong with
+> the obvious thing.
+>
+> **Westgate Hollow's behaviour is unchanged until an operator opts in.** Every
+> new column is nullable and nothing back-fills one, so no loco has a line
+> speed, no route has a direction, and the sweep returns before it reads the
+> roster on a layout with no `auto`-authority route.
 
 Companion to `docs/braking.md`, `docs/route-locking.md`, `docs/pathfinding.md`
 and `docs/sensor-position.md`. Those four decided, in order, how far a train
@@ -229,6 +245,56 @@ brake when available <= required + APPROACH_MARGIN_MM
 `required` is the full-stop figure, per A4 — the crawl speed does not enter the
 trigger any more than it enters the plan.
 
+**There is a second trigger, and without it the first is not enough.** The
+*ability to plan* runs out before the distance does, and it runs out in steps.
+
+Available distance falls discontinuously as a train is confirmed further along:
+each block it enters stops being intermediate track and becomes track it may
+already be at the far end of. And a route completes outright the instant its
+destination reads `occupied` (D5, `docs/route-locking.md`), after which
+`remainingRouteDistanceMm` refuses and nothing can plan anything at all. **A
+train that crosses one boundary too many is a train nothing will ever brake** —
+it would run on at line speed while the sweep quietly retired its run.
+
+So the second question is not "is it close" but **"will I still be able to do
+this next time I look?"** — `isLastChanceToPlan`:
+
+- **The next step is the target.** There is no further confirmation to wait for.
+  Brake unless a position fix says the train cannot reach the boundary before
+  the next sweep — `lead <= APPROACH_MARGIN_MM`, the same margin answering the
+  same question it always answers. Without a fix the lead is `0`, so braking
+  begins on entry to the last block.
+- **Otherwise**, project the worst case one confirmation ahead: the train enters
+  the next block with no fix in it, so what remains is today's figure less this
+  block's lead and less the whole of the block being entered. If *that* would
+  not cover a stop, this is the last usable moment.
+
+The second branch is what keeps a route with **no berthing beam** working at
+all. Without a berth the available distance from the second-to-last block is
+zero — B4's adjacent-target case exactly — so braking has to begin a block
+earlier, and this is what notices.
+
+**The two triggers dominate in different geometries**, which is why both exist
+rather than one being a special case of the other. Where blocks are longer than
+a stopping distance — Westgate Hollow — the look-ahead governs, and the distance
+rule almost never fires first. Where blocks are short, advancing costs little
+and the distance rule is the operative one.
+
+What falls out is the shape approach control has on a real railway, and it is
+worth noticing that it *falls out* rather than being imposed: a train brakes a
+block out from its destination, arrives at the platform slowly, and creeps the
+last part to the stop mark. A5 is what makes that affordable — the early braking
+is absorbed by the crawl, so the cost is time and not accuracy.
+
+**A distance that stops being computable mid-run stands the train down** (A10's
+`stand-down`, not a hold). Holding was the first instinct and it is wrong,
+because the causes are not transient: `unmeasured-track` stays refused for as
+long as the block stays unmeasured, so a train that met it would coast to the end
+of its authority while the sweep politely asked again four times a second. A7's
+departure check is what makes this branch rare — the whole route is proved
+supervisable before anything moves — so reaching it means the layout changed
+under a running train, which is exactly when to stop it.
+
 `APPROACH_MARGIN_MM = MAX_CREDIBLE_SPEED_MM_PER_S * AUTOMATION_TICK_MS / 1000`
 = **125 mm**.
 
@@ -272,16 +338,65 @@ lowest reliably-moving step is a property of its decoder and mechanism.
 
 Both nullable, and **null refuses rather than defaults**:
 
+**A missing `LocoState` is deliberately *not* on that list**, which is an
+asymmetry with `docs/braking.md` B6's `unknown-loco-state` refusal and worth
+stating plainly. B6 refuses because a braking plan needs the current commanded
+speed as an **input to a calculation** — without it there is no stopping
+distance, and assuming zero would be assuming the train is stopped, which D9
+exists to forbid. A departure computes nothing from it: it *sets* the speed,
+replacing an unknown with a known.
+
+Refusing there would also have made automation unusable from a cold start.
+Nothing gives a loco a `LocoState` until something commands it, and the one
+thing an operator could do to establish one — opening the throttle — cancels
+the very route they are trying to automate (D6). That circularity is how the
+mistake was found.
+
 | Missing | Consequence |
 |---|---|
 | `direction` on the reservation | Automation never departs the train. The route is a pure interlocking, exactly as a `manual`-authority one is. |
 | `auto_speed_step` | Automation never departs the train. **There is no fraction-of-`max_speed` fallback** — `max_speed` is advisory and unenforced everywhere else (B2), so deriving a speed anything actually moves at from it would be building on sand. |
 | `crawl_speed_step` | No crawl phase, therefore no berthing (A2's degradation): the run targets the destination block's entry boundary and stops there. |
+| Anywhere to stop on the route at all | Automation never departs the train — see below. |
+
+**A fourth refusal, and the one that had to be discovered: do not start a
+journey that cannot be stopped at the end of it.** Before departing, automation
+asks `canPlanAStop` the same two questions A6's trigger and `BrakingService`
+both ask — is the whole route measured, and does what it measures cover a stop
+from the line speed? — against `autoSpeedStep`, before anything moves.
+
+Without it, the two failure modes are both bad and both reachable on an ordinary
+layout:
+
+- **A route with an unmeasured block departs and then never brakes.**
+  `remainingRouteDistanceMm` refuses for as long as the block stays unmeasured,
+  so A6's trigger has nothing to fire on and the train coasts to the end of its
+  authority. (A6's `stand-down` now catches this too; the departure check is
+  what stops it happening in the first place.)
+- **A route to the immediately adjacent block with no berthing beam departs and
+  faults `unable-to-stop` a quarter of a second later** — halting the layout to
+  say something that could have been said before anything moved.
+
+It reports as a **blocker, not a fault**, for the same reason as the other
+three: it names a layout that has not been measured or beamed *yet*, which is
+an operator's job to finish rather than a reason to halt a railway. It carries
+the arithmetic with it — "620mm of measured track to the stopping point, and a
+stop from speed step 60 needs 213mm" — because "not enough room" is only
+actionable if you know how much short.
 
 This is the same posture `blocks.length_mm` takes: an unconfigured value
 refuses the automated action rather than being guessed at, and the live layout
 is byte-identical the instant after the migration because nothing back-fills
 any of the three.
+
+**A train automation did not depart is still a train automation brakes.** The
+three refusals above are about *starting* a train, and none of them is a reason
+to stop supervising one. A loco with no `auto_speed_step` can still be moving
+under an `auto` route — an operator may open the throttle before the route is
+granted, which is a legitimate ordering that D6 does not cancel — and A1's
+invariant applies to it exactly as it does to one automation started itself.
+Being fussy about who opened the regulator, having promised the train will stop
+inside its authority, would be the wrong half to be fussy about.
 
 No CHECK constraints, following DD9's call on `sensors.in_service` and B9's on
 `blocks.length_mm` — a CHECK on an existing SQLite table forces a rebuild of a
@@ -360,6 +475,10 @@ is what that collection means. `BrakingFaultKind` gains two members:
   automation, with no plan that stops it inside its authority. The loco is
   stopped outright — not ramped, there is by definition no room to ramp — and
   the fault Safe-Stops the layout.
+
+  A7's departure check exists partly to keep this unreachable: the two ways an
+  ordinary layout could reach it — unmeasured track, and an adjacent
+  destination with no beam — are both refused before the train moves.
 - **`berth-not-confirmed`** — the crawl ran for `CRAWL_TIMEOUT_MS` without the
   berth beam breaking. The loco is stopped and the fault latched.
 
