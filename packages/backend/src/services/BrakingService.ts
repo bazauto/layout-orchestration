@@ -23,6 +23,7 @@ import { LayoutStateManager } from '../domain/layoutState';
 import { effectivePosition } from '../domain/pointConfirmation';
 import { BrakingProfile, BrakingRefusal, LayoutId, LocoAddress, LocoState, RouteReservation } from '../domain/types';
 import { ILayoutRepository, LocoRecord } from '../ports/ILayoutRepository';
+import { IClock } from '../ports/IClock';
 
 export interface BrakingServiceLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -40,6 +41,20 @@ export class BrakingService {
     private readonly stateManager: LayoutStateManager,
     private readonly log: BrakingServiceLogger,
     private readonly model: StoppingDistanceModel = scalarStoppingDistance,
+    /**
+     * #77's lead term needs a "now" to age a position fix against
+     * (`docs/sensor-position.md` D7). Injected rather than read from a global,
+     * for the same reason the ramp's timers are.
+     *
+     * **Optional, and an absent clock means no lead term at all** — never a
+     * default `SystemClock`, and never a refusal. That mirrors #103's inert
+     * `IGraphCompletenessView`: an unwired service has been told nothing about
+     * sub-block position, so it promises nothing extra and behaves exactly as
+     * it did before #77. The failure direction of a missed wiring is therefore
+     * a run refused that could have been granted, not one granted that should
+     * not have been.
+     */
+    private readonly clock?: IClock,
   ) {}
 
   /**
@@ -122,7 +137,22 @@ export class BrakingService {
       });
     }
 
-    const distance = remainingRouteDistanceMm(reservation, graph, resolvedTargetIndex);
+    // #77 D9: the confirmed block may contribute the distance between a
+    // sub-block position fix and the boundary the train is about to cross —
+    // where B4 alone can promise nothing, because a train confirmed in a block
+    // may be anywhere within it. Every way of not having a usable fix
+    // contributes zero and falls through to the B4 sum, so this can only ever
+    // hand back distance the old model refused to promise.
+    const confirmedBlockId = reservation.path[reservation.confirmedIndex]?.blockId;
+    const lead =
+      this.clock && confirmedBlockId !== undefined
+        ? {
+            observations: this.stateManager.listSensorObservationsForBlock(confirmedBlockId),
+            now: this.clock.now(),
+          }
+        : undefined;
+
+    const distance = remainingRouteDistanceMm(reservation, graph, resolvedTargetIndex, lead);
     if (!distance.ok) {
       return this.refuse(layoutId, reservation.locoAddress, distance.reason);
     }

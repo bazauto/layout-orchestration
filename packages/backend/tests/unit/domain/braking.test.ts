@@ -14,7 +14,14 @@ import {
 } from '../../../src/domain/braking';
 import { buildTrackGraph } from '../../../src/domain/graph';
 import { EMPTY_NAME_BOOK } from '../../../src/domain/naming';
-import { BlockEdge, BrakingProfile, NameBook, RoutePathStep, RouteReservation } from '../../../src/domain/types';
+import {
+  BlockEdge,
+  BrakingProfile,
+  NameBook,
+  RoutePathStep,
+  RouteReservation,
+  SensorObservation,
+} from '../../../src/domain/types';
 
 const LAYOUT = 'layout-1';
 const NOW = new Date('2026-08-08T00:00:00Z');
@@ -273,6 +280,25 @@ function reservation(overrides: Partial<RouteReservation> = {}): RouteReservatio
   };
 }
 
+/**
+ * An IR beam in b1, 400mm from the b1/b2 boundary, which tripped at `NOW`
+ * (#77, `docs/sensor-position.md`).
+ */
+function beam(overrides: Partial<SensorObservation> = {}): SensorObservation {
+  return {
+    sensorId: 'beam-1',
+    blockId: 'b1',
+    type: 'ir_position',
+    inService: true,
+    faulted: false,
+    lastReading: 'occupied',
+    lastReadingAt: NOW,
+    position: { towardBlockId: 'b2', offsetMm: 400 },
+    lastRisingEdgeAt: NOW,
+    ...overrides,
+  };
+}
+
 describe('remainingRouteDistanceMm', () => {
   it('sums the intermediate blocks, and never the target block itself', () => {
     // Confirmed in b1, targeting b4 (index 3): b2 + b3 = 1000mm. b4's own
@@ -288,14 +314,87 @@ describe('remainingRouteDistanceMm', () => {
     expect(result).toEqual({ ok: true, distanceMm: 500 });
   });
 
-  it('gives zero distance for the immediately next block, so the run is refused (D-K)', () => {
+  it('gives zero distance for the immediately next block WITHOUT a position fix, so the run is refused (D-K)', () => {
     // The behaviour change #105's fix brings, and the reason it gets a named
     // test of its own: there is no track between the exit boundary of the
     // confirmed block and the entry boundary of the next one, so there is
     // nothing to brake over. Correct under block-level occupancy — the train
     // may already be hard against the exit — and the fail-safe direction.
+    // #77's lead term is what lifts it, and only where a beam has been measured.
     const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), fourBlockGraph(), 1);
     expect(result).toEqual({ ok: true, distanceMm: 0 });
+  });
+
+  // ── #77's lead term (docs/sensor-position.md D9) ──────────────────────────
+
+  it('credits an applicable position fix in the CONFIRMED block, which is what unblocks the adjacent target', () => {
+    // The case #77 was promoted ahead of #7 for: a braked run to the
+    // immediately next block, refused a moment ago, granted 400mm now.
+    const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), fourBlockGraph(), 1, {
+      observations: [beam()],
+      now: NOW,
+    });
+    expect(result).toEqual({ ok: true, distanceMm: 400 });
+  });
+
+  it('adds the lead term to the intermediate sum rather than replacing it', () => {
+    const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), fourBlockGraph(), 3, {
+      observations: [beam()],
+      now: NOW,
+    });
+    expect(result).toEqual({ ok: true, distanceMm: 1400 });
+  });
+
+  it('credits nothing for a fix measured toward a DIFFERENT exit of the confirmed block', () => {
+    // A beam 400mm from the b3 boundary says nothing about the distance to the
+    // b2 boundary, which is the one this train is about to cross.
+    const elsewhere = beam({ position: { towardBlockId: 'b3', offsetMm: 400 } });
+    const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), fourBlockGraph(), 1, {
+      observations: [elsewhere],
+      now: NOW,
+    });
+    expect(result).toEqual({ ok: true, distanceMm: 0 });
+  });
+
+  it('credits nothing for a fix in a block the train is not confirmed in', () => {
+    const ahead = beam({ blockId: 'b2', position: { towardBlockId: 'b3', offsetMm: 400 } });
+    const result = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), fourBlockGraph(), 3, {
+      observations: [ahead],
+      now: NOW,
+    });
+    expect(result).toEqual({ ok: true, distanceMm: 1000 });
+  });
+
+  it('lets a stale fix decay to nothing rather than refusing — the term can only ever ADD distance', () => {
+    const stale = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), fourBlockGraph(), 3, {
+      observations: [beam()],
+      now: new Date(NOW.getTime() + 60_000),
+    });
+    expect(stale).toEqual({ ok: true, distanceMm: 1000 });
+  });
+
+  it('still refuses unmeasured intermediate track, however good the fix is', () => {
+    // A measured beam in the confirmed block says nothing about a block further
+    // along that nobody has put a tape measure to.
+    const result = remainingRouteDistanceMm(
+      reservation({ confirmedIndex: 0 }),
+      fourBlockGraph({ b2: null }),
+      3,
+      { observations: [beam()], now: NOW },
+    );
+    expect(result).toEqual({ ok: false, reason: { kind: 'unmeasured-track', blockId: 'b2' } });
+  });
+
+  it('omitting `lead` reproduces the pre-#77 answer exactly', () => {
+    const withoutLead = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), fourBlockGraph(), 3);
+    const withEmptyLead = remainingRouteDistanceMm(
+      reservation({ confirmedIndex: 0 }),
+      fourBlockGraph(),
+      3,
+      { observations: [], now: NOW },
+    );
+    expect(withoutLead).toEqual({ ok: true, distanceMm: 1000 });
+    expect(withEmptyLead).toEqual(withoutLead);
   });
 
   // ── Failure paths ──────────────────────────────────────────────────────────
