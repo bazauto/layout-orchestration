@@ -1,11 +1,11 @@
 # Sub-block sensor position (#77)
 
-> **Status: PR A and PR B shipped.** PR A landed the model, its persistence, its
-> validated write path and its runtime state; PR B landed D9's lead term, which
-> **closes `docs/braking.md` B4's adjacent-target refusal** for any block with a
-> measured beam in it. Westgate Hollow has no positioned sensors yet, so its
-> behaviour is unchanged until an operator measures one. PR C is the authoring
-> form; until then a position is set over the API.
+> **Status: shipped.** PR A landed the model, its persistence, its validated
+> write path and its runtime state; PR B landed D9's lead term, which **closes
+> `docs/braking.md` B4's adjacent-target refusal** for any block with a measured
+> beam in it; PR C landed the authoring column in Configure → Sensors. Westgate
+> Hollow has no positioned sensors yet, so its behaviour is unchanged until an
+> operator measures one.
 
 Where a beam is, and — much more carefully — what the system is allowed to
 conclude from one having been broken.
@@ -287,6 +287,36 @@ them would let the system resume with a confident, wrong belief about a train it
 has not seen since. A sensor going out of service or faulting clears the fix with
 the reading, for the same reason (DD6).
 
+## D11a — Authoring: one cell, one measurement, and "unmeasured" says so
+
+`SensorPositionCell` is a column in Configure → Sensors. Three rules, each of
+which follows from something above rather than from taste:
+
+- **The pair is edited as a pair.** The anchor select and the offset input write
+  one `PUT` carrying a `position` object, so there is never a moment at which the
+  anchor names one boundary and the offset was measured to another. The offset is
+  drafted locally and committed on blur — typing `400` must not be three saves,
+  two of them describing a beam nobody meant.
+- **Clearing either control clears the whole measurement.** Unmeasured is a real,
+  safe state (D3), not an error to be argued out of. The UI never insists on a
+  number it has no way to check.
+- **A row that cannot carry a position says a word, not nothing.** A
+  `block_detection` sensor reads `n/a` and a blockless sensor reads `no block`
+  (D4). A blank cell reads as a rendering gap rather than a fact, which is #81's
+  rule about state never being carried by styling alone, applied to an absence.
+
+The anchor select offers only blocks the drawing joins this one to **exactly
+once** (`anchorCandidates`, D5), which is deliberately *narrower* than what the
+write path accepts. That is affordance, not authorisation: the backend still
+takes an anchor the drawing does not connect yet, because a beam may be measured
+before the track justifying it is drawn — the list exists to stop an operator
+picking a neighbour that could never mean anything.
+
+**The monitor is untouched.** A position is config, not live state, and there is
+no train-at-a-spot to draw: position stays block-granular on the diagram
+(`docs/braking.md` B7, `docs/liveness.md`). A beam's offset would be a fourth
+thing competing for the same tile.
+
 ## D12 — Position is a property of a sensor, not of an IR sensor
 
 `#39`'s RFID reader is also a point observation at a location, and would want
@@ -331,8 +361,11 @@ types may carry one today* — not a shape baked into the schema. Adding
   response to it being wrong is to leave it alone unless it is wrong *low*.
 - **A fix cannot be confirmed.** Everything B7 says about open-loop dead
   reckoning applies: this narrows the uncertainty, it does not close it.
-- **Nothing authors a position in the UI yet.** PR C. Until then the columns are
-  reachable through `PUT /api/layouts/:layoutId/sensors/:id` only.
+- **Nothing checks the number.** The offset is unverifiable authored data, like a
+  point tile's leg mapping (`docs/track-grid.md` D9) — the write path checks only
+  that the anchor is a different, real block and that the offset does not exceed
+  the block's own measured length. A tape measure read wrong is a train stopped
+  in the wrong place, and no amount of validation can see it.
 - **B4's adjacent-target refusal is closed only where a beam is fitted.** A
   confirmed block with no positioned sensor, or one whose beam has not been
   broken since the train entered, still promises zero and still refuses. That is

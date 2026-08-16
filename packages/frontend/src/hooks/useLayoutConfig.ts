@@ -388,6 +388,13 @@ export function useLayoutConfig(layoutId: string | null) {
       blockId?: string | null;
       mqttTopic?: string;
       inService?: boolean;
+      /**
+       * #77's measurement, sent as the pair it is. Omit the key to leave the
+       * stored measurement alone; send `null` to clear it; send an object to
+       * move both halves together. There is deliberately no way to patch one
+       * half and leave the other describing the old one.
+       */
+      position?: { towardBlockId: string; offsetMm: number } | null;
     },
   ): Promise<MutationResult<SensorRecord>> => {
     const result = await mutate<SensorRecord>(`/api/layouts/${layoutId}/sensors/${id}`, {

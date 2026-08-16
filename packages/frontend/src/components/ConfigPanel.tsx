@@ -1,8 +1,16 @@
 import { useState } from 'react';
 import { useLayoutConfig } from '../hooks/useLayoutConfig';
 import { useUsers } from '../hooks/useUsers';
-import { BlockRecord, PointFeedbackMode, PointRecord, Role, SensorRecord } from '../types';
+import {
+  BlockEdgeRecord,
+  BlockRecord,
+  PointFeedbackMode,
+  PointRecord,
+  Role,
+  SensorRecord,
+} from '../types';
 import { EdgesTab } from './EdgesTab';
+import { SensorPositionCell } from './SensorPositionCell';
 import { UsersTab } from './UsersTab';
 
 type Ops = ReturnType<typeof useLayoutConfig>;
@@ -66,7 +74,18 @@ export function ConfigPanel({ layoutId, role, currentUsername }: Props) {
       </div>
 
       {tab === 'blocks'  && <BlocksTab  blocks={config.blocks} ops={ops} />}
-      {tab === 'sensors' && <SensorsTab sensors={config.sensors} blocks={config.blocks} ops={ops} layoutId={layoutId} />}
+      {tab === 'sensors' && (
+        <SensorsTab
+          sensors={config.sensors}
+          blocks={config.blocks}
+          // #77: the anchor select offers only blocks the drawing joins this
+          // one to, exactly once. Read from the same `edges` the Edges tab
+          // lists — nothing here writes them.
+          edges={config.edges}
+          ops={ops}
+          layoutId={layoutId}
+        />
+      )}
       {tab === 'points'  && <PointsTab  points={config.points} blocks={config.blocks} ops={ops} />}
       {tab === 'locos'   && <LocosTab   locos={config.locos} ops={ops} />}
       {tab === 'edges'   && <EdgesTab   layoutId={layoutId} edges={config.edges} topology={config.topology} blocks={config.blocks} points={config.points} ops={ops} />}
@@ -265,9 +284,10 @@ function BlocksTab({ blocks, ops }: { blocks: BlockRecord[]; ops: Ops }) {
 
 // ─── Sensors tab ──────────────────────────────────────────────────────────────
 
-function SensorsTab({ sensors, blocks, ops, layoutId }: {
+function SensorsTab({ sensors, blocks, edges, ops, layoutId }: {
   sensors: SensorRecord[];
   blocks: BlockRecord[];
+  edges: BlockEdgeRecord[];
   ops: Ops;
   layoutId: string;
 }) {
@@ -318,7 +338,7 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
       {feedback && <p style={s.error}>{feedback}</p>}
       <table style={s.table}>
         <thead><tr>
-          {['Name', 'Type', 'Block', 'In service', 'MQTT Topic', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
+          {['Name', 'Type', 'Block', 'Position (#77)', 'In service', 'MQTT Topic', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
         </tr></thead>
         <tbody>
           {sensors.map((ss) => (
@@ -345,6 +365,21 @@ function SensorsTab({ sensors, blocks, ops, layoutId }: {
                   <option value="">— none —</option>
                   {blocks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
+              </td>
+              <td style={s.td}>
+                {/*
+                  #77: how far this beam sits from the boundary with a named
+                  neighbouring block, and the only thing that lets a train be
+                  braked to a stop at the block immediately ahead
+                  (docs/braking.md B4). Unmeasured is the default and is a
+                  perfectly good answer — it just withholds that concession.
+                */}
+                <SensorPositionCell
+                  sensor={ss}
+                  blocks={blocks}
+                  edges={edges}
+                  onSave={(position) => runUpdate(ops.updateSensor(ss.id, { position }))}
+                />
               </td>
               <td style={s.td}>
                 {/*
