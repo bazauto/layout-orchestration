@@ -1,11 +1,12 @@
 # Automation Engine — Decision Record (#7)
 
-> **Status: PR A and PR B shipped.** A1–A13 are decided. PR A landed the pure
-> half — the schema an operator configures automation with, the berth geometry,
-> the ramp-to-a-crawl extension to `docs/braking.md`, and `domain/automation.ts`
+> **Status: shipped.** A1–A14 are decided. PR A landed the pure half — the
+> schema an operator configures automation with, the berth geometry, the
+> ramp-to-a-crawl extension to `docs/braking.md`, and `domain/automation.ts`
 > itself. **PR B wired it**: `AutomationService`, the sweep on `IClock`, and
-> every command that comes out of it. Automation now departs, runs, brakes,
-> crawls and berths a train. PR C is the operator surface.
+> every command that comes out of it. **PR C is the operator surface** (A14):
+> the three fields to configure, the authority and direction to choose, and the
+> phase to watch.
 >
 > Three decisions in this document were **found by building it**, not by
 > designing it, and each is called out where it belongs: A6's look-ahead trigger
@@ -569,6 +570,60 @@ after `dcc.emergencyStop()` has gone out.
 is every layout that has not opted in — including Westgate Hollow until an
 operator grants one. It returns before it reads the roster, so an idle layout
 pays one map lookup every 250 ms and no database query.
+
+## A14 — The operator surface: three fields, one choice, one word
+
+Everything above is unreachable from a browser without this, and one line was
+what made that literally true: `useLayoutConfig.requestRoute` hard-coded
+`authority: 'manual'`. Correct while nothing could drive a route, and the whole
+of what PR C had to undo.
+
+**Configure** — `locos.auto_speed_step` and `locos.crawl_speed_step` are two
+columns in Configure → Locos, beside `maxSpeed` and `brakingFactor` where the
+rest of a loco's driving character lives. Both clear to `—` rather than to a
+blank, because unconfigured is a real state with real consequences and a blank
+cell reads as an oversight — the same call `SensorPositionCell` makes for an
+unmeasured beam and `BlocksTab` for an unmeasured length. Empty means **clear**,
+never zero: a zero speed step would be a train commanded to stand still while
+automation believed it was running.
+
+**Choose** — the route request grows an authority select (`manual` by default,
+deliberately: a route is a valid interlocking whether or not anything drives it,
+and an operator who has not asked for automation should not get it by omission)
+and a direction select shown **only** for an `auto` route, because it means
+nothing for a manual one. A manual request is byte-identical to what it was: the
+direction key is omitted, not sent as null.
+
+**Watch** — `AutomationRunView` on `GET .../automation`, in the WebSocket
+snapshot, and on its own `AUTOMATION_STATE` event.
+
+Three decisions worth recording about that view:
+
+- **The phase is a word, not a colour.** Two of the five states are
+  indistinguishable from outside — a train that has not departed and one that
+  has berthed are both simply stopped — so the word is the only thing carrying
+  the difference (`docs/diagram-encoding.md` D1's rule, applied to text).
+- **`blocker` is the rendered sentence, not the tag.** The whole point of the
+  field is telling an operator what to go and set, and a tag would need
+  `describeAutomationBlocker` written again in the browser, where it would
+  drift. A blocked train is the one automation state visible nowhere else: an
+  active route, `auto` mode, and a stationary train look exactly like an arrival.
+- **`AUTOMATION_STATE` is published only when it changed.** The sweep ticks four
+  times a second and is usually a no-op; publishing unconditionally would put
+  240 messages a minute on every open socket to say nothing. That is
+  `recomputeBlock`'s argument for `BLOCK_STATE` (DD2), and it is why the view is
+  **also** in the snapshot — a browser opened while a train is quietly running
+  must not have to wait for its next phase change to see it.
+
+It is deliberately **not** on the MQTT `system/status` payload, which is binding
+(`docs/mqtt-contract.md`) — the same call #103 made about compile staleness. The
+ESP firmware has no use for a phase machine, and widening a contract the
+firmware is built against to carry one would be a change nobody asked for.
+
+**The monitor is untouched.** A phase is a property of a *journey*, and the
+mimic draws the railway; there is still no train-at-a-spot to draw
+(`docs/braking.md` B7), and position is still block-granular. The same call #77
+PR C made about a sensor's position.
 
 ---
 

@@ -27,6 +27,7 @@ import {
   BrakingRefusal,
   BrakingSchedule,
   BrakingStep,
+  AutomationRunView,
   BrakingStopExpectation,
   Direction,
   FunctionCommand,
@@ -344,6 +345,8 @@ export class LayoutService extends EventEmitter {
   private readonly stopExpectations = new Map<LocoAddress, BrakingStopExpectation>();
   /** #7 A6: the automation sweep's handle, armed in `start()` and cancelled in `stop()` — the sibling of `confirmationSweepTimer`. */
   private automationSweepTimer: ClockTimer | null = null;
+  /** The last `AUTOMATION_STATE` payload put on the bus, so a sweep that changed nothing says nothing. `null` until the first emit. */
+  private lastAutomationState: string | null = null;
 
   constructor(
     private readonly dcc: IDccController,
@@ -2801,6 +2804,36 @@ export class LayoutService extends EventEmitter {
     for (const action of actions) {
       await this.executeAutomationAction(action);
     }
+
+    this.emitAutomationStateIfChanged();
+  }
+
+  /** Every train currently under automation — what `GET .../automation` answers. */
+  getAutomationRuns(): AutomationRunView[] {
+    return this.automation.listRunViews();
+  }
+
+  /**
+   * Publishes `AUTOMATION_STATE` **only when it actually changed**, comparing a
+   * serialisation of the current runs against the last one emitted.
+   *
+   * The sweep runs four times a second and is usually a no-op, so emitting
+   * unconditionally would put 240 messages a minute on every open socket to say
+   * nothing — the same argument `recomputeBlock` makes for publishing
+   * `BLOCK_STATE` only on a real change (DD2), and the reason a retained-replay
+   * storm must not reach the bus.
+   *
+   * Compared as JSON rather than field by field because the view is small, flat
+   * and entirely made of primitives: a structural comparison here would be more
+   * code with more ways to forget a field when one is added.
+   */
+  private emitAutomationStateIfChanged(): void {
+    const runs = this.automation.listRunViews();
+    const serialised = JSON.stringify(runs);
+    if (serialised === this.lastAutomationState) return;
+
+    this.lastAutomationState = serialised;
+    this.emit('event', { type: 'AUTOMATION_STATE', payload: { runs } } satisfies LayoutEvent);
   }
 
   /**

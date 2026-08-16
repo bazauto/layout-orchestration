@@ -30,12 +30,14 @@ import {
   AutomationInput,
   AutomationPhase,
   decideAutomation,
+  describeAutomationBlocker,
 } from '../domain/automation';
 import { StoppingDistanceModel, scalarStoppingDistance } from '../domain/braking';
 import { berthingBeamIn } from '../domain/sensorPosition';
 import { LayoutStateManager } from '../domain/layoutState';
 import { TrackGraph } from '../domain/graph';
 import {
+  AutomationRunView,
   BrakingProfile,
   LayoutId,
   LocoAddress,
@@ -159,9 +161,30 @@ export class AutomationService {
     return actions;
   }
 
-  /** Every run currently in flight — what the operator surface reads (PR C) and what `LayoutService` iterates to stand automation down. */
+  /** Every run currently in flight — what `LayoutService` iterates to stand automation down. */
   listRuns(): AutomationRun[] {
     return [...this.runs.values()];
+  }
+
+  /**
+   * The operator-facing projection (PR C), oldest run first so the list does not
+   * reorder itself under someone reading it.
+   *
+   * A **blocked** train is the one thing here that is not visible anywhere else:
+   * it has an active route, it is in `auto` mode, and it is not moving, which
+   * from outside is indistinguishable from a train that has arrived. Carrying
+   * the rendered sentence rather than the blocker tag is what makes the panel
+   * able to say "the loco has no automation speed step configured" without
+   * re-implementing that sentence in the browser.
+   */
+  listRunViews(): AutomationRunView[] {
+    return [...this.runs.values()].map((run) => ({
+      locoAddress: run.locoAddress,
+      routeId: run.routeId,
+      phase: run.phase,
+      berthSensorId: run.berthSensorId,
+      blocker: run.reportedBlocker,
+    }));
   }
 
   runFor(locoAddress: LocoAddress): AutomationRun | null {
@@ -348,13 +371,21 @@ export class AutomationService {
    */
   private reportBlocker(run: AutomationRun, decision: AutomationDecision): void {
     if (decision.kind !== 'blocked') return;
-    if (run.reportedBlocker === decision.reason.kind) return;
 
-    run.reportedBlocker = decision.reason.kind;
+    // The rendered sentence, not the tag: it is what the operator surface shows
+    // and what the log line has to be readable as, and deriving it once here
+    // stops the browser having to re-implement it. Comparing sentences also
+    // means a `no-stopping-distance` whose arithmetic changed re-reports, which
+    // is the behaviour worth having — the numbers are the actionable part.
+    const described = describeAutomationBlocker(decision.reason);
+    if (run.reportedBlocker === described) return;
+
+    run.reportedBlocker = described;
     this.log.warn('[AutomationService] Automation cannot depart this train', {
       locoAddress: run.locoAddress,
       routeId: run.routeId,
       blocker: decision.reason.kind,
+      reason: described,
     });
   }
 }

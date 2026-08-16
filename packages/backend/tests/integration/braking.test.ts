@@ -191,6 +191,25 @@ describe('Braking routes', () => {
     expect(badAddress.statusCode).toBe(400);
   });
 
+  it('GET .../automation lists the trains under automation, and 404s another layout (#7 PR C)', async () => {
+    await authenticateAsAdmin(app);
+
+    // Nothing is automated on a layout nobody has opted in — every column
+    // automation needs is nullable and nothing back-fills one (A7).
+    const empty = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/automation` });
+    expect(empty.statusCode).toBe(200);
+    expect(JSON.parse(empty.body)).toEqual({ runs: [] });
+
+    const wrongLayout = await app.inject({ method: 'GET', url: '/api/layouts/other/automation' });
+    expect(wrongLayout.statusCode).toBe(404);
+  });
+
+  it('an operator may read automation state — it is a read, like the fault lists', async () => {
+    await authenticateAsOperator(app);
+    const res = await app.inject({ method: 'GET', url: `/api/layouts/${LAYOUT_ID}/automation` });
+    expect(res.statusCode).toBe(200);
+  });
+
   it('GET .../braking-faults lists what is latched, and 404s another layout', async () => {
     await authenticateAsAdmin(app);
 

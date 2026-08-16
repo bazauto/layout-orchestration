@@ -33,6 +33,7 @@ const INITIAL_SNAPSHOT: StateSnapshot = {
   pointFaults: [],
   routeFaults: [],
   brakingFaults: [],
+  automationRuns: [],
 };
 
 const WS_URL =
@@ -146,7 +147,13 @@ export function useLayoutSocket() {
 function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
   switch (msg.type) {
     case 'STATE_SNAPSHOT':
-      return msg.payload;
+      // `automationRuns` is defaulted rather than trusted (#7 PR C). The type
+      // says it is always there and the *current* backend always sends it — but
+      // this is the one place a wire payload is adopted wholesale, so a browser
+      // holding a cached bundle against an older backend gets `undefined` for
+      // any field added since, and `RoutesPanel` would then crash mapping over
+      // it. A collection arriving absent must read as empty, never as a hole.
+      return { ...msg.payload, automationRuns: msg.payload.automationRuns ?? [] };
 
     case 'BLOCK_STATE': {
       const b = msg.payload as BlockState;
@@ -192,6 +199,12 @@ function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
       // Same posture again (#6): the complete latched set, keyed per loco on
       // the backend and sent as a list.
       return { ...prev, brakingFaults: msg.payload.faults };
+
+    case 'AUTOMATION_STATE':
+      // #7 PR C: the complete set of runs, sent only when it changed. The
+      // sweep ticks four times a second and is usually a no-op, so the backend
+      // suppresses an unchanged payload rather than the client diffing one.
+      return { ...prev, automationRuns: msg.payload.runs };
 
     case 'ERROR':
       // A rejected command carries no state, so there is nothing to merge —

@@ -213,6 +213,22 @@ export interface BrakingFaultView {
   faultedAt: string;
 }
 
+/**
+ * One train under automation (#7 PR C, `docs/automation.md`). Mirrors the
+ * backend's `AutomationRunView` byte for byte.
+ *
+ * `blocker` is a rendered sentence, not a tag — "the loco has no automation
+ * speed step configured" — so the panel showing it does not have to
+ * re-implement `describeAutomationBlocker` and drift from it.
+ */
+export interface AutomationRunView {
+  locoAddress: number;
+  routeId: string;
+  phase: 'awaiting-departure' | 'running' | 'braking' | 'crawling' | 'berthed';
+  berthSensorId: string | null;
+  blocker: string | null;
+}
+
 export interface LocoRecord {
   id: string;
   layoutId: string;
@@ -663,6 +679,13 @@ export interface StateSnapshot {
   routeFaults: RouteFaultView[];
   /** #6: current latched braking faults, one per loco, likewise the complete set. */
   brakingFaults: BrakingFaultView[];
+  /**
+   * #7: every train currently under automation, likewise the complete set. In
+   * the snapshot as well as on its own event because `AUTOMATION_STATE` is only
+   * published when something *changed* — a browser opened while a train is
+   * quietly running would otherwise see nothing until its next phase change.
+   */
+  automationRuns: AutomationRunView[];
 }
 
 // ─── Server → Client messages ─────────────────────────────────────────────────
@@ -678,6 +701,7 @@ export type ServerMessage =
   | { type: 'ROUTE_STATE'; payload: RouteReservation }
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
   | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } }
+  | { type: 'AUTOMATION_STATE'; payload: { runs: AutomationRunView[] } }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } }
   /**
    * #82 D5 (docs/liveness.md): an application-level message, not a

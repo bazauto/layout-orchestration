@@ -81,6 +81,7 @@ const ONLINE_SNAPSHOT = {
   pointFaults: [],
   routeFaults: [],
   brakingFaults: [],
+  automationRuns: [],
 };
 
 /** Fills loco / from / to on the Routes panel. */

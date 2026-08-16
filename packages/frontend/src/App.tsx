@@ -104,6 +104,7 @@ function AuthenticatedApp({
     pointFaults,
     routeFaults,
     brakingFaults,
+    automationRuns,
   } = snapshot;
 
   // One derived list feeds both the nav and the render guards below, rather
@@ -252,6 +253,7 @@ function AuthenticatedApp({
                   blockRecords={layoutConfig.config.blocks}
                   locoRecords={layoutConfig.config.locos}
                   disabled={isDisabled}
+                  automationRuns={automationRuns}
                   onRequest={async (req) => {
                     const r = await layoutConfig.requestRoute(req);
                     return { ok: r.ok, message: r.message };

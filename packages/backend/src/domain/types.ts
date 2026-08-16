@@ -995,6 +995,30 @@ export interface BrakingFaultView {
  * taken at run start, not a live query — the overrun check needs no
  * reservation lookup and cannot race the release path in `recomputeBlock`.
  */
+/**
+ * Wire projection of one automated train (#7 PR C, `docs/automation.md`).
+ *
+ * Deliberately **not** on the MQTT `system/status` payload, which is binding
+ * (`docs/mqtt-contract.md`) — the same call #103 made about compile staleness.
+ * This is a browser-facing view of runtime state; the ESP firmware has no use
+ * for it and adding it to a contract the firmware is built against would be a
+ * change nobody asked for.
+ *
+ * `blocker` carries `describeAutomationBlocker`'s sentence rather than the
+ * blocker's tag, because the whole point of the field is telling an operator
+ * what to go and set. A tag would need the same sentence written again in the
+ * browser, and the two would drift.
+ */
+export interface AutomationRunView {
+  locoAddress: LocoAddress;
+  routeId: RouteId;
+  phase: 'awaiting-departure' | 'running' | 'braking' | 'crawling' | 'berthed';
+  /** The beam a berthing run is watching, or `null` for a boundary stop. */
+  berthSensorId: SensorId | null;
+  /** What an operator must fix before this train moves, or `null`. */
+  blocker: string | null;
+}
+
 export interface BrakingStopExpectation {
   locoAddress: LocoAddress;
   routeId: RouteId;
@@ -1062,7 +1086,8 @@ export type LayoutEvent =
   | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
   | { type: 'POINT_FAULTS'; payload: { faults: PointFaultView[] } }
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
-  | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } };
+  | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } }
+  | { type: 'AUTOMATION_STATE'; payload: { runs: AutomationRunView[] } };
 
 // ─── WebSocket Message Shapes ─────────────────────────────────────────────────
 
@@ -1085,6 +1110,14 @@ export interface StateSnapshot {
   pointFaults: PointFaultView[];
   routeFaults: RouteFaultView[];
   brakingFaults: BrakingFaultView[];
+  /**
+   * #7: every train currently under automation, likewise always the complete
+   * set. In the snapshot as well as on its own event because
+   * `AUTOMATION_STATE` is only published when something *changed* — a browser
+   * opened while a train is quietly running would otherwise see nothing until
+   * its next phase transition.
+   */
+  automationRuns: AutomationRunView[];
 }
 
 /**
