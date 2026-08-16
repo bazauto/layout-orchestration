@@ -105,7 +105,8 @@ Implemented:
 
 Planned next:
 - Collision avoidance and speed control (#7) — **in progress**. PR A landed the decision
-  model (`docs/automation.md`) and is wired to nothing; PR B is the sweep that drives it
+  model and PR B the engine (`docs/automation.md`), so automation now drives an
+  `auto`-authority route; PR C is the operator surface
 - Automation engine / schedules
 
 ## Workspace Layout
@@ -409,13 +410,18 @@ unroutable; the compiler disambiguates them by suffix and both carry edges.
 
 ### Routing and movement
 
-**Driving a granted route is manual.** Pathfinding, reservation and locking all landed
-(#4): a route is found, its track reserved and **its points thrown**. Braking landed too
-(#6) — the system can be *asked* to stop a train at a route boundary and will run the ramp
-— but nothing decides when to ask, and nothing accelerates or drives a train along the road
-it has been given. That is #7, and it is **in progress**: PR A has landed the decision
-model (`docs/automation.md`), deliberately wired to nothing, so every sentence above is
-still true of the running system. PR B is what makes them false.
+**Driving a granted route is manual until you opt a route in to automation.** Pathfinding,
+reservation and locking all landed (#4): a route is found, its track reserved and **its
+points thrown**. Braking landed too (#6) — the system can be *asked* to stop a train at a
+route boundary and will run the ramp. #7 PR B is what now decides *when* to ask, and drives
+the train: an `auto`-authority route departs, runs at its loco's line speed, brakes on
+approach, crawls, and stops on a berthing beam (`docs/automation.md`).
+
+**Nothing on this layout is automated yet, and nothing will be until you say so.** Every
+column automation needs is nullable and nothing back-fills one, so today no loco has an
+`auto_speed_step` and no route has a `direction` — automation departs nothing. A
+`manual`-authority route is still exactly what it was: the operator driving their own
+reserved road, which automation neither drives nor guards.
 
 **A braked stop to the very next block needs a beam in the block behind it.** Occupancy is
 block-granular, so on its own the model will only promise the *intermediate* track between

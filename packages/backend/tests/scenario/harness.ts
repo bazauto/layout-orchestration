@@ -284,6 +284,10 @@ function makeInMemoryRepo(): InMemoryLayoutRepository {
             layoutId: data.layoutId,
             locoAddress: data.locoAddress,
             authority: data.authority,
+            // #7 A7. Dropping this on the way into storage would leave every
+            // scenario route with no direction, which automation reads as
+            // "never depart" — a silent no-op rather than a failure.
+            direction: data.direction,
             status: data.status,
             path: data.path,
             confirmedIndex: data.confirmedIndex,

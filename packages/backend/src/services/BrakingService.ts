@@ -96,6 +96,21 @@ export class BrakingService {
     reservation: RouteReservation,
     graph: TrackGraph | null,
     targetIndex?: number,
+    /**
+     * #7's berthing parameters (`docs/automation.md` A2–A4), resolved by
+     * `AutomationService` and passed in rather than looked up here.
+     *
+     * `berthOffsetMm` extends the measured distance *past* the target block's
+     * entry boundary to a beam inside it; `toSpeedStep` makes the ramp end at a
+     * crawl instead of at a stand. Neither changes what the plan *requires* —
+     * the distance check stays the full-stop one (A4).
+     *
+     * Omitted by every #6 caller, and omitting it reproduces their behaviour
+     * exactly. The beam is selected once, by the caller, so the offset folded
+     * into this distance is provably the offset of the beam the crawl then
+     * watches for arrival.
+     */
+    berth?: { toSpeedStep: number; berthOffsetMm: number },
   ): Promise<BrakingPlan> {
     if (reservation.status !== 'active') {
       return this.refuse(layoutId, reservation.locoAddress, {
@@ -152,7 +167,13 @@ export class BrakingService {
           }
         : undefined;
 
-    const distance = remainingRouteDistanceMm(reservation, graph, resolvedTargetIndex, lead);
+    const distance = remainingRouteDistanceMm(
+      reservation,
+      graph,
+      resolvedTargetIndex,
+      lead,
+      berth?.berthOffsetMm,
+    );
     if (!distance.ok) {
       return this.refuse(layoutId, reservation.locoAddress, distance.reason);
     }
@@ -163,6 +184,7 @@ export class BrakingService {
         fromCommandedSpeedStep: resolved.locoState.speed,
         direction: resolved.locoState.direction,
         availableDistanceMm: distance.distanceMm,
+        toSpeedStep: berth?.toSpeedStep,
       },
       this.model,
     );

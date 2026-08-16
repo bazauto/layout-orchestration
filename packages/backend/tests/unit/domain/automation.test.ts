@@ -169,9 +169,18 @@ describe('departure', () => {
     expect(out.decision).toEqual({ kind: 'blocked', reason: { kind: 'no-auto-speed' } });
   });
 
-  it('BLOCKS when the loco has no commanded state — never assumes speed 0 (B6)', () => {
+  it('DEPARTS a loco that has never been commanded — a deliberate asymmetry with B6', () => {
+    // B6 refuses a braking plan without a `LocoState` because it needs the
+    // current commanded speed as an input to a calculation. A departure
+    // computes nothing from it — it *sets* the speed. Refusing here would make
+    // automation unusable from a cold start, since the one thing an operator
+    // could do to establish a `LocoState` (open the throttle) cancels the very
+    // route they are trying to automate (D6).
     const out = decideAutomation(input({ loco: null }), 0);
-    expect(out.decision).toEqual({ kind: 'blocked', reason: { kind: 'no-loco-state' } });
+    expect(out).toEqual({
+      decision: { kind: 'depart', speedStep: 60, direction: 'fwd' },
+      nextPhase: 'running',
+    });
   });
 
   it('BLOCKS when the loco is not in the roster', () => {
@@ -187,31 +196,35 @@ describe('departure', () => {
     expect(out).toEqual({ decision: { kind: 'hold' }, nextPhase: 'running' });
   });
 
-  it('checks the loco before the configuration, so an unknown loco is not reported as a missing speed', () => {
-    const out = decideAutomation(input({ loco: null, autoSpeedStep: null }), 0);
-    expect(out.decision).toEqual({ kind: 'blocked', reason: { kind: 'no-loco-state' } });
+  it('checks the roster before the configuration, so an unknown loco is not reported as a missing speed', () => {
+    const out = decideAutomation(input({ profile: null, autoSpeedStep: null }), 0);
+    expect(out.decision).toEqual({ kind: 'blocked', reason: { kind: 'not-in-roster' } });
   });
 });
 
 // ─── The brake trigger (A6) ────────────────────────────────────────────────────
 
 describe('the brake trigger', () => {
+  // Speed 60 throughout: the model predicts 113mm and requires 213mm with B5's
+  // margin, so the distance trigger sits at 338mm against 500mm blocks. Those
+  // figures are far enough apart that a change to either constant fails loudly
+  // rather than flipping a borderline case.
   const running = (overrides: Partial<AutomationInput> = {}) =>
-    input({ phase: 'running', loco: loco({ speed: 126, direction: 'fwd' }), ...overrides });
+    input({ phase: 'running', loco: loco({ speed: 60, direction: 'fwd' }), ...overrides });
 
   it('holds while there is plenty of track ahead', () => {
-    // Confirmed in b1, target b4: b2 + b3 = 1000mm available. At speed 126 a
-    // full stop needs 625mm, so the trigger point is 750mm — not yet.
+    // Confirmed in b1, target b4: b2 + b3 = 1000mm available, and advancing one
+    // block would still leave 500mm against a 213mm requirement. Nothing to do.
     const out = decideAutomation(running(), 0);
     expect(out).toEqual({ decision: { kind: 'hold' }, nextPhase: 'running' });
   });
 
-  it('brakes once the remaining distance reaches required + the approach margin', () => {
-    // Confirmed in b2 now: only b3's 500mm remains, which is inside 750mm.
-    const out = decideAutomation(
-      running({ reservation: reservation({ confirmedIndex: 1 }) }),
-      0,
-    );
+  it('brakes when advancing one more block would leave too little to plan with', () => {
+    // Confirmed in b2: 500mm remains, which the distance trigger (338mm) is
+    // still happy with. What fires is the look-ahead — once the train is
+    // confirmed in b3 there are no intermediate blocks left at all, so the
+    // available distance becomes 0 and nothing could ever be planned.
+    const out = decideAutomation(running({ reservation: reservation({ confirmedIndex: 1 }) }), 0);
     expect(out.nextPhase).toBe('braking');
     expect(out.decision).toMatchObject({
       kind: 'brake',
@@ -220,22 +233,92 @@ describe('the brake trigger', () => {
       berthOffsetMm: 0,
       berthSensorId: null,
       availableMm: 500,
-      requiredMm: 625,
     });
+    if (out.decision.kind !== 'brake') return;
+    expect(out.decision.requiredMm).toBeCloseTo(213.4, 1);
   });
 
-  it('fires while the plan is still grantable, which is the whole point of the margin', () => {
-    // At exactly the trigger point the available distance still exceeds what a
-    // full stop requires — so `planBrakingSchedule` will grant it rather than
-    // refusing `insufficient-distance`. That gap IS `APPROACH_MARGIN_MM`.
-    const out = decideAutomation(
-      running({ reservation: reservation({ confirmedIndex: 1 }) }),
-      250,
-    );
+  it('fires while the plan is still grantable, which is the whole point', () => {
+    // Whichever trigger fires, the available distance at that moment still
+    // exceeds what a full stop requires — so `planBrakingSchedule` grants it
+    // rather than refusing `insufficient-distance`, which would be A10's
+    // `unable-to-stop` fault instead of an ordinary braked approach.
+    const out = decideAutomation(running({ reservation: reservation({ confirmedIndex: 1 }) }), 0);
     expect(out.decision.kind).toBe('brake');
     if (out.decision.kind !== 'brake') return;
-    expect(out.decision.availableMm).toBe(750);
     expect(out.decision.availableMm).toBeGreaterThan(out.decision.requiredMm);
+  });
+
+  it('lets the DISTANCE trigger fire on its own where blocks are shorter than a stop', () => {
+    // The two triggers dominate in different geometries, and this is the one
+    // where the distance rule is the operative one: a 50mm next block means
+    // advancing costs almost nothing, so the look-ahead is content — but the
+    // total left is inside 338mm, so it is time to brake regardless.
+    const shortBlocks = buildTrackGraph(
+      LAYOUT,
+      [
+        edge({ id: 'e1', fromBlockId: 'b1', toBlockId: 'b2' }),
+        edge({ id: 'e2', fromBlockId: 'b2', toBlockId: 'b3' }),
+        edge({ id: 'e3', fromBlockId: 'b3', toBlockId: 'b4' }),
+      ],
+      new Map([
+        ['b1', 500],
+        ['b2', 50],
+        ['b3', 280],
+        ['b4', 500],
+      ]),
+    );
+    const out = decideAutomation(running({ graph: shortBlocks }), 0);
+    expect(out.decision.kind).toBe('brake');
+    if (out.decision.kind !== 'brake') return;
+    expect(out.decision.availableMm).toBe(330);
+  });
+
+  it('brakes on entering the LAST block before the target, however much berth lies beyond', () => {
+    // The planning horizon (A6). A route completes the instant its destination
+    // reads `occupied`, and `remainingRouteDistanceMm` refuses once
+    // `confirmedIndex` reaches `targetIndex` — so this is the last place a plan
+    // can be made from. A 400mm berth beyond looks like plenty of room to the
+    // distance trigger (400 > 213 + 125), and waiting on it would mean the
+    // train leaves this block with no plan and nothing ever brakes it.
+    const out = decideAutomation(
+      running({
+        reservation: reservation({ confirmedIndex: 2 }),
+        loco: loco({ speed: 60, direction: 'fwd' }),
+        berthSensorId: 'berth',
+      }),
+      400,
+    );
+    expect(out.nextPhase).toBe('braking');
+    expect(out.decision).toMatchObject({ kind: 'brake', toSpeedStep: 8, berthOffsetMm: 400 });
+  });
+
+  it('lets a fresh position fix in that last block hold the horizon open', () => {
+    // With a beam saying the train is still 300mm from the boundary, it cannot
+    // cross before the next sweep, so there is no need to brake yet. Same
+    // margin, same question — how far can this train get before I look again.
+    const out = decideAutomation(
+      running({
+        reservation: reservation({ confirmedIndex: 2 }),
+        loco: loco({ speed: 60, direction: 'fwd' }),
+        berthSensorId: 'berth',
+        confirmedBlockObservations: [
+          {
+            sensorId: 'lead',
+            blockId: 'b3',
+            type: 'ir_position',
+            inService: true,
+            faulted: false,
+            lastReading: 'occupied',
+            lastReadingAt: NOW,
+            position: { towardBlockId: 'b4', offsetMm: 300 },
+            lastRisingEdgeAt: NOW,
+          },
+        ],
+      }),
+      400,
+    );
+    expect(out).toEqual({ decision: { kind: 'hold' }, nextPhase: 'running' });
   });
 
   it('a berth offset pushes the trigger later, because the stopping point is further away', () => {
@@ -300,11 +383,13 @@ describe('the brake trigger', () => {
     expect(out.decision).toMatchObject({ kind: 'brake', toSpeedStep: 0, berthSensorId: null });
   });
 
-  it('HOLDS rather than braking when a block ahead is unmeasured', () => {
-    // The distance question is unanswerable, and braking on an unanswerable
-    // question would stop trains mid-section every time a length was missing.
-    // What protects the train is `unmeasured-track` refusing the plan one layer
-    // down, which Safe-Stops through A10.
+  it('STANDS DOWN a moving train whose remaining distance stops being computable', () => {
+    // Holding here was the first instinct and it is wrong, because the cause is
+    // not transient: `unmeasured-track` stays refused for as long as the block
+    // stays unmeasured, so the train would coast to the end of its authority
+    // while the sweep politely asked again four times a second. A7's departure
+    // check is what makes this rare — reaching it means the layout changed
+    // under a running train, which is exactly when to stop it.
     const unmeasured = buildTrackGraph(
       LAYOUT,
       [
@@ -315,15 +400,16 @@ describe('the brake trigger', () => {
       new Map([['b1', 500]]),
     );
     const out = decideAutomation(running({ graph: unmeasured }), 0);
-    expect(out).toEqual({ decision: { kind: 'hold' }, nextPhase: 'running' });
+    expect(out.decision.kind).toBe('stand-down');
+    expect(out.nextPhase).toBe('berthed');
   });
 
-  it('HOLDS when the model cannot estimate a distance for this loco', () => {
+  it('STANDS DOWN when the model cannot estimate a distance for this loco', () => {
     const out = decideAutomation(
       running({ profile: { locoAddress: 3, maxSpeed: 126, brakingFactor: 5 } }),
       0,
     );
-    expect(out).toEqual({ decision: { kind: 'hold' }, nextPhase: 'running' });
+    expect(out.decision.kind).toBe('stand-down');
   });
 
   it('HOLDS for a train that has already stopped — there is nothing to brake', () => {
@@ -334,10 +420,11 @@ describe('the brake trigger', () => {
     expect(out).toEqual({ decision: { kind: 'hold' }, nextPhase: 'running' });
   });
 
-  it('credits a #77 lead fix, which pushes the trigger later', () => {
-    // A beam 300mm from the b2/b3 boundary, tripped just now: the train is at
-    // most 300mm from leaving b2, so 500 + 300 = 800mm remains — outside the
-    // 750mm trigger that fires without it.
+  it('credits a #77 lead fix in the available distance it reports', () => {
+    // The lead term does not defer the trigger here — the look-ahead fires on
+    // what happens *after* this block regardless — but it must still reach the
+    // figure the plan is made against, or a run would be planned over less
+    // track than the railway can actually promise.
     const out = decideAutomation(
       running({
         reservation: reservation({ confirmedIndex: 1 }),
@@ -357,7 +444,9 @@ describe('the brake trigger', () => {
       }),
       0,
     );
-    expect(out).toEqual({ decision: { kind: 'hold' }, nextPhase: 'running' });
+    expect(out.decision.kind).toBe('brake');
+    if (out.decision.kind !== 'brake') return;
+    expect(out.decision.availableMm).toBe(800);
   });
 });
 
@@ -470,6 +559,46 @@ describe('a run whose route has gone', () => {
     expect(out).toEqual({ decision: { kind: 'hold' }, nextPhase: 'crawling' });
   });
 
+  it.each(['cancelled', 'suspended'] as const)(
+    'STANDS DOWN a crawl whose route was %s — stopping the train, not just dropping the run',
+    (status) => {
+      // The distinction A8 turns on: a route that *completed* is not a route
+      // that was *taken away*. A crawl is the one phase whose speed automation
+      // itself commanded and that nothing else reliably removes — a completed
+      // route releases no throttle, and a mode change to manual suspends routes
+      // without touching a train whose route already completed.
+      const out = decideAutomation(
+        input({
+          phase: 'crawling',
+          reservation: reservation({ status }),
+          loco: loco({ speed: 8, direction: 'fwd' }),
+          berthSensorId: 'berth',
+          crawlStartedAt: NOW,
+        }),
+        400,
+      );
+      expect(out.decision).toEqual({ kind: 'stand-down', reason: `route is ${status}` });
+      expect(out.nextPhase).toBe('berthed');
+    },
+  );
+
+  it('does NOT stand down a crawl whose route merely completed', () => {
+    // `released` is the normal ending: the destination block reads occupied as
+    // the train's front enters, long before a beam at the far end.
+    const out = decideAutomation(
+      input({
+        phase: 'crawling',
+        reservation: reservation({ status: 'released' }),
+        loco: loco({ speed: 8, direction: 'fwd' }),
+        berthSensorId: 'berth',
+        crawlStartedAt: NOW,
+        now: after(1_000),
+      }),
+      400,
+    );
+    expect(out).toEqual({ decision: { kind: 'hold' }, nextPhase: 'crawling' });
+  });
+
   it('still berths a routeless crawl when the beam breaks', () => {
     const out = decideAutomation(
       input({
@@ -499,7 +628,6 @@ describe('describeAutomationBlocker', () => {
   it('says what an operator has to go and set', () => {
     expect(describeAutomationBlocker({ kind: 'no-direction' })).toContain('which way round');
     expect(describeAutomationBlocker({ kind: 'no-auto-speed' })).toContain('automation speed step');
-    expect(describeAutomationBlocker({ kind: 'no-loco-state' })).toContain('commanded state');
     expect(describeAutomationBlocker({ kind: 'not-in-roster' })).toContain('roster');
   });
 });

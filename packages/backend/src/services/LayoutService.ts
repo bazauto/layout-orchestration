@@ -73,6 +73,7 @@ import {
 } from '../domain/safety';
 import {
   BrakingPlan,
+  buildBerthExpectation,
   buildStopExpectation,
   describeBrakingRefusal,
   isBrakingOverrun,
@@ -104,6 +105,8 @@ import { INERT_NAME_BOOK } from './nameBook';
 import { loadTopology, TopologyLoadResult } from './topologyLoader';
 import { PointConfirmationService } from './PointConfirmationService';
 import { BrakingService } from './BrakingService';
+import { AutomationAction, AutomationService } from './AutomationService';
+import { AUTOMATION_TICK_MS } from '../domain/automation';
 import { SystemClock } from '../adapters/clock/SystemClock';
 import {
   GrantOutcome,
@@ -339,6 +342,8 @@ export class LayoutService extends EventEmitter {
    * be active, or the expectation firing.
    */
   private readonly stopExpectations = new Map<LocoAddress, BrakingStopExpectation>();
+  /** #7 A6: the automation sweep's handle, armed in `start()` and cancelled in `stop()` — the sibling of `confirmationSweepTimer`. */
+  private automationSweepTimer: ClockTimer | null = null;
 
   constructor(
     private readonly dcc: IDccController,
@@ -401,6 +406,25 @@ export class LayoutService extends EventEmitter {
       log,
       undefined,
       clock,
+    ),
+    /**
+     * #7: owns automation's *decisions* (docs/automation.md). Same posture as
+     * `braking` above — it plans, this service commands, and it never calls
+     * back. Defaults to one scoped to this instance's own repository, state
+     * manager and reservations.
+     *
+     * The two closures rather than the whole `ReservationService`: automation
+     * needs to know which routes exist and to look one up, and nothing else.
+     * Handing it the service would let a later change reach for `cancel` or
+     * `resume` from inside a 250 ms sweep, which is exactly the coupling
+     * `docs/route-locking.md`'s one-way dependency rule exists to prevent.
+     */
+    private readonly automation: AutomationService = new AutomationService(
+      repo,
+      stateManager,
+      (layoutId) => reservations.listRoutes(layoutId, ['active']),
+      (layoutId, routeId) => reservations.getRoute(layoutId, routeId),
+      log,
     ),
   ) {
     super();
@@ -472,6 +496,7 @@ export class LayoutService extends EventEmitter {
     this.publishSystemStatus();
     this.startHeartbeat();
     this.startConfirmationSweep();
+    this.startAutomationSweep();
 
     // #25 D2: recovers position live from every 'required' point — the only
     // recovery consistent with D1's retention argument, since nothing about
@@ -484,9 +509,11 @@ export class LayoutService extends EventEmitter {
   async stop(): Promise<void> {
     this.stopHeartbeat();
     this.stopConfirmationSweep();
+    this.stopAutomationSweep();
     // Timers outlive a `stop()` that does not cancel them, and a ramp step
     // firing against a disconnected adapter is noise at best.
     this.abortAllBrakingRuns('service stopped');
+    this.automation.abandonAll('service stopped');
 
     if (this.layoutId) {
       this.stateManager.setOffline();
@@ -519,6 +546,12 @@ export class LayoutService extends EventEmitter {
     // train would not reach are now theirs to enter. Done BEFORE the DCC
     // command below, so no ramp step can land on top of it.
     this.abortBrakingRun(cmd.locoAddress, 'manual throttle command', { clearExpectation: true });
+
+    // A12: the operator has taken this train, so automation stops deciding
+    // things about it. D6's route cancel below is the authority half; this is
+    // the phase machine's, and it matters most mid-crawl — a run left in place
+    // would keep watching a beam for a train that is now the operator's.
+    this.automation.abandon(cmd.locoAddress, 'manual throttle command');
 
     // D6: a manual throttle command for a loco that is the subject of an
     // auto-authority route cancels that route — the operator has taken the
@@ -649,6 +682,10 @@ export class LayoutService extends EventEmitter {
     // scheduled `setSpeed`, and one landing after an emergency stop would
     // restart a train the operator has just halted.
     this.abortAllBrakingRuns('emergency stop');
+    // A13: no command is issued for these — the broadcast below stops
+    // everything, including a train mid-crawl. Abandoning the runs is what
+    // stops the next sweep from deciding anything about them.
+    this.automation.abandonAll('emergency stop');
     await this.dcc.emergencyStop();
 
     const stopped = this.stateManager.stopAllLocos();
@@ -706,6 +743,11 @@ export class LayoutService extends EventEmitter {
       for (const outcome of outcomes) {
         this.publishReservationOutcome(outcome);
       }
+      // #7 A13, and NOT covered by the suspend above: a train crawling to its
+      // berth has usually had its route complete already, so there is no
+      // `active` auto route left to suspend and nothing else would stop it.
+      // Leaving automation is an operator decision that has to reach the train.
+      await this.standDownAutomation('system mode set to manual');
     }
 
     this.publishSystemStatus();
@@ -2287,7 +2329,16 @@ export class LayoutService extends EventEmitter {
    * owns (route not active, manual authority, unmeasured track, a point that
    * has not confirmed) — this method deliberately re-checks none of them.
    */
-  async startRouteStop(routeId: RouteId, targetIndex?: number): Promise<BrakingRunOutcome> {
+  async startRouteStop(
+    routeId: RouteId,
+    targetIndex?: number,
+    /**
+     * #7's berthing parameters (A2–A4). Omitted entirely by every #6 caller,
+     * including B8's calibration surface, which is what keeps a hand-triggered
+     * route stop behaving exactly as it did.
+     */
+    berth?: { toSpeedStep: number; berthOffsetMm: number; berthing: boolean },
+  ): Promise<BrakingRunOutcome> {
     if (!this.layoutId) throw new Error('[LayoutService] startRouteStop called before start()');
 
     const state = this.stateManager.getState();
@@ -2310,14 +2361,20 @@ export class LayoutService extends EventEmitter {
       reservation,
       this.graph,
       resolvedTargetIndex,
+      berth,
     );
 
-    return this.beginBrakingRun(
-      plan,
-      reservation.locoAddress,
-      routeId,
-      buildStopExpectation(reservation, resolvedTargetIndex),
-    );
+    // A9: a berthing run's overrun expectation is the track *beyond* the route,
+    // not `path.slice(targetIndex)` — that one contains the destination block,
+    // which is where a berthing train is supposed to end up, so arming it
+    // unchanged would Safe-Stop the layout at the instant a textbook arrival
+    // succeeded.
+    const expectation =
+      berth?.berthing && this.graph
+        ? buildBerthExpectation(reservation, this.graph)
+        : buildStopExpectation(reservation, resolvedTargetIndex);
+
+    return this.beginBrakingRun(plan, reservation.locoAddress, routeId, expectation);
   }
 
   /** The current latched braking faults, oldest first — the first cause leads, matching `getRouteFaults`. */
@@ -2692,6 +2749,221 @@ export class LayoutService extends EventEmitter {
     } satisfies LayoutEvent);
   }
 
+  // ─── Automation (#7 PR B, see docs/automation.md) ─────────────────────────────
+
+  /**
+   * A6's sweep: every `AUTOMATION_TICK_MS`, ask `AutomationService` what should
+   * happen to each automated train and do it.
+   *
+   * A *sweep* rather than a hook on occupancy changes, and that is structural
+   * rather than a preference: since #77 the available stopping distance shrinks
+   * **continuously**, because a position fix decays with age, so the moment
+   * braking becomes necessary can fall between two occupancy events. A sweep
+   * subsumes an event-driven trigger; the reverse is not true. It runs on the
+   * injected `IClock` for the same reason #25's confirmation sweep does — a
+   * bare `setInterval` cannot be exercised by the scenario harness.
+   */
+  private startAutomationSweep(): void {
+    this.stopAutomationSweep();
+    this.automationSweepTimer = this.clock.setInterval(() => {
+      void this.runAutomationSweep();
+    }, AUTOMATION_TICK_MS);
+  }
+
+  private stopAutomationSweep(): void {
+    this.automationSweepTimer?.cancel();
+    this.automationSweepTimer = null;
+  }
+
+  /**
+   * One tick. Exposed (rather than private) for the same reason
+   * `runConfirmationSweep` is: the scenario harness drives it directly against
+   * a `ManualClock`, which is what makes every transition in
+   * `docs/automation.md` testable without a layout attached.
+   *
+   * **Gated on `canIssueAutoCommand`** (A13) — the same predicate every other
+   * automated command is gated on. This is the only thing in the system that
+   * *starts* a train rather than stopping one, so it is also re-gated by
+   * `startRouteStop` underneath and by `refuseUnlessOnline` under that.
+   */
+  async runAutomationSweep(): Promise<void> {
+    if (!this.layoutId) return;
+    const state = this.stateManager.getState();
+
+    const actions = await this.automation.sweep({
+      layoutId: this.layoutId,
+      graph: this.graph,
+      permitted: canIssueAutoCommand(state.systemStatus, state.systemMode),
+      brakingRunsInFlight: new Set(this.brakingRuns.keys()),
+      now: this.clock.now(),
+    });
+
+    for (const action of actions) {
+      await this.executeAutomationAction(action);
+    }
+  }
+
+  /**
+   * Carries out one decision. Every failure path ends the same way — stop the
+   * train if it is moving, latch a fault, drop the run — because a train under
+   * automation that cannot be commanded as planned is not a train to keep
+   * making plans for.
+   */
+  private async executeAutomationAction({ run, decision }: AutomationAction): Promise<void> {
+    switch (decision.kind) {
+      case 'depart':
+        await this.departAutomatedTrain(run.locoAddress, run.routeId, decision.speedStep, decision.direction);
+        return;
+
+      case 'brake':
+        await this.brakeAutomatedTrain(run.locoAddress, run.routeId, decision);
+        return;
+
+      case 'berth':
+        // The one closed loop in the system closing (A2). Nothing is faulted:
+        // the train is exactly where the operator's beam says it should be.
+        await this.stopLoco(run.locoAddress);
+        this.automation.abandon(run.locoAddress, 'berthed at its beam');
+        this.log.info('[LayoutService] Automated train berthed', {
+          layoutId: this.layoutId,
+          locoAddress: run.locoAddress,
+          locoName: this.names.get().locos.get(run.locoAddress),
+          routeId: run.routeId,
+          sensorId: run.berthSensorId,
+          sensorName: run.berthSensorId ? this.names.get().sensors.get(run.berthSensorId) : undefined,
+        });
+        return;
+
+      case 'crawl-timeout':
+        await this.stopLoco(run.locoAddress);
+        this.automation.abandon(run.locoAddress, 'crawl timed out');
+        await this.raiseBrakingFault({
+          locoAddress: run.locoAddress,
+          kind: 'berth-not-confirmed',
+          reason: `Loco ${locoLabel(run.locoAddress, this.names.get())} crawled to berth against sensor ${sensorLabel(decision.sensorId, this.names.get())} and it never reported occupied`,
+          routeId: run.routeId,
+          blockId: null,
+        });
+        return;
+
+      case 'stand-down':
+        // A crawl interrupted rather than finished. The train is moving under a
+        // speed automation itself commanded and nothing else is guaranteed to
+        // take it away, so stopping is the point — dropping the run alone would
+        // leave it crawling under nobody's authority.
+        await this.stopLoco(run.locoAddress);
+        this.automation.abandon(run.locoAddress, decision.reason);
+        return;
+    }
+  }
+
+  /**
+   * A7's departure. Writes `authority: 'auto'`, unlike a braking ramp step
+   * (B12), and the difference is the point: a ramp does not change who owns a
+   * loco, while a departure is automation *taking* it.
+   *
+   * A rejected first command latches `speed-command-rejected` — the same kind
+   * and the same reasoning as B6's equivalent on a ramp, though the hazard is
+   * milder here (the train was stationary, so nothing is now running away). It
+   * still Safe-Stops, because a loco that will not accept a command is a loco
+   * nothing else in this system can stop either.
+   */
+  private async departAutomatedTrain(
+    locoAddress: LocoAddress,
+    routeId: RouteId,
+    speedStep: number,
+    direction: 'fwd' | 'rev',
+  ): Promise<void> {
+    try {
+      await this.dcc.setSpeed(locoAddress, speedStep, direction);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.automation.abandon(locoAddress, 'departure command rejected');
+      await this.raiseBrakingFault({
+        locoAddress,
+        kind: 'speed-command-rejected',
+        reason: `Automated departure of loco ${locoLabel(locoAddress, this.names.get())} was rejected: ${message}`,
+        routeId,
+        blockId: null,
+      });
+      return;
+    }
+
+    const locoState = this.stateManager.updateLoco(locoAddress, {
+      speed: speedStep,
+      direction,
+      authority: 'auto',
+    });
+    this.publishLocoState(locoState);
+    this.emit('event', { type: 'LOCO_STATE', payload: locoState } satisfies LayoutEvent);
+    this.log.info('[LayoutService] Automated train departed', {
+      layoutId: this.layoutId,
+      locoAddress,
+      locoName: this.names.get().locos.get(locoAddress),
+      routeId,
+      speedStep,
+      direction,
+    });
+  }
+
+  /**
+   * A6's trigger firing. The plan is `BrakingService`'s to grant or refuse —
+   * this method does not re-check any of it, exactly as `startRouteStop`
+   * documents for its own refusals.
+   *
+   * **A refusal here is A10's `unable-to-stop`, and it Safe-Stops.** The sweep
+   * only asks at the moment a stop became necessary, and A6's approach margin
+   * exists so that moment still leaves the plan grantable — so a refusal means
+   * either a constant is wrong or the world moved faster than
+   * `MAX_CREDIBLE_SPEED_MM_PER_S` says it can. The train is stopped outright
+   * rather than ramped, because by definition there is no room to ramp.
+   */
+  private async brakeAutomatedTrain(
+    locoAddress: LocoAddress,
+    routeId: RouteId,
+    decision: Extract<AutomationAction['decision'], { kind: 'brake' }>,
+  ): Promise<void> {
+    const outcome = await this.startRouteStop(routeId, decision.targetIndex, {
+      toSpeedStep: decision.toSpeedStep,
+      berthOffsetMm: decision.berthOffsetMm,
+      berthing: decision.berthSensorId !== null,
+    });
+    if (outcome.started) return;
+
+    this.automation.abandon(locoAddress, 'braking plan refused');
+    await this.stopLoco(locoAddress);
+    await this.raiseBrakingFault({
+      locoAddress,
+      kind: 'unable-to-stop',
+      reason: `Automation needed loco ${locoLabel(locoAddress, this.names.get())} to start braking on route ${routeId} and the plan was refused: ${describeBrakingRefusal(outcome.reason, this.names.get())}`,
+      routeId,
+      blockId: null,
+    });
+  }
+
+  /**
+   * Takes every train off automation, stopping any that automation itself has
+   * moving (A13).
+   *
+   * Called when the operator leaves an auto-capable mode. The stop is what
+   * makes it more than bookkeeping: `suspendAuto` moves every `active`
+   * auto-authority route to `suspended`, but a train **crawling to its berth**
+   * has usually had its route complete already, so nothing else would touch it.
+   *
+   * Deliberately not called from the Safe-Stop and emergency-stop paths, which
+   * broadcast `dcc.emergencyStop()` and have already stopped everything —
+   * those abandon the runs without re-commanding a speed.
+   */
+  private async standDownAutomation(reason: string): Promise<void> {
+    for (const run of this.automation.listRuns()) {
+      const loco = this.stateManager.getLoco(run.locoAddress);
+      if (loco && loco.speed > 0) {
+        await this.stopLoco(run.locoAddress);
+      }
+      this.automation.abandon(run.locoAddress, reason);
+    }
+  }
+
   private async stopLoco(locoAddress: number): Promise<void> {
     await this.dcc
       .setSpeed(locoAddress, 0, 'stop')
@@ -2787,6 +3059,11 @@ export class LayoutService extends EventEmitter {
       // B6, same rule as `handleEmergencyStop`: no pending ramp step may
       // survive the emergency stop below.
       this.abortAllBrakingRuns(`safe-stop: ${reason}`);
+      // #7 A13, same rule and the same reason: the emergency stop below halts
+      // every train including one mid-crawl, so nothing is commanded here — but
+      // a surviving run would have the next permitted sweep deciding about a
+      // train the layout has already given up on.
+      this.automation.abandonAll(`safe-stop: ${reason}`);
       // Best-effort stop — DCC may be down, so we don't await
       this.dcc.emergencyStop().catch(() => {});
       this.stateManager.stopAllLocos();
