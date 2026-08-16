@@ -74,10 +74,74 @@ describe('migrations', () => {
         blockId: null,
         mqttTopic: `layout/${layout.id}/sensor/detector-1/reading`,
         inService: true,
+        positionTowardBlockId: null,
+        positionOffsetMm: null,
       });
       expect(sensor.inService).toBe(true);
       const [reloaded] = await repo.listSensors(layout.id);
       expect(reloaded.inService).toBe(true);
+    });
+  });
+
+  // ── #77 sub-block sensor position (docs/sensor-position.md D3/D5) ─────────
+
+  describe('sensors position columns', () => {
+    it('both exist and are nullable, so every existing sensor reads "unmeasured"', () => {
+      const columns = sqlite.prepare('PRAGMA table_info(sensors)').all() as Array<{
+        name: string;
+        notnull: number;
+        dflt_value: string | null;
+      }>;
+      for (const name of ['position_toward_block_id', 'position_offset_mm']) {
+        const column = columns.find((c) => c.name === name);
+        expect(column, name).toBeDefined();
+        expect(column?.notnull, name).toBe(0);
+        expect(column?.dflt_value, name).toBeNull();
+      }
+    });
+
+    it('the anchor foreign key is ON DELETE SET NULL, so deleting a block does not refuse', () => {
+      // drizzle-kit dropped the ON DELETE clause when it generated the ALTER
+      // TABLE and it was hand-restored (see 0013's header). Left as generated,
+      // the FK would default to NO ACTION and — with `PRAGMA foreign_keys = ON`
+      // — *refuse* to delete any block a sensor's position anchors to. That is
+      // a behaviour change nobody asked for, so it is asserted here rather than
+      // trusted to a comment.
+      const fks = sqlite.prepare('PRAGMA foreign_key_list(sensors)').all() as Array<{
+        from: string;
+        table: string;
+        on_delete: string;
+      }>;
+      const anchor = fks.find((f) => f.from === 'position_toward_block_id');
+      expect(anchor).toBeDefined();
+      expect(anchor?.table).toBe('blocks');
+      expect(anchor?.on_delete).toBe('SET NULL');
+    });
+
+    it('a measured sensor round-trips, and deleting its anchor block strands the offset rather than failing', async () => {
+      const layout = await repo.createLayout({ name: 'Position Layout', description: null });
+      const platform = await repo.createBlock({ layoutId: layout.id, name: 'Platform 1', lengthMm: 1200 });
+      const goods = await repo.createBlock({ layoutId: layout.id, name: 'Goods Shed', lengthMm: 900 });
+
+      const beam = await repo.createSensor({
+        layoutId: layout.id,
+        name: 'Platform 1 beam',
+        type: 'ir_position',
+        blockId: platform.id,
+        mqttTopic: `layout/${layout.id}/sensor/beam/reading`,
+        inService: true,
+        positionTowardBlockId: goods.id,
+        positionOffsetMm: 400,
+      });
+      expect(beam.positionTowardBlockId).toBe(goods.id);
+      expect(beam.positionOffsetMm).toBe(400);
+
+      await repo.deleteBlock(layout.id, goods.id);
+
+      const reloaded = (await repo.listSensors(layout.id)).find((s) => s.id === beam.id);
+      // The half-set row still parses (D5) and reads as unmeasured.
+      expect(reloaded?.positionTowardBlockId).toBeNull();
+      expect(reloaded?.positionOffsetMm).toBe(400);
     });
   });
 

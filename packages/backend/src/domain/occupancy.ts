@@ -44,6 +44,10 @@ export function isContributingSensor(o: SensorObservation): boolean {
  *     detector) reporting `clear` falls through to `unknown` rather than
  *     being read as clear. An IR beam being unbroken says nothing about the
  *     rest of the block — do not "simplify" this back to last-write-wins.
+ *     **Nor does #77's sub-block position change it** (`docs/sensor-position.md`
+ *     D8): knowing precisely where a beam is makes a broken beam a position
+ *     fix, and leaves an unbroken one saying exactly as much as it did before,
+ *     which is nothing.
  */
 export function deriveBlockOccupancy(observations: readonly SensorObservation[]): Occupancy {
   const eligible = observations.filter(isContributingSensor);

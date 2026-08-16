@@ -39,6 +39,8 @@ const SENSOR_S1: SensorRecord = {
   blockId: 'b1',
   mqttTopic: SENSOR_TOPIC,
   inService: true,
+  positionTowardBlockId: null,
+  positionOffsetMm: null,
 };
 
 function makeRepo(): ILayoutRepository {
@@ -61,7 +63,10 @@ function makeRepo(): ILayoutRepository {
     createLoco: vi.fn(),
     updateLoco: vi.fn(),
     deleteLoco: vi.fn(),
-    listBlocks: vi.fn().mockResolvedValue([{ id: 'b1', layoutId: LAYOUT_ID, name: 'Block 1' }]),
+    listBlocks: vi.fn().mockResolvedValue([
+      { id: 'b1', layoutId: LAYOUT_ID, name: 'Block 1', lengthMm: 1200 },
+      { id: 'b2', layoutId: LAYOUT_ID, name: 'Block 2', lengthMm: null },
+    ]),
     createBlock: vi.fn(),
     updateBlock: vi.fn(),
     deleteBlock: vi.fn(),
@@ -271,6 +276,102 @@ describe('Sensor fault-recovery routes', () => {
       });
       expect(res.statusCode).toBe(400);
       expect(repo.updateSensor).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── #77 sub-block position on the config write path (docs/sensor-position.md) ──
+
+  describe('sub-block position (#77)', () => {
+    /** A `PUT` carrying just a position, on the shared `s1` fixture. */
+    const put = (app: Awaited<ReturnType<typeof buildStartedTestServer>>['app'], payload: unknown) =>
+      app.inject({ method: 'PUT', url: `/api/layouts/${LAYOUT_ID}/sensors/s1`, payload });
+
+    it('a measured ir_position sensor stores BOTH columns from one object', async () => {
+      await authenticateAsAdmin(app);
+      const res = await put(app, { type: 'ir_position', position: { towardBlockId: 'b2', offsetMm: 400 } });
+      expect(res.statusCode).toBe(200);
+      expect(repo.updateSensor).toHaveBeenCalledWith('s1', {
+        type: 'ir_position',
+        positionTowardBlockId: 'b2',
+        positionOffsetMm: 400,
+      });
+    });
+
+    it('an omitted position leaves both columns alone; an explicit null clears both together', async () => {
+      await authenticateAsAdmin(app);
+      await put(app, { type: 'ir_position', position: { towardBlockId: 'b2', offsetMm: 400 } });
+
+      await put(app, { name: 'Renamed' });
+      expect(repo.updateSensor).toHaveBeenLastCalledWith('s1', { name: 'Renamed' });
+
+      const cleared = await put(app, { position: null });
+      expect(cleared.statusCode).toBe(200);
+      expect(repo.updateSensor).toHaveBeenLastCalledWith('s1', {
+        positionTowardBlockId: null,
+        positionOffsetMm: null,
+      });
+    });
+
+    it('D4 — a block_detection sensor may not carry a position, and the check sees the MERGED row', async () => {
+      await authenticateAsAdmin(app);
+      // s1 is `block_detection`; the patch says nothing about type, so nothing
+      // in the body alone reveals the problem.
+      const res = await put(app, { position: { towardBlockId: 'b2', offsetMm: 400 } });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/only an ir_position sensor/);
+      expect(repo.updateSensor).not.toHaveBeenCalled();
+    });
+
+    it('D4 — flipping an already-positioned sensor back to block_detection is refused for the same reason', async () => {
+      await authenticateAsAdmin(app);
+      await put(app, { type: 'ir_position', position: { towardBlockId: 'b2', offsetMm: 400 } });
+
+      const res = await put(app, { type: 'block_detection' });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/only an ir_position sensor/);
+    });
+
+    it('D5 — a self-anchored position is refused: a block shares no boundary with itself', async () => {
+      await authenticateAsAdmin(app);
+      const res = await put(app, { type: 'ir_position', position: { towardBlockId: 'b1', offsetMm: 400 } });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/does not share a boundary with itself/);
+    });
+
+    it('D5 — an anchor block that does not exist in this layout is refused', async () => {
+      await authenticateAsAdmin(app);
+      const res = await put(app, { type: 'ir_position', position: { towardBlockId: 'ghost', offsetMm: 400 } });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/does not exist in layout/);
+    });
+
+    it('an offset longer than the block itself is refused; an unmeasured block has nothing to check against', async () => {
+      await authenticateAsAdmin(app);
+      // b1 is 1200mm.
+      const tooLong = await put(app, { type: 'ir_position', position: { towardBlockId: 'b2', offsetMm: 1201 } });
+      expect(tooLong.statusCode).toBe(400);
+      expect(JSON.parse(tooLong.body).error).toMatch(/longer than block/);
+
+      const exact = await put(app, { type: 'ir_position', position: { towardBlockId: 'b2', offsetMm: 1200 } });
+      expect(exact.statusCode).toBe(200);
+    });
+
+    it('a zero or negative offset is a Zod 400 — a distance of nothing is not a measurement', async () => {
+      await authenticateAsAdmin(app);
+      for (const offsetMm of [0, -1, 12.5]) {
+        const res = await put(app, { type: 'ir_position', position: { towardBlockId: 'b2', offsetMm } });
+        expect(res.statusCode, `offsetMm ${offsetMm}`).toBe(400);
+      }
+      expect(repo.updateSensor).not.toHaveBeenCalled();
+    });
+
+    it('a position anchored to a block the drawing does not connect is ACCEPTED — authoring order is the operator’s business (D5)', async () => {
+      await authenticateAsAdmin(app);
+      // This repo has no edges at all, so nothing joins b1 to b2. The write
+      // stands; the anchor is re-resolved against the live graph where it is
+      // consumed, and reads as unmeasured there rather than as a guess.
+      const res = await put(app, { type: 'ir_position', position: { towardBlockId: 'b2', offsetMm: 400 } });
+      expect(res.statusCode).toBe(200);
     });
   });
 
