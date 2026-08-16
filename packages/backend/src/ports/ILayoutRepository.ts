@@ -71,6 +71,21 @@ export interface SensorRecord {
   mqttTopic: string;
   /** Whether the system trusts this sensor at all (see docs/sensor-fault-recovery.md D1/D3). */
   inService: boolean;
+  /**
+   * Sub-block position (#77, `docs/sensor-position.md`): this sensor lies
+   * `positionOffsetMm` of track before the boundary its own block shares with
+   * `positionTowardBlockId`.
+   *
+   * Held as two flat nullable columns rather than a nested object because
+   * `createSensor`/`updateSensor` spread a record straight into Drizzle, and a
+   * row mirror is what the rest of this interface already is.
+   * `sensorPositionOf` turns the pair into a `SensorPosition`; **it is the only
+   * thing that should read either field directly**, because a half-set pair
+   * reads as unmeasured rather than as corruption (D5) and that rule belongs in
+   * one place.
+   */
+  positionTowardBlockId: string | null;
+  positionOffsetMm: number | null;
 }
 
 export interface GridTileRecord {

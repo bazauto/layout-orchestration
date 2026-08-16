@@ -126,6 +126,13 @@ that block's sensors that are both in service and not faulted:
 - An `ir_position` sensor may only ever raise occupancy, never lower it.
   `occupied` from IR means occupied. `clear` from IR means **nothing about the
   block** and is discarded for occupancy purposes.
+  **Knowing where the beam is does not change this** (#77,
+  `docs/sensor-position.md` D8). Sub-block position arrives with exactly the
+  tempting simplification — "we know where the beam is now, so surely a clear
+  beam tells us something" — and it does not: a train standing beyond the beam
+  breaks nothing, and a train that has passed it entirely leaves it clear. What
+  position adds is strictly a positive statement about *when and where a train
+  was seen*, never a negative one about where it is not.
 - If no in-service, non-faulted sensor can determine the block, it reads
   `unknown`.
 

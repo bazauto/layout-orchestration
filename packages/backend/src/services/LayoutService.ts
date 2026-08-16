@@ -53,6 +53,8 @@ import {
   SensorFault,
   SensorFaultView,
   SensorId,
+  SensorPosition,
+  SensorType,
   SetModeCommand,
   SystemMode,
   SystemStatus,
@@ -78,6 +80,7 @@ import {
 } from '../domain/braking';
 import { deriveBlockOccupancy, isSensorFaultArmed, toSensorFaultView } from '../domain/occupancy';
 import { isEmptySensorPayload } from '../domain/sensorPayload';
+import { sensorPositionOf } from '../domain/sensorPosition';
 import {
   buildPointPositionMap,
   isPointFaultArmed,
@@ -157,6 +160,24 @@ export class SensorNotFoundError extends Error {
   ) {
     super(`Sensor ${sensorLabelText ?? sensorId} not found`);
     this.name = 'SensorNotFoundError';
+  }
+}
+
+/**
+ * Thrown by the sensor config write path when a submitted sub-block position
+ * cannot be true of the layout (#77, `docs/sensor-position.md` D4/D5).
+ *
+ * A **400**, never a Safe-Stop: this is a bad operator request, exactly like a
+ * malformed UI payload, and turning one into a layout halt would itself be a
+ * bug (`CLAUDE.md`'s note on the scope of the fail-safe rule).
+ */
+export class SensorPositionInvalidError extends Error {
+  constructor(
+    readonly sensorId: string | null,
+    reason: string,
+  ) {
+    super(`Invalid sensor position: ${reason}`);
+    this.name = 'SensorPositionInvalidError';
   }
 }
 
@@ -1056,6 +1077,7 @@ export class LayoutService extends EventEmitter {
         blockId: sensor.blockId,
         type: sensor.type,
         inService: sensor.inService,
+        position: sensorPositionOf(sensor.positionTowardBlockId, sensor.positionOffsetMm),
       });
       // DD4/Q1 (docs/sensor-fault-recovery.md): an out-of-service sensor is
       // never subscribed at all — this is the PRIMARY mechanism that makes
@@ -1696,6 +1718,8 @@ export class LayoutService extends EventEmitter {
    * decisions in the transport layer (safety rule 2).
    */
   async createSensorConfig(layoutId: LayoutId, input: SensorCreateInput): Promise<SensorRecord> {
+    await this.assertSensorPositionValid(layoutId, null, input.type, input.blockId, input.position);
+
     const created = await this.repo.createSensor({
       layoutId,
       name: input.name,
@@ -1703,6 +1727,8 @@ export class LayoutService extends EventEmitter {
       blockId: input.blockId,
       mqttTopic: input.mqttTopic,
       inService: input.inService,
+      positionTowardBlockId: input.position?.towardBlockId ?? null,
+      positionOffsetMm: input.position?.offsetMm ?? null,
     });
 
     this.stateManager.registerSensor({
@@ -1710,6 +1736,7 @@ export class LayoutService extends EventEmitter {
       blockId: created.blockId,
       type: created.type,
       inService: created.inService,
+      position: sensorPositionOf(created.positionTowardBlockId, created.positionOffsetMm),
     });
 
     if (created.inService) {
@@ -1745,7 +1772,37 @@ export class LayoutService extends EventEmitter {
     const existing = existingSensors.find((s) => s.id === sensorId);
     if (!existing) throw new SensorNotFoundError(sensorId, sensorLabel(sensorId, this.names.get()));
 
-    const updated = await this.repo.updateSensor(sensorId, patch);
+    // #77 D4/D5, checked against the MERGED row rather than the patch: setting
+    // only a position on an existing `block_detection` sensor, and flipping an
+    // already-positioned sensor's type *to* `block_detection`, are both
+    // invalid, and neither is visible in the patch alone. Before the write, so
+    // a refused request changes nothing.
+    const mergedPosition =
+      patch.position !== undefined
+        ? patch.position
+        : sensorPositionOf(existing.positionTowardBlockId, existing.positionOffsetMm);
+    await this.assertSensorPositionValid(
+      layoutId,
+      sensorId,
+      patch.type ?? existing.type,
+      patch.blockId !== undefined ? patch.blockId : existing.blockId,
+      mergedPosition,
+    );
+
+    // The wire carries the measurement as one object (`sensorPositionSchema`);
+    // the row carries it as two columns. An omitted `position` leaves both
+    // untouched, an explicit `null` clears both together — there is no patch
+    // that can move one half and leave the other describing the old one.
+    const { position, ...columnPatch } = patch;
+    const updated = await this.repo.updateSensor(sensorId, {
+      ...columnPatch,
+      ...(position !== undefined
+        ? {
+            positionTowardBlockId: position?.towardBlockId ?? null,
+            positionOffsetMm: position?.offsetMm ?? null,
+          }
+        : {}),
+    });
     const handler = (payload: unknown, topic: string, retained: boolean) =>
       void this.handleSensorReading(sensorId, topic, payload, retained);
 
@@ -1782,6 +1839,7 @@ export class LayoutService extends EventEmitter {
       blockId: updated.blockId,
       type: updated.type,
       inService: updated.inService,
+      position: sensorPositionOf(updated.positionTowardBlockId, updated.positionOffsetMm),
     });
 
     // D5: refresh before recomputeBlock/evaluateAndApplySafeStop, so any
@@ -1801,6 +1859,73 @@ export class LayoutService extends EventEmitter {
       sensorName: updated.name,
     });
     return updated;
+  }
+
+  /**
+   * #77 D4/D5's write-path rules, over the row as it would be *after* the
+   * write. Throws `SensorPositionInvalidError` (a 400) or returns.
+   *
+   * What it checks is exactly what is checkable without a tape measure:
+   *
+   *  - **Only an `ir_position` sensor may carry a position** (D4). A
+   *    `block_detection` sensor is a whole-block detector; it is not *at*
+   *    anywhere, and a number saying it is could never be honestly consumed.
+   *  - **A sensor with no block has nowhere to be within.**
+   *  - **The anchor is a different block**, in this layout, that still exists.
+   *  - **The offset does not exceed the block's own measured length.** Skipped
+   *    when the length is NULL — an unmeasured block is not a reason to refuse
+   *    a measured sensor, it just means there is nothing to check against.
+   *
+   * What it deliberately does **not** check is whether the drawing currently
+   * connects the two blocks (D5). Authoring order is the operator's business —
+   * a beam may be measured before the track justifying it is drawn — and the
+   * anchor is re-resolved against the live graph wherever it is consumed, where
+   * an absent or plural connection reads as unmeasured rather than as a guess.
+   */
+  private async assertSensorPositionValid(
+    layoutId: LayoutId,
+    sensorId: SensorId | null,
+    type: SensorType,
+    blockId: BlockId | null,
+    position: SensorPosition | null,
+  ): Promise<void> {
+    if (position === null) return;
+
+    if (type !== 'ir_position') {
+      throw new SensorPositionInvalidError(
+        sensorId,
+        `only an ir_position sensor may carry a position — this one is ${type}`,
+      );
+    }
+    if (blockId === null) {
+      throw new SensorPositionInvalidError(
+        sensorId,
+        'a sensor with no block has no block to be positioned within',
+      );
+    }
+    if (position.towardBlockId === blockId) {
+      throw new SensorPositionInvalidError(
+        sensorId,
+        `a position is measured toward a NEIGHBOURING block, and block ${blockLabel(blockId, this.names.get())} does not share a boundary with itself`,
+      );
+    }
+
+    const blocks = await this.repo.listBlocks(layoutId);
+    const own = blocks.find((b) => b.id === blockId);
+    const toward = blocks.find((b) => b.id === position.towardBlockId);
+
+    if (!toward) {
+      throw new SensorPositionInvalidError(
+        sensorId,
+        `block ${blockLabel(position.towardBlockId, this.names.get())} does not exist in layout ${layoutLabel(layoutId, this.names.get())}`,
+      );
+    }
+    if (own && own.lengthMm !== null && position.offsetMm > own.lengthMm) {
+      throw new SensorPositionInvalidError(
+        sensorId,
+        `offset ${position.offsetMm}mm is longer than block ${blockLabel(blockId, this.names.get())} itself (${own.lengthMm}mm)`,
+      );
+    }
   }
 
   /** Q2 (docs/sensor-fault-recovery.md): a sensor delete clears its fault — a latch on a sensor that no longer exists could otherwise never be acknowledged. */

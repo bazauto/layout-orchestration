@@ -5,6 +5,7 @@ import {
   SensorFaultNotArmedError,
   SensorNotFaultedError,
   SensorNotFoundError,
+  SensorPositionInvalidError,
 } from '../../../services/LayoutService';
 import { sensorCreateSchema, sensorUpdateSchema } from '../../../services/validation';
 import { layoutLabel } from '../../../domain/naming';
@@ -35,8 +36,18 @@ export async function sensorRoutes(
           .status(400)
           .send({ error: 'Invalid sensor payload', details: parsed.error.flatten() });
       }
-      const sensor = await layoutService.createSensorConfig(req.params.layoutId, parsed.data);
-      return reply.status(201).send(sensor);
+      try {
+        const sensor = await layoutService.createSensorConfig(req.params.layoutId, parsed.data);
+        return reply.status(201).send(sensor);
+      } catch (err) {
+        // #77 D4/D5: a position that cannot be true of this layout is a bad
+        // request, indistinguishable in kind from a Zod failure above — the
+        // only difference is that it needed the rest of the layout to spot.
+        if (err instanceof SensorPositionInvalidError) {
+          return reply.status(400).send({ error: err.message });
+        }
+        throw err;
+      }
     },
   );
 
@@ -60,6 +71,9 @@ export async function sensorRoutes(
       } catch (err) {
         if (err instanceof SensorNotFoundError) {
           return reply.status(404).send({ error: err.message });
+        }
+        if (err instanceof SensorPositionInvalidError) {
+          return reply.status(400).send({ error: err.message });
         }
         throw err;
       }

@@ -317,6 +317,20 @@ export const sensorRowSchema = z.object({
   blockId: z.string().min(1).nullable(),
   mqttTopic: z.string().min(1),
   inService: z.boolean(),
+  /**
+   * #77's position pair. Each column is validated on its own and the pair is
+   * **deliberately not** cross-checked here (`docs/sensor-position.md` D5):
+   * `ON DELETE SET NULL` on the anchor means deleting a block legitimately
+   * leaves a half-set pair, and `sensorPositionOf` reads that as *unmeasured*.
+   *
+   * That is the one exception to this parser's "a row already in the database
+   * is either valid or it is corruption" posture, and it is the same argument
+   * as `grid_tiles.metadata`'s tolerant parse (`docs/track-grid.md` D10): a
+   * fail-safe reading exists, and taking the layout down over a measurement is
+   * worse than declining to use it.
+   */
+  positionTowardBlockId: z.string().min(1).nullable(),
+  positionOffsetMm: z.number().int().positive().nullable(),
 });
 
 /** Thrown by `parseSensorRow` when a `sensors` row fails validation. */
@@ -352,6 +366,25 @@ export function parseSensorRow(row: unknown): SensorRecord {
  * field. `inService` defaults to `true` (DD9) — the create form has no
  * in-service toggle; that is set later via the update route.
  */
+/**
+ * #77's measurement, over the wire as the **pair it is** rather than as two
+ * independent fields.
+ *
+ * The API shape and the row shape differ deliberately here. A row is two flat
+ * columns because that is what a table has and because `ON DELETE SET NULL` can
+ * legitimately clear one of them; a request body is an object or `null`, so no
+ * client can half-set a position and no partial update can leave one behind.
+ * `LayoutService` maps between the two.
+ */
+export const sensorPositionSchema = z
+  .object({
+    /** The neighbouring block whose shared boundary this offset is measured to (D1/D2 — never an end label). */
+    towardBlockId: z.string().min(1),
+    /** Millimetres of track between the sensor and that boundary. A zero offset would put the beam *on* the joint, which is not a measurement anyone takes. */
+    offsetMm: z.number().int().positive(),
+  })
+  .strict();
+
 export const sensorCreateSchema = z
   .object({
     name: z.string().min(1),
@@ -359,12 +392,33 @@ export const sensorCreateSchema = z
     blockId: z.string().min(1).nullable().default(null),
     mqttTopic: z.string().min(1),
     inService: z.boolean().default(true),
+    /**
+     * Defaults to `null` — unmeasured, which reproduces `docs/braking.md` B4's
+     * worst case exactly (#77 D3). The create form need not force an operator
+     * to hold a tape measure before a sensor can exist.
+     *
+     * The rules this schema cannot check — that the sensor's *effective* type
+     * is `ir_position` (D4), that the anchor is a different, real block in this
+     * layout, and that the offset does not exceed the block's own measured
+     * length — need the rest of the row and the rest of the layout, so they
+     * live in `LayoutService` and surface as the same 400.
+     */
+    position: sensorPositionSchema.nullable().default(null),
   })
   .strict();
 
 export type SensorCreateInput = z.infer<typeof sensorCreateSchema>;
 
-/** Write schema for a partial sensor update. Same `.strict()` posture as create, matching `pointUpdateSchema`. */
+/**
+ * Write schema for a partial sensor update. Same `.strict()` posture as create,
+ * matching `pointUpdateSchema`.
+ *
+ * `position` inherits create's atomicity, which is what makes a partial update
+ * safe on it: omit the key and the stored measurement is untouched, send
+ * `null` and it is cleared, send an object and both halves move together.
+ * There is no way to update one half of a measurement and leave the other
+ * describing the old one.
+ */
 export const sensorUpdateSchema = sensorCreateSchema.partial().strict();
 
 export type SensorUpdateInput = z.infer<typeof sensorUpdateSchema>;

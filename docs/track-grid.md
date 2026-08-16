@@ -32,7 +32,8 @@ Two consequences worth stating outright:
 
 - **Tile count is never physical length.** The Westgate Hollow entry feeder is
   drawn long and is short in reality. Nothing may compute `lengthMm` from
-  geometry. (#77 is where a real length model would go, and it is gated on #6.)
+  geometry. (Length landed on `blocks.length_mm` with #105; #77 adds where
+  *within* a block a sensor sits — see `docs/sensor-position.md`.)
 - **A tile's `blockId` is a drawing assertion**, not a claim about the track
   graph. It says "tint this cell as that block". It does not say the cell is
   part of the block, and no reservation or occupancy decision consults it.
@@ -244,7 +245,8 @@ compile rather than shipping as an unvalidated reference.
 **Why not `sensors.x`/`sensors.y` columns.** Diagram position is
 **presentational**. The drawing is explicitly not to scale, so where a sensor
 appears on it is a drawing concern, not a railway fact — the railway fact is
-#77's `offsetMm` from a block end, a different field on a different issue with a
+#77's `offsetMm` toward a named neighbouring block
+(`docs/sensor-position.md` D1), a different field on a different issue with a
 different safety posture. Coordinate columns would solve it for sensors only and
 start a pattern of every table growing an `x`/`y`.
 
@@ -366,8 +368,10 @@ dead end on undetected track — the end of the entry feeder — is perfectly re
 it just has no block end to attach to.
 
 **`platform` stays decorative.** It is operationally meaningful — it is where
-you stop a train — but that only becomes useful once stopping marks exist, which
-is #77, gated on #6. Revisit it there rather than inventing a meaning now.
+you stop a train — but that only becomes useful once stopping marks exist. #77's
+model is the groundwork (`docs/sensor-position.md`) and deliberately stops short
+of berthing a train at a spot. Revisit it there rather than inventing a meaning
+now.
 
 **Plain diamonds (#83 item 4).** The palette has had a `crossing` tile all
 along, so a plain diamond can be drawn today — while #26 records that two routes

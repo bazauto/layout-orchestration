@@ -152,8 +152,8 @@ blocks, the sum is `0`, and `planBrakingSchedule` refuses
 genuinely no track between the two boundaries that the model can promise — and
 it is the fail-safe direction. It is nonetheless a real behaviour change from
 the edge-length model, and it is recorded as a limit rather than worked around.
-Stopping at the next block along needs the sub-block position #7 and #77 will
-supply, not a fudged distance here.
+Stopping at the next block along needs the sub-block position #77 supplies
+(`docs/sensor-position.md`), not a fudged distance here.
 
 **Any block in that stretch with `length_mm IS NULL` refuses outright**
 (`unmeasured-track`), naming the block. `schema.ts` and `docs/topology.md`
@@ -478,10 +478,14 @@ bookkeeping path.
   braked run to the *immediately next* block has zero available distance and
   is refused. On a nine-block layout most routes are two or three steps, so
   "slow as you approach the block ahead" — #7's central move — refuses in the
-  common case. Sub-block position (#77: a sensor's `offsetMm` from a named
-  block end) is therefore a prerequisite for #7 rather than a later
-  refinement. Recorded 2026-08-16; the fix is real position, never a fudged
-  distance here.
+  common case. Sub-block position (#77) is therefore a prerequisite for #7
+  rather than a later refinement. Recorded 2026-08-16; the fix is real
+  position, never a fudged distance here. **#77's model has landed**
+  (`docs/sensor-position.md`) — a sensor's `offsetMm` toward a *neighbouring
+  block*, not from a named block end, because a block-end label is regenerated
+  by every compile and would silently come to name a different end (D2 there).
+  Nothing consumes it yet: `remainingRouteDistanceMm` gains its one optional
+  lead term in #77 PR B, and this limit stands verbatim until it does.
 - **Moving `LayoutService`'s heartbeat `setInterval` onto `IClock`** is
   out of scope here as unrelated churn — `IClock` exists for this model's
   ramp timers, not as a blanket replacement for every timer in the service.

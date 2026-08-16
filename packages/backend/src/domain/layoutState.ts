@@ -22,6 +22,7 @@ import {
   RouteStatus,
   SensorId,
   SensorObservation,
+  SensorPosition,
   SensorType,
   SystemMode,
 } from './types';
@@ -247,12 +248,23 @@ export class LayoutStateManager {
   // owns the policy (when to fault, de-service, or recompute a block's
   // derived occupancy); this class just holds whatever it is told.
 
-  /** Upsert of config fields. Preserves `faulted`, `lastReading`, `lastReadingAt` for an already-registered sensor — only `LayoutService` decides to change those. A no-op... it always creates/updates; never throws. */
+  /**
+   * Upsert of config fields. Preserves `faulted`, `lastReading`,
+   * `lastReadingAt` and `lastRisingEdgeAt` for an already-registered sensor —
+   * only `LayoutService` decides to change those. A no-op... it always
+   * creates/updates; never throws.
+   *
+   * `position` is config, not observation (#77 D3), so it is taken from the
+   * caller like `blockId` and `type` rather than preserved: re-measuring a
+   * sensor must take effect at once, and the existing fix stays valid because
+   * `lastRisingEdgeAt` records *when* a train was seen, not *where*.
+   */
   registerSensor(config: {
     sensorId: SensorId;
     blockId: BlockId | null;
     type: SensorType;
     inService: boolean;
+    position: SensorPosition | null;
   }): SensorObservation {
     const existing = this.state.sensors.get(config.sensorId);
     const updated: SensorObservation = {
@@ -260,9 +272,11 @@ export class LayoutStateManager {
       blockId: config.blockId,
       type: config.type,
       inService: config.inService,
+      position: config.position,
       faulted: existing?.faulted ?? false,
       lastReading: existing?.lastReading ?? null,
       lastReadingAt: existing?.lastReadingAt ?? null,
+      lastRisingEdgeAt: existing?.lastRisingEdgeAt ?? null,
     };
     this.state.sensors.set(config.sensorId, updated);
     return updated;
@@ -281,18 +295,47 @@ export class LayoutStateManager {
     return [...this.state.sensors.values()].filter((s) => s.blockId === blockId);
   }
 
-  /** No-op for an unknown `sensorId` — mirrors `lockBlock`'s "must not rely on this to validate anything" posture. */
+  /**
+   * No-op for an unknown `sensorId` — mirrors `lockBlock`'s "must not rely on
+   * this to validate anything" posture.
+   *
+   * `lastRisingEdgeAt` moves only on a `clear → occupied` **transition** (#77
+   * D6), which includes the first `occupied` after the sensor was registered or
+   * had its reading cleared. A repeated `occupied` deliberately leaves it where
+   * it was: a device re-publishing its state on a timer would otherwise appear
+   * to re-observe a train that has long since gone, and every position fix
+   * taken from it would be indefinitely fresh.
+   */
   recordSensorReading(sensorId: SensorId, reading: 'occupied' | 'clear', at: Date): void {
     const existing = this.state.sensors.get(sensorId);
     if (!existing) return;
-    this.state.sensors.set(sensorId, { ...existing, lastReading: reading, lastReadingAt: at });
+    const rising = reading === 'occupied' && existing.lastReading !== 'occupied';
+    this.state.sensors.set(sensorId, {
+      ...existing,
+      lastReading: reading,
+      lastReadingAt: at,
+      lastRisingEdgeAt: rising ? at : existing.lastRisingEdgeAt,
+    });
   }
 
-  /** Nulls the reading (DD6) — a faulted or de-serviced sensor's last reading is not retained as a going belief. No-op for an unknown `sensorId`. */
+  /**
+   * Nulls the reading (DD6) — a faulted or de-serviced sensor's last reading is
+   * not retained as a going belief. No-op for an unknown `sensorId`.
+   *
+   * The position fix goes with it (#77 D11), and for the same reason: an
+   * observation from a sensor the system has stopped trusting is not one to
+   * keep crediting distance from. Nulling it also re-arms the rising edge, so
+   * the sensor's next `occupied` is a fresh fix rather than a continuation.
+   */
   clearSensorReading(sensorId: SensorId): void {
     const existing = this.state.sensors.get(sensorId);
     if (!existing) return;
-    this.state.sensors.set(sensorId, { ...existing, lastReading: null, lastReadingAt: null });
+    this.state.sensors.set(sensorId, {
+      ...existing,
+      lastReading: null,
+      lastReadingAt: null,
+      lastRisingEdgeAt: null,
+    });
   }
 
   /** Deliberately does NOT also clear the reading — that is `LayoutService`'s call (DD6), so this storage layer holds no policy about when a fault and a reading are cleared together. No-op for an unknown `sensorId`. */

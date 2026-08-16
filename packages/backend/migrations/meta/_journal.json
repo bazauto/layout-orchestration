@@ -92,6 +92,13 @@
       "when": 1786806037428,
       "tag": "0012_massive_rumiko_fujikawa",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1786868474910,
+      "tag": "0013_chemical_the_hunter",
+      "breakpoints": true
     }
   ]
 }

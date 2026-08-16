@@ -229,6 +229,7 @@ describe('LayoutStateManager', () => {
         blockId: 'b1',
         type: 'block_detection',
         inService: true,
+        position: null,
       });
       expect(created).toEqual({
         sensorId: 's1',
@@ -238,11 +239,13 @@ describe('LayoutStateManager', () => {
         faulted: false,
         lastReading: null,
         lastReadingAt: null,
+        position: null,
+        lastRisingEdgeAt: null,
       });
     });
 
-    it('re-registering preserves faulted and lastReading while updating blockId/type/inService', () => {
-      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+    it('re-registering preserves faulted and lastReading while updating blockId/type/inService/position', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
       manager.recordSensorReading('s1', 'occupied', new Date('2026-01-01T00:00:00.000Z'));
       manager.setSensorFaulted('s1', true);
 
@@ -251,6 +254,7 @@ describe('LayoutStateManager', () => {
         blockId: 'b2',
         type: 'ir_position',
         inService: false,
+        position: { towardBlockId: 'b3', offsetMm: 400 },
       });
 
       expect(reRegistered.blockId).toBe('b2');
@@ -258,23 +262,29 @@ describe('LayoutStateManager', () => {
       expect(reRegistered.inService).toBe(false);
       expect(reRegistered.faulted).toBe(true);
       expect(reRegistered.lastReading).toBe('occupied');
+      // #77 D3: position is config, taken from the caller, not preserved like
+      // the observation fields — a re-measure takes effect at once.
+      expect(reRegistered.position).toEqual({ towardBlockId: 'b3', offsetMm: 400 });
+      // ...while the fix itself, which records *when* a train was seen and not
+      // where, survives the re-registration.
+      expect(reRegistered.lastRisingEdgeAt).toEqual(new Date('2026-01-01T00:00:00.000Z'));
     });
 
     it('unregisterSensor removes the observation', () => {
-      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
       manager.unregisterSensor('s1');
       expect(manager.getSensorObservation('s1')).toBeUndefined();
     });
 
     it('listSensorObservationsForBlock returns only that block’s sensors, [] for a block with none', () => {
-      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
-      manager.registerSensor({ sensorId: 's2', blockId: 'b2', type: 'block_detection', inService: true });
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
+      manager.registerSensor({ sensorId: 's2', blockId: 'b2', type: 'block_detection', inService: true, position: null });
       expect(manager.listSensorObservationsForBlock('b1').map((o) => o.sensorId)).toEqual(['s1']);
       expect(manager.listSensorObservationsForBlock('b3')).toEqual([]);
     });
 
     it('recordSensorReading sets lastReading and lastReadingAt', () => {
-      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
       const at = new Date('2026-01-01T00:00:00.000Z');
       manager.recordSensorReading('s1', 'clear', at);
       const observation = manager.getSensorObservation('s1');
@@ -282,17 +292,54 @@ describe('LayoutStateManager', () => {
       expect(observation?.lastReadingAt).toBe(at);
     });
 
-    it('clearSensorReading nulls both lastReading and lastReadingAt', () => {
-      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+    it('clearSensorReading nulls lastReading, lastReadingAt and the position fix', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
       manager.recordSensorReading('s1', 'occupied', new Date());
       manager.clearSensorReading('s1');
       const observation = manager.getSensorObservation('s1');
       expect(observation?.lastReading).toBeNull();
       expect(observation?.lastReadingAt).toBeNull();
+      // #77 D11: an observation from a sensor the system has stopped trusting
+      // is not one to keep crediting distance from.
+      expect(observation?.lastRisingEdgeAt).toBeNull();
+    });
+
+    // ── #77 D6: the fix is the rising edge, and only the rising edge ─────────
+
+    it('recordSensorReading takes a position fix on clear -> occupied, and on the first reading of all', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'ir_position', inService: true, position: null });
+      const first = new Date('2026-01-01T00:00:00.000Z');
+      manager.recordSensorReading('s1', 'occupied', first);
+      expect(manager.getSensorObservation('s1')?.lastRisingEdgeAt).toBe(first);
+
+      const cleared = new Date('2026-01-01T00:00:05.000Z');
+      manager.recordSensorReading('s1', 'clear', cleared);
+      // A clear does not take a fix and does not discard the one already held —
+      // the train having passed only means more time has elapsed.
+      expect(manager.getSensorObservation('s1')?.lastRisingEdgeAt).toBe(first);
+
+      const second = new Date('2026-01-01T00:00:09.000Z');
+      manager.recordSensorReading('s1', 'occupied', second);
+      expect(manager.getSensorObservation('s1')?.lastRisingEdgeAt).toBe(second);
+    });
+
+    it('a repeated occupied reading does NOT move the fix, though it does move lastReadingAt', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'ir_position', inService: true, position: null });
+      const rising = new Date('2026-01-01T00:00:00.000Z');
+      const republished = new Date('2026-01-01T00:00:30.000Z');
+      manager.recordSensorReading('s1', 'occupied', rising);
+      manager.recordSensorReading('s1', 'occupied', republished);
+
+      const observation = manager.getSensorObservation('s1');
+      expect(observation?.lastReadingAt).toBe(republished);
+      // The load-bearing half: a device re-publishing its state on a timer must
+      // not appear to re-observe a train that has long since gone, or every fix
+      // taken from it would be indefinitely fresh.
+      expect(observation?.lastRisingEdgeAt).toBe(rising);
     });
 
     it('setSensorFaulted toggles faulted without touching the reading', () => {
-      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true });
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
       manager.recordSensorReading('s1', 'occupied', new Date());
       manager.setSensorFaulted('s1', true);
       expect(manager.getSensorObservation('s1')?.faulted).toBe(true);

@@ -189,6 +189,8 @@ const validSensorRow = {
   blockId: 'b1',
   mqttTopic: 'layout/layout-1/sensor/s1/reading',
   inService: true,
+  positionTowardBlockId: null,
+  positionOffsetMm: null,
 };
 
 describe('parseSensorRow', () => {
@@ -222,6 +224,45 @@ describe('parseSensorRow', () => {
     const rowWithoutInService: Record<string, unknown> = { ...validSensorRow };
     delete rowWithoutInService.inService;
     expect(() => parseSensorRow(rowWithoutInService)).toThrow(SensorRowInvalidError);
+  });
+
+  // ── #77's position pair (docs/sensor-position.md D5) ──────────────────────
+
+  it('parses a measured row, keeping both halves', () => {
+    const parsed = parseSensorRow({
+      ...validSensorRow,
+      type: 'ir_position',
+      positionTowardBlockId: 'b2',
+      positionOffsetMm: 400,
+    });
+    expect(parsed.positionTowardBlockId).toBe('b2');
+    expect(parsed.positionOffsetMm).toBe(400);
+  });
+
+  it('accepts a HALF-SET pair rather than throwing — `ON DELETE SET NULL` on the anchor makes one legitimate', () => {
+    // The one place this parser's "a row in the database is either valid or it
+    // is corruption" posture is deliberately not applied (D5). Deleting the
+    // anchor block strands the offset by design; `sensorPositionOf` reads that
+    // as unmeasured, and refusing to list sensors over it would take the layout
+    // down for a concession it can simply decline to make.
+    expect(() =>
+      parseSensorRow({ ...validSensorRow, positionTowardBlockId: null, positionOffsetMm: 400 }),
+    ).not.toThrow();
+    expect(() =>
+      parseSensorRow({ ...validSensorRow, positionTowardBlockId: 'b2', positionOffsetMm: null }),
+    ).not.toThrow();
+  });
+
+  it('throws for an offset that is not a positive integer — a zero or negative distance is not a measurement', () => {
+    expect(() => parseSensorRow({ ...validSensorRow, positionOffsetMm: 0 })).toThrow(
+      SensorRowInvalidError,
+    );
+    expect(() => parseSensorRow({ ...validSensorRow, positionOffsetMm: -1 })).toThrow(
+      SensorRowInvalidError,
+    );
+    expect(() => parseSensorRow({ ...validSensorRow, positionOffsetMm: 12.5 })).toThrow(
+      SensorRowInvalidError,
+    );
   });
 });
 
