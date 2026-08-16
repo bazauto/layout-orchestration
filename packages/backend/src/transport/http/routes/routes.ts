@@ -39,8 +39,15 @@ export async function routeRoutes(
       // The schema guarantees exactly one of edgeIds / destinationBlockId,
       // so this maps the wire shape onto `RequestedPath` without deciding
       // anything — the exactly-one rule lives in the schema, not here.
-      const { locoAddress, authority, startBlockId, edgeIds, destinationBlockId, startExitEnd } =
-        parsed.data;
+      const {
+        locoAddress,
+        authority,
+        direction,
+        startBlockId,
+        edgeIds,
+        destinationBlockId,
+        startExitEnd,
+      } = parsed.data;
       const path: RequestedPath =
         edgeIds !== undefined
           ? { kind: 'edges', edgeIds }
@@ -49,6 +56,7 @@ export async function routeRoutes(
       const outcome = await layoutService.requestRoute({
         locoAddress,
         authority,
+        direction,
         startBlockId,
         path,
       });

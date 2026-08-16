@@ -5,6 +5,8 @@ import {
   BlockEdgeRowInvalidError,
   blockCreateSchema,
   blockUpdateSchema,
+  locoCreateSchema,
+  locoUpdateSchema,
   parseUserRow,
   UserRowInvalidError,
   parseSessionRow,
@@ -122,6 +124,66 @@ describe('blockUpdateSchema', () => {
   it('can clear a length back to unmeasured, and can leave it alone', () => {
     expect(blockUpdateSchema.parse({ lengthMm: null })).toEqual({ lengthMm: null });
     expect(blockUpdateSchema.parse({ name: 'renamed' })).toEqual({ name: 'renamed' });
+  });
+});
+
+// ─── Loco roster (#7, docs/automation.md A7) ───────────────────────────────────
+
+describe('locoCreateSchema', () => {
+  it('defaults both automation speeds to null — unconfigured refuses, it does not guess', () => {
+    // A7's whole posture: no `autoSpeedStep` and automation never departs this
+    // loco. There is deliberately no fraction-of-maxSpeed fallback, because
+    // maxSpeed is advisory and unenforced everywhere else (B2).
+    expect(locoCreateSchema.parse({ name: 'Jinty', address: 47 })).toEqual({
+      name: 'Jinty',
+      address: 47,
+      type: 'unknown',
+      maxSpeed: 126,
+      brakingFactor: 0.5,
+      autoSpeedStep: null,
+      crawlSpeedStep: null,
+    });
+  });
+
+  it('accepts speed steps a train actually moves at', () => {
+    const parsed = locoCreateSchema.parse({
+      name: 'Jinty',
+      address: 47,
+      autoSpeedStep: 60,
+      crawlSpeedStep: 8,
+    });
+    expect(parsed).toMatchObject({ autoSpeedStep: 60, crawlSpeedStep: 8 });
+  });
+
+  it('rejects a zero speed step — "stopped" is not a speed to run or crawl at', () => {
+    expect(() => locoCreateSchema.parse({ name: 'J', address: 1, autoSpeedStep: 0 })).toThrow();
+    expect(() => locoCreateSchema.parse({ name: 'J', address: 1, crawlSpeedStep: 0 })).toThrow();
+  });
+
+  it('rejects a speed step outside the DCC range, or a fractional one', () => {
+    expect(() => locoCreateSchema.parse({ name: 'J', address: 1, autoSpeedStep: 127 })).toThrow();
+    expect(() => locoCreateSchema.parse({ name: 'J', address: 1, autoSpeedStep: -1 })).toThrow();
+    expect(() => locoCreateSchema.parse({ name: 'J', address: 1, autoSpeedStep: 12.5 })).toThrow();
+  });
+
+  it('rejects an unknown field rather than silently ignoring it', () => {
+    // This body was unvalidated before #7. `.strict()` matters more here than
+    // usual: two of these fields become DCC speed steps automation issues with
+    // no operator in the loop.
+    expect(() => locoCreateSchema.parse({ name: 'J', address: 1, autoSpeed: 60 })).toThrow();
+  });
+
+  it('rejects an out-of-range address or braking factor', () => {
+    expect(() => locoCreateSchema.parse({ name: 'J', address: 0 })).toThrow();
+    expect(() => locoCreateSchema.parse({ name: 'J', address: 10000 })).toThrow();
+    expect(() => locoCreateSchema.parse({ name: 'J', address: 1, brakingFactor: 1.5 })).toThrow();
+  });
+});
+
+describe('locoUpdateSchema', () => {
+  it('can clear an automation speed back to unconfigured, and can leave it alone', () => {
+    expect(locoUpdateSchema.parse({ autoSpeedStep: null })).toEqual({ autoSpeedStep: null });
+    expect(locoUpdateSchema.parse({ name: 'renamed' })).toEqual({ name: 'renamed' });
   });
 });
 

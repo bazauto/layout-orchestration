@@ -11,10 +11,30 @@ interface Props {
 }
 
 /**
- * Operator-facing surface for #6's braking faults (docs/braking.md B10).
- * Renders nothing when there are none. Mirrors `PointFaultBanner` and
- * `SensorFaultBanner` — same shape, same Safe-Stop posture, same
- * acknowledge-in-place behaviour on failure.
+ * Each kind is shown as what it means to someone standing at the layout, not as
+ * its wire name: `overrun` names the block that proved it (the train is further
+ * along than it was told to stop), `speed-command-rejected` means a moving train
+ * stopped taking commands, and #7's two (`docs/automation.md` A10) say whether
+ * the train could not be stopped in time or simply never reached its beam.
+ *
+ * **A total mapping rather than a ternary**, which is what this was while there
+ * were only two kinds. A ternary silently mislabels every kind added afterwards
+ * as whichever one sits on its false branch — it would have reported #7's
+ * `unable-to-stop`, the most serious of the four, as "speed command rejected".
+ * A `Record` keyed on the union makes that a compile error instead.
+ */
+const KIND_LABELS: Record<BrakingFaultView['kind'], string> = {
+  overrun: 'overran its stopping point',
+  'speed-command-rejected': 'speed command rejected',
+  'unable-to-stop': 'could not be stopped within its authority',
+  'berth-not-confirmed': 'never reached its stopping beam',
+};
+
+/**
+ * Operator-facing surface for #6's braking faults (docs/braking.md B10), and
+ * #7's two (docs/automation.md A10). Renders nothing when there are none.
+ * Mirrors `PointFaultBanner` and `SensorFaultBanner` — same shape, same
+ * Safe-Stop posture, same acknowledge-in-place behaviour on failure.
  *
  * **No arming rule, unlike the other two**, and the button says so rather
  * than staying enabled with no explanation: a sensor proves itself by
@@ -22,13 +42,8 @@ interface Props {
  * loco this fault is about has already been Safe-Stopped, so nothing it does
  * next is evidence of anything (B10). The operator's acknowledgement *is* the
  * recovery.
- *
- * The two kinds are shown with what distinguishes them for someone standing
- * at the layout: `overrun` names the block that proved it (the train is
- * further along than it was told to stop), while `speed-command-rejected`
- * means a moving train stopped taking commands — which is why both halt
- * everything rather than just cancelling a route.
  */
+
 export function BrakingFaultBanner({ faults, locoNames, blockNames, onAcknowledge }: Props) {
   const [acking, setAcking] = useState<Record<number, boolean>>({});
   const [errors, setErrors] = useState<Record<number, string>>({});
@@ -58,7 +73,7 @@ export function BrakingFaultBanner({ faults, locoNames, blockNames, onAcknowledg
               <p style={s.line}>
                 {/* The kind is spelled out beside the name: colour alone never
                     carries meaning here either (docs/diagram-encoding.md D1). */}
-                <strong>{locoName}</strong> — {f.kind === 'overrun' ? 'overran its stopping point' : 'speed command rejected'}: {f.reason}
+                <strong>{locoName}</strong> — {KIND_LABELS[f.kind]}: {f.reason}
               </p>
               <p style={s.meta}>
                 Faulted at {new Date(f.faultedAt).toLocaleString()}

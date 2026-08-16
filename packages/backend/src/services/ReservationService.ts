@@ -47,6 +47,7 @@ import {
   RouteReservation,
   RouteRejection,
   RouteStatus,
+  TravelDirection,
 } from '../domain/types';
 import { blockLabel } from '../domain/naming';
 import { ILayoutRepository } from '../ports/ILayoutRepository';
@@ -87,6 +88,14 @@ export type RequestedPath =
 export interface GrantRequest {
   locoAddress: LocoAddress;
   authority: Authority;
+  /**
+   * Which way round the loco sits for this journey (#7, `docs/automation.md`
+   * A7). Optional, and `null`/absent is the ordinary state for a `manual`
+   * route; an `auto` route without one is granted normally and simply never
+   * departs. Deliberately not a grant-time rejection — a route is a valid
+   * interlocking whether or not anything is going to drive it (D7).
+   */
+  direction?: TravelDirection | null;
   startBlockId: BlockId;
   path: RequestedPath;
 }
@@ -186,6 +195,7 @@ export class ReservationService implements IRouteLockView {
       layoutId,
       locoAddress: request.locoAddress,
       authority: request.authority,
+      direction: request.direction ?? null,
       startBlockId: request.startBlockId,
       edgeIds: resolved.edgeIds,
     };
@@ -210,6 +220,7 @@ export class ReservationService implements IRouteLockView {
       layoutId: result.reservation.layoutId,
       locoAddress: result.reservation.locoAddress,
       authority: result.reservation.authority,
+      direction: result.reservation.direction,
       status: result.reservation.status,
       path: result.reservation.path,
       holds: result.reservation.holds,

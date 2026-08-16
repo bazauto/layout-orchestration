@@ -416,6 +416,7 @@ export class DrizzleRepository implements ILayoutRepository {
           layoutId: data.layoutId,
           locoAddress: data.locoAddress,
           authority: data.authority,
+          direction: data.direction,
           status: data.status,
           path: JSON.stringify(data.path),
           confirmedIndex: data.confirmedIndex,

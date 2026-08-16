@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   MAX_CREDIBLE_SPEED_MM_PER_S,
+  berthingBeamIn,
   creditedDistanceMm,
   isAnchorUnambiguous,
   leadDistanceMm,
@@ -217,5 +218,122 @@ describe('leadDistanceMm', () => {
 
   it('lets a stale fix fall through to zero rather than refusing', () => {
     expect(leadDistanceMm([observation()], graph(), 'b1', 'b2', after(60))).toBe(0);
+  });
+});
+
+// ─── berthingBeamIn (#7, docs/automation.md A3) ────────────────────────────────
+
+describe('berthingBeamIn', () => {
+  // The train arrives in b2 from b1. b2 is 1000mm long and joins b3 at its far
+  // end, so both anchor directions are expressible against one fixture.
+  const g = () => buildTrackGraph(LAYOUT, chain(), new Map([['b2', 1000]]));
+
+  /** A beam in b2. Defaults to the terminal-platform form: measured back toward b1. */
+  const beam = (overrides: Partial<SensorObservation> = {}) =>
+    observation({
+      sensorId: 'berth',
+      blockId: 'b2',
+      position: { towardBlockId: 'b1', offsetMm: 800 },
+      ...overrides,
+    });
+
+  it('measures a beam anchored to the block the train arrives from as its offset', () => {
+    // The operator's stated case: the platform road or goods shed, whose only
+    // neighbour is the block behind it.
+    expect(berthingBeamIn([beam()], g(), 'b2', 'b1', 1000)).toEqual({
+      sensorId: 'berth',
+      offsetMm: 800,
+    });
+  });
+
+  it('measures a beam anchored to the FAR end as blockLength - offset', () => {
+    const farAnchored = beam({ position: { towardBlockId: 'b3', offsetMm: 200 } });
+    expect(berthingBeamIn([farAnchored], g(), 'b2', 'b1', 1000)).toEqual({
+      sensorId: 'berth',
+      offsetMm: 800,
+    });
+  });
+
+  it('declines a far-end beam when the block has no measured length', () => {
+    // No DEFAULT_BLOCK_LENGTH_MM here, for B4's reason: guessing a cost steers a
+    // search, guessing a stopping point is a collision.
+    const farAnchored = beam({ position: { towardBlockId: 'b3', offsetMm: 200 } });
+    expect(berthingBeamIn([farAnchored], g(), 'b2', 'b1', undefined)).toBeNull();
+  });
+
+  it('still resolves a near-end beam when the block has no measured length', () => {
+    // The near-end form needs no length — the offset IS the answer.
+    expect(berthingBeamIn([beam()], g(), 'b2', 'b1', undefined)).toEqual({
+      sensorId: 'berth',
+      offsetMm: 800,
+    });
+  });
+
+  it('declines a beam the system has stopped trusting', () => {
+    expect(berthingBeamIn([beam({ inService: false })], g(), 'b2', 'b1', 1000)).toBeNull();
+    expect(berthingBeamIn([beam({ faulted: true })], g(), 'b2', 'b1', 1000)).toBeNull();
+  });
+
+  it('declines a beam that has never reported at all', () => {
+    // `isContributingSensor` again: a sensor with no reading has nothing to say
+    // about occupancy, and is not one to stop a train against either.
+    const neverRead = beam({ lastReading: null, lastReadingAt: null, lastRisingEdgeAt: null });
+    expect(berthingBeamIn([neverRead], g(), 'b2', 'b1', 1000)).toBeNull();
+  });
+
+  it('declines an unmeasured beam', () => {
+    expect(berthingBeamIn([beam({ position: null })], g(), 'b2', 'b1', 1000)).toBeNull();
+  });
+
+  it('declines a beam in another block', () => {
+    expect(berthingBeamIn([beam({ blockId: 'b3' })], g(), 'b2', 'b1', 1000)).toBeNull();
+  });
+
+  it('declines an ambiguous anchor', () => {
+    const looped = buildTrackGraph(
+      LAYOUT,
+      [
+        ...chain(),
+        edge({ id: 'e3', fromBlockId: 'b2', toBlockId: 'b1', fromEnd: 'north', toEnd: 'south' }),
+      ],
+      new Map([['b2', 1000]]),
+    );
+    expect(berthingBeamIn([beam()], looped, 'b2', 'b1', 1000)).toBeNull();
+  });
+
+  it('declines an offset longer than the block it is in', () => {
+    // The write path refuses this (#77 D4), so reaching it means the block was
+    // re-measured shorter afterwards. Declining stops the train at the boundary.
+    const farAnchored = beam({ position: { towardBlockId: 'b3', offsetMm: 1400 } });
+    expect(berthingBeamIn([farAnchored], g(), 'b2', 'b1', 1000)).toBeNull();
+  });
+
+  it('takes the beam NEAREST the entry boundary when several qualify', () => {
+    const near = beam({ sensorId: 'near', position: { towardBlockId: 'b1', offsetMm: 300 } });
+    const far = beam({ sensorId: 'far', position: { towardBlockId: 'b1', offsetMm: 800 } });
+    expect(berthingBeamIn([far, near], g(), 'b2', 'b1', 1000)).toEqual({
+      sensorId: 'near',
+      offsetMm: 300,
+    });
+    // Order must not matter, for the same reason it must not in leadDistanceMm.
+    expect(berthingBeamIn([near, far], g(), 'b2', 'b1', 1000)).toEqual({
+      sensorId: 'near',
+      offsetMm: 300,
+    });
+  });
+
+  it('does NOT decay — a berth is a screwed-down beam, not an observation of a moving train', () => {
+    // The asymmetry with `leadDistanceMm` is the whole of A3's last paragraph,
+    // so it is asserted side by side rather than assumed. Same age, same
+    // fixture, opposite answers.
+    expect(leadDistanceMm([observation()], graph(), 'b1', 'b2', after(600))).toBe(0);
+    expect(berthingBeamIn([beam()], g(), 'b2', 'b1', 1000)).toEqual({
+      sensorId: 'berth',
+      offsetMm: 800,
+    });
+  });
+
+  it('returns null — never a refusal — when there are no observations at all', () => {
+    expect(berthingBeamIn([], g(), 'b2', 'b1', 1000)).toBeNull();
   });
 });
