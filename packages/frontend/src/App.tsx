@@ -15,6 +15,7 @@ import { GridEditor } from './components/GridEditor';
 import { MonitorView } from './components/MonitorView';
 import { SensorFaultBanner } from './components/SensorFaultBanner';
 import { PointFaultBanner } from './components/PointFaultBanner';
+import { BrakingFaultBanner } from './components/BrakingFaultBanner';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { apiFetch, API_BASE } from './api';
 import { ClientMessage, Role, SystemMode } from './types';
@@ -102,6 +103,7 @@ function AuthenticatedApp({
     sensorFaults,
     pointFaults,
     routeFaults,
+    brakingFaults,
   } = snapshot;
 
   // One derived list feeds both the nav and the render guards below, rather
@@ -151,6 +153,11 @@ function AuthenticatedApp({
   const sensorNames = Object.fromEntries(layoutConfig.config.sensors.map((s) => [s.id, s.name]));
   // Point id → name, same posture as sensorNames above (#25).
   const pointNames = Object.fromEntries(layoutConfig.config.points.map((p) => [p.id, p.name]));
+  // Loco address → name and block id → name, for the braking banner (#6). A
+  // braking fault names a train and, for an overrun, the block that proved
+  // it; both fall back to the raw id inside the banner.
+  const locoNames = Object.fromEntries(layoutConfig.config.locos.map((l) => [l.address, l.name]));
+  const blockNames = Object.fromEntries(layoutConfig.config.blocks.map((b) => [b.id, b.name]));
 
   return (
     <div style={styles.root}>
@@ -177,6 +184,21 @@ function AuthenticatedApp({
         pointNames={pointNames}
         onAcknowledge={async (pointId) => {
           const result = await layoutConfig.acknowledgePointFault(pointId);
+          return { ok: result.ok, message: result.message };
+        }}
+      />
+
+      {/* #6: below the point banner, matching the Safe-Stop priority order
+          `evaluateSystemSafeStop` reports causes in — sensor, then point,
+          then braking. The banners are the operator's list of what is
+          holding the layout stopped, so their order should not contradict
+          the reason the status bar is showing. */}
+      <BrakingFaultBanner
+        faults={brakingFaults}
+        locoNames={locoNames}
+        blockNames={blockNames}
+        onAcknowledge={async (locoAddress) => {
+          const result = await layoutConfig.acknowledgeBrakingFault(locoAddress);
           return { ok: result.ok, message: result.message };
         }}
       />
@@ -208,6 +230,10 @@ function AuthenticatedApp({
               locoRecords={layoutConfig.config.locos}
               disabled={isDisabled}
               send={send as (msg: ClientMessage) => void}
+              onBrake={async (locoAddress) => {
+                const result = await layoutConfig.brakeLoco(locoAddress);
+                return { ok: result.ok, message: result.message };
+              }}
             />
             <LayoutPanel
               blocks={blocks}

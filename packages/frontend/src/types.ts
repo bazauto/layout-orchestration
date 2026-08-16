@@ -176,6 +176,26 @@ export interface RouteFaultView {
   faultedAt: string;
 }
 
+/**
+ * A latched braking fault, one per loco (#6, docs/braking.md B10). Mirrors
+ * the backend's `BrakingFaultView` byte for byte.
+ *
+ * `speed-command-rejected` — a `setSpeed` the ramp issued was refused, so a
+ * moving train is now uncommandable. `overrun` — a block at or beyond the
+ * stopping target reported occupied while the run's expectation was armed.
+ * Both Safe-Stop, and both are cleared only by an operator acknowledging.
+ */
+export interface BrakingFaultView {
+  locoAddress: number;
+  kind: 'speed-command-rejected' | 'overrun';
+  reason: string;
+  /** The route the run was planned against, or `null` for B8's unconstrained standard stop. */
+  routeId: string | null;
+  /** The block whose occupancy proved the overrun, for 'overrun' only. */
+  blockId: string | null;
+  faultedAt: string;
+}
+
 export interface LocoRecord {
   id: string;
   layoutId: string;
@@ -615,6 +635,8 @@ export interface StateSnapshot {
   pointFaults: PointFaultView[];
   /** #4: current latched route faults, likewise always the complete set. */
   routeFaults: RouteFaultView[];
+  /** #6: current latched braking faults, one per loco, likewise the complete set. */
+  brakingFaults: BrakingFaultView[];
 }
 
 // ─── Server → Client messages ─────────────────────────────────────────────────
@@ -629,6 +651,7 @@ export type ServerMessage =
   | { type: 'POINT_FAULTS'; payload: { faults: PointFaultView[] } }
   | { type: 'ROUTE_STATE'; payload: RouteReservation }
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
+  | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } }
   /**
    * #82 D5 (docs/liveness.md): an application-level message, not a

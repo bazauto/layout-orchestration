@@ -7,6 +7,8 @@
  */
 
 import {
+  BrakingFault,
+  LocoAddress,
   Occupancy,
   PointFault,
   PointId,
@@ -75,6 +77,21 @@ export interface SystemHealth extends ConnectionHealth {
    * this one structure is the same correction #27 made for sensor faults.
    */
   routeFaults: Record<RouteId, RouteFault>;
+  /**
+   * Latched faults against a loco's braking run (#6 PR B, docs/braking.md
+   * B10), keyed by loco address — the fourth instance of the same keyed,
+   * latched, required-not-optional collection. Two kinds:
+   * `speed-command-rejected` (a `setSpeed` the ramp issued was refused, so a
+   * moving train is now uncommandable) and `overrun` (a block at or beyond
+   * the stopping target read `occupied` while the run's expectation was
+   * armed).
+   *
+   * No arming threshold, unlike `sensorFaults`: the loco whose fault this is
+   * has already been Safe-Stopped, so nothing it does next is evidence of
+   * anything (P8's argument, restated in B10). Only
+   * `LayoutService.acknowledgeBrakingFault` clears an entry.
+   */
+  brakingFaults: Record<LocoAddress, BrakingFault>;
   recoveredRouteCount: number;
 }
 
@@ -95,6 +112,11 @@ export function oldestPointFault(faults: Record<PointId, PointFault>): PointFaul
 
 /** The first cause among latched route faults, by the same rule as `oldestSensorFault`. */
 export function oldestRouteFault(faults: Record<RouteId, RouteFault>): RouteFault | null {
+  return oldestFault(faults);
+}
+
+/** The first cause among latched braking faults, by the same rule as `oldestSensorFault` (#6, B10). */
+export function oldestBrakingFault(faults: Record<LocoAddress, BrakingFault>): BrakingFault | null {
   return oldestFault(faults);
 }
 
@@ -126,9 +148,10 @@ export function evaluateSafeStop(health: ConnectionHealth): {
 /**
  * Determines whether a Safe-Stop should be triggered based on connection
  * health, topology health, sensor-payload health, point-confirmation health,
- * route health, and restart-recovered routes. Check order is MQTT, then DCC,
- * then topology, then the oldest latched sensor fault, then the oldest
- * latched point fault, then the oldest latched route fault, then recovered
+ * braking health, route health, and restart-recovered routes. Check order is
+ * MQTT, then DCC, then topology, then the oldest latched sensor fault, then
+ * the oldest latched point fault, then the oldest latched braking fault, then
+ * the oldest latched route fault, then recovered
  * routes — a connection failure reason always wins over a topology reason,
  * which wins over a sensor fault, and so on down to the recovered-route
  * reason, so an operator investigating a Safe-Stop sees the more systemic,
@@ -143,9 +166,17 @@ export function evaluateSafeStop(health: ConnectionHealth): {
  * cause-before-symptom: a point that failed to confirm is *why* a route
  * gets suspended (PR B), not a peer fact.
  *
- * Route faults sit *below* sensor faults (and point faults) because a
- * sensor fault is usually the cause and the route fault the symptom: a
- * detector that stopped reporting is what made a route's block
+ * Braking faults sit below both hardware-evidence faults and above route
+ * faults (#6, B10), by that same cause-before-symptom rule applied twice. A
+ * bad detector or a point that never threw both *explain* an overrun report,
+ * so they are the more actionable thing to fix first; but an overrun is very
+ * often itself the cause of a route's `unexpected-occupancy` symptom, so
+ * naming the braking fault before the route fault points the operator at the
+ * thing to investigate rather than at its consequence.
+ *
+ * Route faults sit *below* sensor faults (and point and braking faults)
+ * because a sensor fault is usually the cause and the route fault the
+ * symptom: a detector that stopped reporting is what made a route's block
  * undeterminable. Naming the sensor first points the operator at the thing
  * to fix.
  */
@@ -167,6 +198,10 @@ export function evaluateSystemSafeStop(health: SystemHealth): {
   const oldestPoint = oldestPointFault(health.pointFaults);
   if (oldestPoint) {
     return { shouldStop: true, reason: oldestPoint.reason };
+  }
+  const oldestBraking = oldestBrakingFault(health.brakingFaults);
+  if (oldestBraking) {
+    return { shouldStop: true, reason: oldestBraking.reason };
   }
   const oldestRoute = oldestRouteFault(health.routeFaults);
   if (oldestRoute) {

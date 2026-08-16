@@ -80,6 +80,7 @@ const ONLINE_SNAPSHOT = {
   sensorFaults: [],
   pointFaults: [],
   routeFaults: [],
+  brakingFaults: [],
 };
 
 /** Fills loco / from / to on the Routes panel. */

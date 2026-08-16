@@ -1,5 +1,13 @@
 # Per-Loco Braking Model — Decision Record (#6)
 
+> **Status: shipped.** PR A landed the model (B1–B4, B7–B9, B11: the vocabulary,
+> `domain/braking.ts`, `IClock`, `BrakingService`). PR B landed the execution
+> half — `LayoutService` runs a schedule against the clock, arms B5's overrun
+> expectation, latches `SystemHealth.brakingFaults` (B10), and exposes B8's
+> standard stop over HTTP. B12 records how the executor works; B7's forward
+> reference to #25 is now implemented, since point position feedback landed
+> first. What remains unbuilt is #7 — nothing decides *when* to brake.
+
 Companion to `docs/pathfinding.md` and `docs/route-locking.md`. Those documents
 decided how track is reserved and how the road is set; driving the train along
 a granted route — deciding when to slow it and by how much — was explicitly
@@ -18,7 +26,7 @@ it is never confirmed against what actually happens. Everything below follows
 from taking that limit seriously rather than pretending a closed loop exists.
 
 Read this before touching `domain/braking.ts`, `services/BrakingService.ts`,
-or (once PR B lands) `LayoutService`'s braking-run and overrun-check methods.
+or `LayoutService`'s braking-run and overrun-check methods.
 
 ---
 
@@ -91,8 +99,8 @@ the unsafe direction to be wrong in.
 returns a `BrakingSchedule` — an array of `{ atOffsetMs, speedStep, direction }`
 steps, offsets relative to the first step, always ending at
 `{ speedStep: 0, direction: 'stop' }`. It calls no clock and starts no timer.
-`LayoutService` (PR B) is what executes the schedule against an injected
-`IClock`, issuing each step's `setSpeed` command as its offset elapses.
+`LayoutService` is what executes the schedule against an injected `IClock`,
+issuing each step's `setSpeed` command as its offset elapses (B12).
 
 **Shape: linear step-down.** `BRAKING_STEP_DECREMENT = 8` DCC speed steps per
 `BRAKING_TICK_MS = 250` ms tick. From speed step 126 that is 16 commands over
@@ -245,13 +253,24 @@ did not expect it, and B5's overrun check catches it showing up too far along
 the route it did expect. Temporal divergence — the same train, on the same
 track, but arriving at the wrong *time* — is what #7 is for.
 
-**Forward reference (#25, point position confirmation).** When a confirmed
-point-position feedback channel exists, `planStopAtRouteBoundary` gains one
-new precondition: refuse if any point hold on the remaining path is not
-*confirmed* at its required position. A point that did not actually throw
-means the train is taking a different road than the plan assumes, and every
-distance this model computes is measured along track it may not be on. Do not
-attempt to build for this now — there is nothing to confirm against yet.
+**#25 landed first, so that forward reference is now built.**
+`planStopAtRouteBoundary` refuses `point-not-confirmed` when any unreleased
+point hold's **`effectivePosition`** is not the position the plan assumes. A
+point that did not actually throw means the train is taking a different road
+than the plan assumes, and every distance this model computes is measured
+along track it may not be on.
+
+It consults `effectivePosition` (D7, `docs/point-feedback.md`) and never
+`confirmedPosition` directly, which is what keeps the check **inert for a
+`positionFeedback: 'none'` point** — there it falls back to the commanded
+position, exactly the trust model the whole system used before #25. Every
+point on Westgate Hollow is `'none'`, so nothing about the live layout's
+behaviour changed. A hold naming a point the running layout does not have is
+refused rather than skipped: that drift is uncertainty, and this model does
+not measure through uncertainty.
+
+Deliberately **not** extended to the pathfinder — `docs/pathfinding.md` P3
+still stands, and P5's limit with it.
 
 ## B8 — Calibration is a documented procedure, not automation
 
@@ -329,25 +348,95 @@ itself the way a sensor can by publishing valid readings (P8's argument
 carries over unchanged: the loco whose fault this is has already been
 Safe-Stopped, so nothing it does next is evidence of anything).
 
-Priority in `evaluateSystemSafeStop` (PR B) becomes: MQTT, DCC, topology,
-sensor faults, **braking faults**, route faults, recovered routes. Braking
+Priority in `evaluateSystemSafeStop` is: MQTT, DCC, topology, sensor faults,
+**point faults**, **braking faults**, route faults, recovered routes. Braking
 sits *above* route faults deliberately: an overrun is very often the *cause*
 of a route's `unexpected-occupancy` symptom, so naming the braking fault
 first points the operator at the thing to actually investigate. It sits
 *below* sensor faults because a bad detector explains a bogus overrun report,
-and the sensor is the more actionable thing to fix first.
+and the sensor is the more actionable thing to fix first — and below point
+faults (which #25 inserted after this section was written) for the same
+reason: a point that never threw is hardware evidence, one step closer to the
+cause than the ramp that measured along the road it was supposed to set.
+
+**An overrun latches two faults, not one**, and the ordering in
+`recomputeBlock` is what makes that possible: the expectation is checked
+*before* the occupancy is handed to `ReservationService`. So a train rolling
+into its destination block raises the `overrun` — which Safe-Stops, which
+suspends the route — and the reservation engine then sees that occupancy
+against a route that is no longer active and cancels it with
+`unexpected-occupancy`. Both are latched, the braking one is what the
+operator is *told* (priority above), and each is acknowledged separately.
+Checking after the reservation instead would let the route reach `completed`
+first, which is precisely the false success B5 exists to prevent. This is the
+same two-latches-for-one-event shape as #25's D8 point/route pair.
 
 Per P8's rule, restated because it applies again here: **every Safe-Stop goes
 through `SystemHealth`.** No braking code path calls `enterSafeStop` directly.
+
+## B12 — Executing a schedule: one chained timer, an inline first step
+
+`LayoutService.startStandardStop(locoAddress)` (B8's calibration ramp) and
+`LayoutService.startRouteStop(routeId, targetIndex?)` (B4's route-boundary
+stop, the seam #7 will drive) are the two entry points. Both answer
+`{ started: true, schedule }` or `{ started: false, reason }` — never a
+partial run.
+
+**The ramp is a chain, not a fan.** Each step arms one `IClock.setTimeout` for
+the *next*, using the difference between consecutive `atOffsetMs` values.
+Arming all sixteen timers up front would leave a window in which an abort
+cancels some and misses others; with one live handle per run, aborting is a
+single `cancel()`. A fired-but-not-yet-run callback is caught by re-reading
+`brakingRuns` before it commands anything — a timer that has already fired
+cannot be cancelled.
+
+**Step 0 is awaited inline; the rest are scheduled.** That is what makes B6's
+distinction expressible: a rejection on the first command means nothing was
+ever commanded, so the caller is told `started: false` *and* a fault is
+latched (the train is still moving at its pre-braking speed and is now
+uncommandable — that is the hazard, not the failed API call). A rejection
+mid-ramp cannot be reported to a caller who returned long ago, so it goes to
+the fault latch alone.
+
+**The overrun expectation is armed only after step 0 succeeds, and outlives
+the ramp.** Arming before would leave a refused run's forbidden blocks live,
+so an unrelated train entering them later would fault a loco that never
+braked. Outliving the ramp is the point of B5: reaching speed step 0 is a
+command, not a confirmation that the train stopped. It is cleared by exactly
+four things — a manual throttle command for that loco (B6: the operator's
+command stands, and those blocks are theirs to enter), its route ceasing to
+be `active`, a new run for the same loco, and firing. **Firing disarms it**:
+leaving it armed would re-latch on every later recompute of the same block,
+and since a re-fault keeps the first cause, the operator could acknowledge
+the fault and watch it reappear — an unclearable Safe-Stop.
+
+**`authority` is never written by a ramp step.** A braking run does not change
+who owns the loco: an auto-authority route's train stays `auto`, and a loco an
+operator is driving stays `manual` even while B8's calibration ramp runs.
+Writing `'auto'` here would silently take a train away from its driver.
+
+**Both entry points refuse unless the system is `online`** — deliberately
+stricter than `canIssueManualCommand`, which permits commands in `safe-stop`
+so an operator can recover. A ramp's first command is a non-zero speed step.
+`startRouteStop` additionally requires `canIssueAutoCommand`: braking a train
+along a reserved road is an automation action, and in `manual` mode the
+operator is driving.
+
+**A route leaving `active` aborts its run**, hooked at
+`publishReservationOutcome` — the one choke point every status transition
+already passes through, so a cancel by an operator, by a force override, by a
+violation, or a suspend into Safe-Stop all reach it without a second
+bookkeeping path.
 
 ---
 
 ## What this does not do
 
-- **The automation loop** (#7). This PR is a model plus an explicitly-invoked
-  execution surface — nothing decides *when* to start braking on its own, and
-  nothing does continuous position tracking, approach detection, or
-  re-planning mid-ramp. A braking run has to be asked for.
+- **The automation loop** (#7). What #6 shipped is a model plus an
+  explicitly-invoked execution surface — nothing decides *when* to start
+  braking on its own, and nothing does continuous position tracking, approach
+  detection, or re-planning mid-ramp. A braking run has to be asked for, by an
+  operator (B8's button) or by whatever #7 becomes.
 - **Continuous position tracking.** The only ground truth is block-level
   sensor transitions, exactly as everywhere else in this system.
 - **Re-planning mid-ramp.** A schedule, once started, runs to completion or is
@@ -378,16 +467,21 @@ through `SystemHealth`.** No braking code path calls `enterSafeStop` directly.
 - **The overrun check sees only block-granularity evidence.** It can tell you
   the train reached a block it should not have; it cannot tell you by how
   far, or whether it merely nosed over the boundary.
-- **#25's point-position confirmation is a forward reference, not a
-  dependency.** B7 records the precondition it will add; nothing here is
-  built in anticipation of it.
 - **"Halts within tolerance" cannot be verified without a physical
-  odometer.** The scenario test that lands with PR B proves the *modelled*
+  odometer.** `tests/scenario/braking.scenario.test.ts` proves the *modelled*
   distance fits within the reserved track and exercises the command trace and
   every failure path — it deliberately does not attempt a fake physics
   simulator, because its constants would be chosen to match this model and it
   would therefore prove nothing about the real layout. Real validation is
   B8's on-layout procedure.
+- **B4's adjacent-target refusal is now a stated prerequisite for #7.** A
+  braked run to the *immediately next* block has zero available distance and
+  is refused. On a nine-block layout most routes are two or three steps, so
+  "slow as you approach the block ahead" — #7's central move — refuses in the
+  common case. Sub-block position (#77: a sensor's `offsetMm` from a named
+  block end) is therefore a prerequisite for #7 rather than a later
+  refinement. Recorded 2026-08-16; the fix is real position, never a fudged
+  distance here.
 - **Moving `LayoutService`'s heartbeat `setInterval` onto `IClock`** is
   out of scope here as unrelated churn — `IClock` exists for this model's
   ramp timers, not as a blanket replacement for every timer in the service.

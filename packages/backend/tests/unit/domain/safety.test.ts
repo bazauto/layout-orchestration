@@ -5,6 +5,7 @@ import {
   oldestSensorFault,
   oldestPointFault,
   oldestRouteFault,
+  oldestBrakingFault,
   canIssueAutoCommand,
   canIssueManualCommand,
   canGrantRoute,
@@ -13,7 +14,7 @@ import {
   isValidSpeed,
   isValidLocoAddress,
 } from '../../../src/domain/safety';
-import { PointFault, RouteFault, SensorFault } from '../../../src/domain/types';
+import { BrakingFault, PointFault, RouteFault, SensorFault } from '../../../src/domain/types';
 
 describe('evaluateSafeStop', () => {
   it('returns no safe-stop when both connections are healthy', () => {
@@ -74,6 +75,30 @@ function pointFault(overrides: Partial<PointFault> = {}): PointFault {
     ...overrides,
   };
 }
+
+function brakingFault(overrides: Partial<BrakingFault> = {}): BrakingFault {
+  return {
+    locoAddress: 3,
+    kind: 'overrun',
+    reason: 'Loco 3 overran its braking target: block b4 is occupied at or beyond the stopping point of route r1',
+    routeId: 'r1',
+    blockId: 'b4',
+    faultedAt: new Date('2026-01-01T00:00:00.000Z'),
+    ...overrides,
+  };
+}
+
+describe('oldestBrakingFault', () => {
+  it('returns null for an empty collection', () => {
+    expect(oldestBrakingFault({})).toBeNull();
+  });
+
+  it('returns the fault with the earliest faultedAt', () => {
+    const older = brakingFault({ locoAddress: 3, faultedAt: new Date('2026-01-01T00:00:00.000Z') });
+    const newer = brakingFault({ locoAddress: 8, faultedAt: new Date('2026-01-02T00:00:00.000Z') });
+    expect(oldestBrakingFault({ 8: newer, 3: older })).toBe(older);
+  });
+});
 
 describe('oldestPointFault', () => {
   it('returns null for an empty collection', () => {
@@ -136,6 +161,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(false);
@@ -151,6 +177,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -168,6 +195,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -183,6 +211,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: { s1: fault() },
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -200,6 +229,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: { s1: fault() },
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -215,6 +245,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: { s1: fault() },
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -240,6 +271,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: { s2: newer, s1: older },
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -269,6 +301,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults,
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.reason).toMatch(/first/);
@@ -291,6 +324,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: { s2 }, // s1 already resolved/removed
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -308,6 +342,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: { p1: pointFault() },
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -323,6 +358,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: { s1: fault() },
       pointFaults: { p1: pointFault() },
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -338,6 +374,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: { p1: pointFault() },
       routeFaults: { r1: routeFault() },
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -353,6 +390,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: { p1: pointFault() },
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 3,
     });
     expect(result.shouldStop).toBe(true);
@@ -378,6 +416,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: { p2: newer, p1: older },
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.reason).toBe('older point fault');
@@ -394,6 +433,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: {},
       routeFaults: { r1: routeFault() },
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -409,6 +449,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: { s1: fault() },
       pointFaults: {},
       routeFaults: { r1: routeFault() },
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -424,6 +465,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: {},
       routeFaults: { r1: routeFault() },
+      brakingFaults: {},
       recoveredRouteCount: 3,
     });
     expect(result.shouldStop).toBe(true);
@@ -449,9 +491,97 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: {},
       routeFaults: { r2: newer, r1: older },
+      brakingFaults: {},
       recoveredRouteCount: 0,
     });
     expect(result.reason).toBe('older route fault');
+  });
+
+  // ── Braking faults (#6, docs/braking.md B10) ───────────────────────────
+
+  it('stops with a braking-fault reason when nothing more systemic is wrong', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      pointFaults: {},
+      routeFaults: {},
+      brakingFaults: { 3: brakingFault() },
+      recoveredRouteCount: 0,
+    });
+    expect(result.shouldStop).toBe(true);
+    expect(result.reason).toMatch(/overran its braking target/);
+  });
+
+  it('lets a braking fault win over a route fault — the overrun is usually the cause, the route violation its symptom (B10)', () => {
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      pointFaults: {},
+      // The route fault is OLDER, so this cannot pass by accident on timestamps.
+      routeFaults: { r1: routeFault({ faultedAt: new Date('2025-01-01T00:00:00.000Z') }) },
+      brakingFaults: { 3: brakingFault() },
+      recoveredRouteCount: 0,
+    });
+    expect(result.reason).toMatch(/overran its braking target/);
+  });
+
+  it('lets a sensor fault and a point fault both win over a braking fault — a bad detector explains a bogus overrun (B10)', () => {
+    const withSensor = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: { s1: fault({ faultedAt: new Date('2027-01-01T00:00:00.000Z') }) },
+      pointFaults: {},
+      routeFaults: {},
+      brakingFaults: { 3: brakingFault() },
+      recoveredRouteCount: 0,
+    });
+    expect(withSensor.reason).toMatch(/malformed/i);
+
+    const withPoint = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      pointFaults: { p1: pointFault({ faultedAt: new Date('2027-01-01T00:00:00.000Z') }) },
+      routeFaults: {},
+      brakingFaults: { 3: brakingFault() },
+      recoveredRouteCount: 0,
+    });
+    expect(withPoint.reason).toMatch(/failed to confirm/i);
+  });
+
+  it('reports the OLDEST braking fault when two locos are latched (the first cause)', () => {
+    const older = brakingFault({
+      locoAddress: 3,
+      reason: 'older braking fault',
+      faultedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    const newer = brakingFault({
+      locoAddress: 8,
+      reason: 'newer braking fault',
+      faultedAt: new Date('2026-01-02T00:00:00.000Z'),
+    });
+    const result = evaluateSystemSafeStop({
+      mqttConnected: true,
+      dccConnected: true,
+      topologyValid: true,
+      topologyReason: null,
+      sensorFaults: {},
+      pointFaults: {},
+      routeFaults: {},
+      brakingFaults: { 8: newer, 3: older },
+      recoveredRouteCount: 0,
+    });
+    expect(result.reason).toBe('older braking fault');
   });
 
   it('stops with a recovered-route reason when connections, topology, and sensor health are all healthy but routes survived a restart (D9)', () => {
@@ -463,6 +593,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: {},
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 2,
     });
     expect(result.shouldStop).toBe(true);
@@ -478,6 +609,7 @@ describe('evaluateSystemSafeStop', () => {
       sensorFaults: { s1: fault() },
       pointFaults: {},
       routeFaults: {},
+      brakingFaults: {},
       recoveredRouteCount: 1,
     });
     expect(result.shouldStop).toBe(true);

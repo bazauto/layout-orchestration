@@ -32,6 +32,7 @@ const INITIAL_SNAPSHOT: StateSnapshot = {
   sensorFaults: [],
   pointFaults: [],
   routeFaults: [],
+  brakingFaults: [],
 };
 
 const WS_URL =
@@ -106,11 +107,11 @@ export function useLayoutSocket() {
       // `live` for up to one stale-window, showing pre-drop state as current.
       setLastMessageAt(null);
       // Deliberately spread `s` rather than reset to INITIAL_SNAPSHOT: a
-      // sensor fault (#34), point fault (#25), or route fault (#4) is latched
-      // on the backend, not on this connection, so a drop must not clear
-      // `sensorFaults` / `pointFaults` / `routeFaults` — that would show the
-      // operator an all-clear that isn't true. A reconnect's STATE_SNAPSHOT
-      // replaces all three lists with the authoritative current sets.
+      // sensor fault (#34), point fault (#25), route fault (#4), or braking
+      // fault (#6) is latched on the backend, not on this connection, so a
+      // drop must not clear those lists — that would show the operator an
+      // all-clear that isn't true. A reconnect's STATE_SNAPSHOT replaces all
+      // four with the authoritative current sets.
       setSnapshot((s) => ({ ...s, systemStatus: 'offline' }));
       const delay = reconnectDelay.current;
       reconnectDelay.current = Math.min(delay * 2, MAX_RECONNECT_MS);
@@ -186,6 +187,11 @@ function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
 
     case 'ROUTE_FAULTS':
       return { ...prev, routeFaults: msg.payload.faults };
+
+    case 'BRAKING_FAULTS':
+      // Same posture again (#6): the complete latched set, keyed per loco on
+      // the backend and sent as a list.
+      return { ...prev, brakingFaults: msg.payload.faults };
 
     case 'ERROR':
       // A rejected command carries no state, so there is nothing to merge —

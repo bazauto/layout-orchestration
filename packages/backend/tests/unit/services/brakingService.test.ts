@@ -276,4 +276,114 @@ describe('BrakingService.planStopAtRouteBoundary', () => {
     expectRepoUntouched(repo);
     expect(stateManager.getLoco(3)).toEqual(before);
   });
+
+  // ── B7's point-confirmation precondition (#25 landed, so this is live) ────
+
+  /**
+   * A route holding one point, required `reverse`. `feedback` selects the
+   * point's configured `positionFeedback`, which is the whole difference
+   * between the two cases below.
+   */
+  function reservationHoldingPoint(): RouteReservation {
+    return reservation({
+      holds: [
+        { kind: 'point', targetId: 'p1', requiredPosition: 'reverse', releaseAfterIndex: 2, released: false },
+      ],
+    });
+  }
+
+  it("refuses a 'required' point that has not confirmed its position (B7)", async () => {
+    const repo = makeRepo([loco()]);
+    const stateManager = new LayoutStateManager(LAYOUT);
+    stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'auto' });
+    // Commanded reverse, but nothing has confirmed it — `effectivePosition`
+    // for a 'required' point trusts `confirmedPosition` and nothing else.
+    const registered = stateManager.registerPoint('p1', 'required', NOW);
+    stateManager.setPointState('p1', { ...registered, commandedPosition: 'reverse', confirmation: 'pending' });
+
+    const service = new BrakingService(repo, stateManager, silentLogger);
+    const result = await service.planStopAtRouteBoundary(LAYOUT, reservationHoldingPoint(), threeBlockGraph());
+
+    expect(result).toEqual({
+      ok: false,
+      reason: {
+        kind: 'point-not-confirmed',
+        pointId: 'p1',
+        requiredPosition: 'reverse',
+        effectivePosition: 'unknown',
+      },
+    });
+    expectRepoUntouched(repo);
+  });
+
+  it("plans normally for a 'none' point holding the same road — the pre-#25 trust model is preserved exactly", async () => {
+    const repo = makeRepo([loco()]);
+    const stateManager = new LayoutStateManager(LAYOUT);
+    stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'auto' });
+    const registered = stateManager.registerPoint('p1', 'none', NOW);
+    stateManager.setPointState('p1', { ...registered, commandedPosition: 'reverse' });
+
+    const service = new BrakingService(repo, stateManager, silentLogger);
+    const result = await service.planStopAtRouteBoundary(LAYOUT, reservationHoldingPoint(), threeBlockGraph());
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("confirms a 'required' point at its required position and plans", async () => {
+    const repo = makeRepo([loco()]);
+    const stateManager = new LayoutStateManager(LAYOUT);
+    stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'auto' });
+    const registered = stateManager.registerPoint('p1', 'required', NOW);
+    stateManager.setPointState('p1', {
+      ...registered,
+      commandedPosition: 'reverse',
+      confirmedPosition: 'reverse',
+      confirmation: 'confirmed',
+    });
+
+    const service = new BrakingService(repo, stateManager, silentLogger);
+    const result = await service.planStopAtRouteBoundary(LAYOUT, reservationHoldingPoint(), threeBlockGraph());
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('refuses a point hold naming a point the running layout does not have — drift is uncertainty, not a skip', async () => {
+    const repo = makeRepo([loco()]);
+    const stateManager = new LayoutStateManager(LAYOUT);
+    stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'auto' });
+    // p1 never registered.
+
+    const service = new BrakingService(repo, stateManager, silentLogger);
+    const result = await service.planStopAtRouteBoundary(LAYOUT, reservationHoldingPoint(), threeBlockGraph());
+
+    expect(result).toEqual({
+      ok: false,
+      reason: {
+        kind: 'point-not-confirmed',
+        pointId: 'p1',
+        requiredPosition: 'reverse',
+        effectivePosition: 'unknown',
+      },
+    });
+  });
+
+  it('ignores a released point hold — that road is behind the train', async () => {
+    const repo = makeRepo([loco()]);
+    const stateManager = new LayoutStateManager(LAYOUT);
+    stateManager.updateLoco(3, { speed: 126, direction: 'fwd', authority: 'auto' });
+    stateManager.registerPoint('p1', 'required', NOW);
+
+    const service = new BrakingService(repo, stateManager, silentLogger);
+    const result = await service.planStopAtRouteBoundary(
+      LAYOUT,
+      reservation({
+        holds: [
+          { kind: 'point', targetId: 'p1', requiredPosition: 'reverse', releaseAfterIndex: 0, released: true },
+        ],
+      }),
+      threeBlockGraph(),
+    );
+
+    expect(result.ok).toBe(true);
+  });
 });

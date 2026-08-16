@@ -20,6 +20,7 @@ import {
 } from '../domain/braking';
 import { TrackGraph } from '../domain/graph';
 import { LayoutStateManager } from '../domain/layoutState';
+import { effectivePosition } from '../domain/pointConfirmation';
 import { BrakingProfile, BrakingRefusal, LayoutId, LocoAddress, LocoState, RouteReservation } from '../domain/types';
 import { ILayoutRepository, LocoRecord } from '../ports/ILayoutRepository';
 
@@ -95,6 +96,11 @@ export class BrakingService {
       });
     }
 
+    const unconfirmedPoint = this.firstUnconfirmedPointHold(reservation);
+    if (unconfirmedPoint) {
+      return this.refuse(layoutId, reservation.locoAddress, unconfirmedPoint);
+    }
+
     const resolved = await this.resolveProfile(layoutId, reservation.locoAddress);
     if (!resolved.ok) {
       return this.refuse(layoutId, reservation.locoAddress, resolved.reason);
@@ -133,6 +139,52 @@ export class BrakingService {
   }
 
   // ─── Private ────────────────────────────────────────────────────────────────
+
+  /**
+   * B7's precondition, built once #25 gave the system something to confirm
+   * against: the first point hold this route still owns whose
+   * **`effectivePosition`** is not the position the plan assumes, or `null`
+   * when every held point checks out.
+   *
+   * A point that did not actually throw means the train is taking a
+   * different road than the plan assumes, and every distance computed below
+   * is measured along track it may not be on — so this refuses rather than
+   * planning against it.
+   *
+   * `effectivePosition` (D7, `domain/pointConfirmation.ts`) is the only thing
+   * consulted, never `confirmedPosition` directly. That is what keeps this
+   * check inert on a `positionFeedback: 'none'` point — it falls back to the
+   * commanded position, exactly the trust model the whole system used before
+   * #25 — so this refusal can only fire on a point an operator has opted in
+   * to feedback for. Nothing about Westgate Hollow's behaviour changes until
+   * one is fitted.
+   *
+   * A hold with a `null` `requiredPosition` is skipped: it asserts no road,
+   * only exclusivity.
+   */
+  private firstUnconfirmedPointHold(reservation: RouteReservation): BrakingRefusal | null {
+    const points = this.stateManager.getState().points;
+
+    for (const hold of reservation.holds) {
+      if (hold.kind !== 'point' || hold.released || hold.requiredPosition === null) continue;
+
+      const pointState = points.get(hold.targetId);
+      // An unknown point is not a "nothing to check" case: the reservation
+      // and the running config have drifted apart, which is exactly the kind
+      // of uncertainty a braking plan must not be measured through.
+      const actual = pointState ? effectivePosition(pointState) : 'unknown';
+      if (actual !== hold.requiredPosition) {
+        return {
+          kind: 'point-not-confirmed',
+          pointId: hold.targetId,
+          requiredPosition: hold.requiredPosition,
+          effectivePosition: actual,
+        };
+      }
+    }
+
+    return null;
+  }
 
   /**
    * Shared roster/state resolution for both entry points: the roster entry

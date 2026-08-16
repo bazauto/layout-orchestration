@@ -39,7 +39,7 @@ import {
   RouteReservation,
 } from './types';
 import { TrackGraph } from './graph';
-import { blockLabel, edgeLabel, locoLabel } from './naming';
+import { blockLabel, edgeLabel, locoLabel, pointLabel } from './naming';
 
 // ─── Constants (B1, B3, B5) ────────────────────────────────────────────────────
 
@@ -374,6 +374,8 @@ export function describeBrakingRefusal(reason: BrakingRefusal, book?: NameBook):
       return `route ${reason.routeId} is manual authority`;
     case 'route-not-active':
       return `route ${reason.routeId} is ${reason.status}, not active`;
+    case 'point-not-confirmed':
+      return `point ${pointLabel(reason.pointId, book)} is not confirmed ${reason.requiredPosition} (reads ${reason.effectivePosition}) — the road this plan measures along may not be set`;
     case 'command-rejected':
       return `command rejected: ${reason.message}`;
   }
