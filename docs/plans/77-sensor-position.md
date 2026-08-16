@@ -43,12 +43,15 @@ sensor, and unmeasured track further along that no fix rescues.
 `docs/braking.md` B4's "accepted consequence" paragraph and its matching limit
 are rewritten by this PR, not before it.
 
-## PR C — Authoring and display
+## PR C — Authoring (`77-sensor-position-authoring`)
 
-The Configure → Sensors form gains the pair, with the anchor a select over the
-blocks the drawing actually connects this one to. The monitor is untouched: a
-position is config, not live state, and there is no train-at-a-spot to draw
-(`docs/braking.md` B7).
+**Shipped.**
+
+A Position column in Configure → Sensors (`SensorPositionCell`), with the anchor
+a select over the blocks the drawing joins this one to exactly once
+(`sensorPosition.ts#anchorCandidates`). The monitor is untouched: a position is
+config, not live state, and there is no train-at-a-spot to draw
+(`docs/braking.md` B7). Decision record: D11a.
 
 ---
 
@@ -84,3 +87,18 @@ position is config, not live state, and there is no train-at-a-spot to draw
   be a measurement the write path would actually accept, or the test proves
   something about a state the system does not permit. The write-path check caught
   this on the first run.
+
+### PR C
+
+- **`SensorPositionCell` is its own file**, not a helper inside `ConfigPanel`,
+  and `anchorCandidates` is its own module. The rule each carries is worth
+  testing without standing up the config screen and its four fetches — the same
+  reason `EdgesTab` and `UsersTab` are separate.
+- **`anchorCandidates` excludes the block itself**, which the first draft did
+  not. `block_edges_not_self_loop` makes a self-loop unreachable through the
+  compiler, so the branch only fires on a row that should not exist — which is
+  exactly when a list built from it must not become an offer the backend then
+  400s. Its test found this.
+- `fireEvent`, not `@testing-library/user-event`: the latter is not a dependency
+  of the frontend workspace, and every interaction in that cell is one change or
+  one blur.

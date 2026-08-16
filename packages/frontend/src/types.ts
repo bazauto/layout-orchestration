@@ -68,6 +68,19 @@ export interface SensorRecord {
   mqttTopic: string;
   /** Mirrors `sensors.in_service` (#34). An out-of-service sensor is unsubscribed and contributes nothing. */
   inService: boolean;
+  /**
+   * Sub-block position (#77, `docs/sensor-position.md`): this sensor lies
+   * `positionOffsetMm` of track before the boundary its own block shares with
+   * `positionTowardBlockId`. Two flat fields on the way *out*, because the row
+   * is two columns; **one atomic `position` object on the way in** — see
+   * `updateSensor`, and D1 for why the anchor is a block id rather than a
+   * block-end label.
+   *
+   * Either being `null` means unmeasured, which is the default and behaves
+   * exactly as the system did before #77.
+   */
+  positionTowardBlockId: string | null;
+  positionOffsetMm: number | null;
 }
 
 /**
