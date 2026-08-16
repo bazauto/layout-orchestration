@@ -456,15 +456,27 @@ export function useLayoutConfig(layoutId: string | null) {
   // `describeRejections` string — is exactly what a refused grant needs.
 
   /** `POST .../routes` with a destination; the backend searches for the path (P6). */
+  /**
+   * `authority` and `direction` are the operator's to choose since #7 PR C —
+   * this used to hard-code `authority: 'manual'`, which was correct while
+   * nothing could drive a route and is the one line that kept automation
+   * unreachable from the browser.
+   *
+   * `direction` is sent only when present, so a `manual` request is byte-identical
+   * to what it was: A7's column is nullable and an absent direction is the
+   * ordinary state for a route nothing is going to drive.
+   */
   const requestRoute = async (req: {
     locoAddress: number;
     startBlockId: string;
     destinationBlockId: string;
+    authority: 'manual' | 'auto';
+    direction?: 'fwd' | 'rev';
   }): Promise<MutationResult<RouteReservation>> =>
     mutate<RouteReservation>(`/api/layouts/${layoutId}/routes`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...req, authority: 'manual' }),
+      body: JSON.stringify(req),
     });
 
   const cancelRoute = async (routeId: string): Promise<MutationResult<null>> =>
@@ -527,7 +539,17 @@ export function useLayoutConfig(layoutId: string | null) {
 
   const updateLoco = async (
     id: string,
-    data: { name?: string; address?: number; type?: string; maxSpeed?: number; brakingFactor?: number },
+    data: {
+      name?: string;
+      address?: number;
+      type?: string;
+      maxSpeed?: number;
+      brakingFactor?: number;
+      /** #7 A7. `null` clears it back to unconfigured, which is a real state — automation then departs nothing. */
+      autoSpeedStep?: number | null;
+      /** #7 A7. `null` clears it, which turns berthing off: the run stops at the destination's entry boundary instead. */
+      crawlSpeedStep?: number | null;
+    },
   ): Promise<MutationResult<LocoRecord>> => {
     const result = await mutate<LocoRecord>(`/api/layouts/${layoutId}/locos/${id}`, {
       method: 'PUT',

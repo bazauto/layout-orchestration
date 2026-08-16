@@ -378,15 +378,65 @@ describe('useLayoutConfig', () => {
 
       fetchMock.mockResolvedValueOnce(jsonResponse({ id: 'route-1' }));
       await act(async () => {
-        await result.current.requestRoute({ locoAddress: 37, startBlockId: 'block-1', destinationBlockId: 'block-2' });
+        await result.current.requestRoute({
+          locoAddress: 37,
+          startBlockId: 'block-1',
+          destinationBlockId: 'block-2',
+          authority: 'manual',
+        });
       });
       expect(fetchMock).toHaveBeenCalledTimes(1);
 
       fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'no path found' }, 422));
       await act(async () => {
-        await result.current.requestRoute({ locoAddress: 37, startBlockId: 'block-1', destinationBlockId: 'block-2' });
+        await result.current.requestRoute({
+          locoAddress: 37,
+          startBlockId: 'block-1',
+          destinationBlockId: 'block-2',
+          authority: 'manual',
+        });
       });
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('sends the authority and direction the operator chose (#7 A7)', async () => {
+      // This used to hard-code `authority: 'manual'` in the hook, which was the
+      // one line keeping automation unreachable from the browser.
+      const { result } = await mountWithEmptyConfig();
+
+      fetchMock.mockResolvedValueOnce(jsonResponse({ id: 'route-1' }));
+      await act(async () => {
+        await result.current.requestRoute({
+          locoAddress: 37,
+          startBlockId: 'block-1',
+          destinationBlockId: 'block-2',
+          authority: 'auto',
+          direction: 'rev',
+        });
+      });
+
+      const body = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body));
+      expect(body).toMatchObject({ authority: 'auto', direction: 'rev' });
+    });
+
+    it('omits direction entirely for a manual route', async () => {
+      // A7's column is nullable, and an absent direction is the ordinary state
+      // for a route nothing is going to drive — sending one would be noise.
+      const { result } = await mountWithEmptyConfig();
+
+      fetchMock.mockResolvedValueOnce(jsonResponse({ id: 'route-1' }));
+      await act(async () => {
+        await result.current.requestRoute({
+          locoAddress: 37,
+          startBlockId: 'block-1',
+          destinationBlockId: 'block-2',
+          authority: 'manual',
+        });
+      });
+
+      const body = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body));
+      expect(body).not.toHaveProperty('direction');
+      expect(body.authority).toBe('manual');
     });
   });
 

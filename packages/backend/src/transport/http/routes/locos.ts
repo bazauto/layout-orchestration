@@ -111,6 +111,32 @@ export async function locoRoutes(
     },
   );
 
+  /**
+   * Every train currently under automation (#7 PR C, `docs/automation.md`).
+   *
+   * Authenticated, any role, and a pure read — the same posture as
+   * `GET .../braking-faults` below. It gates nothing and can Safe-Stop nothing;
+   * the WebSocket's `AUTOMATION_STATE` is the live channel and this is the one
+   * an operator's first page load uses before any event has been published.
+   *
+   * Deliberately **not** on the MQTT `system/status` payload, which is binding
+   * (`docs/mqtt-contract.md`) — the same call #103 made about compile
+   * staleness. The ESP firmware has no use for a phase machine, and widening a
+   * contract the firmware is built against to carry one would be a change
+   * nobody asked for.
+   */
+  fastify.get<{ Params: { layoutId: string } }>(
+    '/api/layouts/:layoutId/automation',
+    async (req, reply) => {
+      if (req.params.layoutId !== layoutService.getLayoutId()) {
+        return reply.status(404).send({
+          error: `Layout ${layoutLabel(req.params.layoutId, layoutService.getNames())} is not the running layout`,
+        });
+      }
+      return { runs: layoutService.getAutomationRuns() };
+    },
+  );
+
   // Authenticated, any role — a read, mirroring GET .../route-faults.
   fastify.get<{ Params: { layoutId: string } }>(
     '/api/layouts/:layoutId/braking-faults',

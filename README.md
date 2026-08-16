@@ -102,12 +102,15 @@ Implemented:
 - Track editor with tile palette, rotation, keyboard shortcuts, hover ghost preview, and persistence
 - Backend unit/integration/scenario tests and Playwright frontend end-to-end tests
 - GitHub Actions CI
+- Automation engine (#7): an `auto`-authority route is driven end to end — departed at the
+  loco's configured line speed, braked on approach, crawled, and stopped on a **berthing
+  beam** placed where the train should stand. Nothing is automated until an operator sets
+  a loco's automation speeds and asks for an `auto` route
 
 Planned next:
-- Collision avoidance and speed control (#7) — **in progress**. PR A landed the decision
-  model and PR B the engine (`docs/automation.md`), so automation now drives an
-  `auto`-authority route; PR C is the operator surface
-- Automation engine / schedules
+- Automation engine / schedules — deciding *where* a train should go. Collision avoidance
+  and speed control (#7) is **done** (`docs/automation.md`): automation drives one
+  operator-granted `auto` route end to end, and what is left is sequencing several
 
 ## Workspace Layout
 
@@ -515,14 +518,14 @@ preamble in `docs/sensor-simulation.md`.
 
 ## Next Milestones
 
-1. Collision avoidance and speed control (#7) — deciding *when* to brake, and driving an
-   `auto`-authority route from departure to a berthed stop. Both blockers are closed
-   (#77 `docs/sensor-position.md`, #6 `docs/braking.md`), and **PR A has landed**: the
-   model, inert, in `docs/automation.md`. PR B wires the sweep; PR C is the operator
-   surface. What the layout itself still needs is hardware — a beam on each block an
-   automated approach must slow into, and a **berthing beam** where a train should stand
-   in each destination (the platform, the goods shed). Without one, a run stops short of
-   its destination block instead of berthing inside it
+1. **Fit and measure the beams.** #7 is complete in this repository
+   (`docs/automation.md`), so what stands between the live layout and automated running is
+   hardware: a **berthing beam** where a train should stand in each destination (the
+   platform, the goods shed), measured with a tape and entered in Configure → Sensors.
+   Without one a run stops short of its destination block instead of berthing inside it —
+   a limit of coverage, not of the model. Each loco also needs its automation and crawl
+   speed steps set in Configure → Locos, and each automated route a direction; until then
+   automation departs nothing
 2. ESP firmware for point position feedback — #25 is complete in this repo, but nothing
    answers a `point/*/query` yet and no point has a feedback switch wired. Batch it with
    the WiThrottle→MQTT migration (#9); each is a flash-and-test cycle on the layout

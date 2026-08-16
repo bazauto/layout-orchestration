@@ -475,6 +475,66 @@ describe('a berthing crawl that never reaches its beam', () => {
   });
 });
 
+// ─── The operator surface (#7 PR C) ────────────────────────────────────────────
+
+describe('AUTOMATION_STATE', () => {
+  const automationEvents = (h: Harness) => h.events.filter((e) => e.type === 'AUTOMATION_STATE');
+
+  it('is published when a run changes phase, and NOT on the ticks in between', async () => {
+    // The sweep runs four times a second and is usually a no-op. Publishing
+    // unconditionally would put 240 messages a minute on every open socket to
+    // say nothing — the same argument `recomputeBlock` makes for BLOCK_STATE.
+    const h = createScenarioHarness();
+    await routed(h);
+
+    await tick(h);
+    const afterDeparture = automationEvents(h).length;
+    expect(afterDeparture).toBeGreaterThan(0);
+    expect(automationEvents(h).at(-1)?.payload.runs).toMatchObject([
+      { locoAddress: 3, phase: 'running' },
+    ]);
+
+    // Three quiet sweeps: the train is running, nothing has changed.
+    await tick(h);
+    await tick(h);
+    await tick(h);
+    expect(automationEvents(h)).toHaveLength(afterDeparture);
+
+    // Reaching the braking phase is a change, so it is published.
+    await h.sensorReports('s2', 'occupied');
+    await h.sensorReports('s3', 'occupied');
+    await tick(h);
+    expect(automationEvents(h).length).toBeGreaterThan(afterDeparture);
+    expect(automationEvents(h).at(-1)?.payload.runs).toMatchObject([{ phase: 'braking' }]);
+  });
+
+  it('carries the blocker sentence, which is the one automation state visible nowhere else', async () => {
+    // An active route, auto mode, and a train that is simply not moving — from
+    // outside that is indistinguishable from a train that has arrived.
+    const h = createScenarioHarness();
+    await routed(h, { direction: null });
+
+    await tick(h);
+
+    const runs = automationEvents(h).at(-1)?.payload.runs;
+    expect(runs).toHaveLength(1);
+    expect(runs?.[0].phase).toBe('awaiting-departure');
+    expect(runs?.[0].blocker).toContain('which way round');
+  });
+
+  it('empties when the run is torn down', async () => {
+    const h = createScenarioHarness();
+    await routed(h);
+    await tick(h);
+
+    await h.service.handleThrottleCommand({ locoAddress: 3, speed: 90, direction: 'fwd' });
+    await tick(h);
+
+    expect(automationEvents(h).at(-1)?.payload.runs).toEqual([]);
+    expect(h.service.getAutomationRuns()).toEqual([]);
+  });
+});
+
 // ─── #7's acceptance list, as A1 rewrites it ───────────────────────────────────
 
 describe('two trains converging on one block', () => {

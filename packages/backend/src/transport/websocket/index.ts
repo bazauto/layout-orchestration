@@ -114,6 +114,7 @@ export async function registerWebSocket(
         routeFaults: layoutService.getRouteFaults(),
         /** #6: latched braking faults, same posture again — one per loco (B10). */
         brakingFaults: layoutService.getBrakingFaults(),
+        automationRuns: layoutService.getAutomationRuns(),
       },
     };
     socket.send(JSON.stringify(snapshot));

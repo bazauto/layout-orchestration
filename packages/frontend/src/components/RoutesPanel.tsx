@@ -1,11 +1,28 @@
 import { useMemo, useState } from 'react';
 import {
+  AutomationRunView,
   BlockRecord,
   BlockState,
   LocoRecord,
   RouteFaultView,
   RouteReservation,
 } from '../types';
+
+/**
+ * What each automation phase is called on screen (#7 PR C).
+ *
+ * The wire names are the state machine's; these are the railway's. "Awaiting
+ * departure" and "berthed" matter most, because from outside they are the same
+ * thing — a stopped train — and the word is the only thing distinguishing "has
+ * not gone yet" from "has arrived".
+ */
+const AUTOMATION_PHASE_LABELS: Record<AutomationRunView['phase'], string> = {
+  'awaiting-departure': 'awaiting departure',
+  running: 'running',
+  braking: 'braking',
+  crawling: 'crawling to its beam',
+  berthed: 'berthed',
+};
 
 interface Props {
   /** Live reservations from the WebSocket snapshot, keyed by route id. */
@@ -19,7 +36,11 @@ interface Props {
     locoAddress: number;
     startBlockId: string;
     destinationBlockId: string;
+    authority: 'manual' | 'auto';
+    direction?: 'fwd' | 'rev';
   }) => Promise<{ ok: boolean; message?: string }>;
+  /** #7 PR C: every train currently under automation, keyed by route id for the row it belongs to. */
+  automationRuns: AutomationRunView[];
   onCancel: (routeId: string) => Promise<{ ok: boolean; message?: string }>;
   onResume: (routeId: string) => Promise<{ ok: boolean; message?: string }>;
   onAcknowledgeFault: (routeId: string) => Promise<{ ok: boolean; message?: string }>;
@@ -56,6 +77,7 @@ export function RoutesPanel({
   blockRecords,
   locoRecords,
   disabled,
+  automationRuns,
   onRequest,
   onCancel,
   onResume,
@@ -64,6 +86,8 @@ export function RoutesPanel({
   const [locoAddress, setLocoAddress] = useState<number | ''>('');
   const [startBlockId, setStartBlockId] = useState('');
   const [destinationBlockId, setDestinationBlockId] = useState('');
+  const [authority, setAuthority] = useState<'manual' | 'auto'>('manual');
+  const [direction, setDirection] = useState<'fwd' | 'rev'>('fwd');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [rowBusy, setRowBusy] = useState<Record<string, boolean>>({});
@@ -79,6 +103,11 @@ export function RoutesPanel({
   const locoName = useMemo(
     () => Object.fromEntries(locoRecords.map((l) => [l.address, l.name])),
     [locoRecords],
+  );
+
+  const runByRoute = useMemo(
+    () => Object.fromEntries(automationRuns.map((run) => [run.routeId, run])),
+    [automationRuns],
   );
 
   const liveRoutes = useMemo(
@@ -108,7 +137,15 @@ export function RoutesPanel({
     // narrows through the aliased condition — no redundant re-check here.
     if (!canSubmit) return;
     setBusy(true);
-    const result = await onRequest({ locoAddress, startBlockId, destinationBlockId });
+    const result = await onRequest({
+      locoAddress,
+      startBlockId,
+      destinationBlockId,
+      authority,
+      // Omitted entirely for a manual route: A7 column is nullable and an
+      // absent direction is the ordinary state for a route nothing drives.
+      direction: authority === 'auto' ? direction : undefined,
+    });
     setBusy(false);
     setMessage(
       result.ok
@@ -198,6 +235,42 @@ export function RoutesPanel({
           ))}
         </select>
 
+        {/*
+          #7 A7. `manual` stays the default, and deliberately: a route is a
+          valid interlocking whether or not anything drives it, and an operator
+          who has not asked for automation should not get it by omission.
+        */}
+        <select
+          value={authority}
+          onChange={(e) => setAuthority(e.target.value as 'manual' | 'auto')}
+          disabled={disabled}
+          style={s.select}
+          aria-label="Route authority"
+        >
+          <option value="manual">Manual — I drive</option>
+          <option value="auto">Auto — the system drives</option>
+        </select>
+
+        {/*
+          Shown only for an auto route, because it means nothing for a manual
+          one: it states which way round the loco sits, which only matters to
+          something issuing a departure. Nothing in the system can derive it —
+          the path's geometry is direction along the track, not loco
+          orientation, and there is no loco feedback channel (B7).
+        */}
+        {authority === 'auto' && (
+          <select
+            value={direction}
+            onChange={(e) => setDirection(e.target.value as 'fwd' | 'rev')}
+            disabled={disabled}
+            style={s.select}
+            aria-label="Route direction"
+          >
+            <option value="fwd">Forward</option>
+            <option value="rev">Reverse</option>
+          </select>
+        )}
+
         <button onClick={handleSubmit} disabled={!canSubmit} style={canSubmit ? s.goBtn : s.goBtnDisabled}>
           {busy ? 'Requesting…' : 'Request route'}
         </button>
@@ -214,6 +287,7 @@ export function RoutesPanel({
           {liveRoutes.map((r) => {
             const path = r.path.map((step) => blockName[step.blockId] ?? step.blockId);
             const isBusy = rowBusy[r.id] ?? false;
+            const run = runByRoute[r.id];
             return (
               <li key={r.id} style={s.routeRow}>
                 <div style={s.routeText}>
@@ -222,6 +296,16 @@ export function RoutesPanel({
                     <span style={r.status === 'active' ? s.statusActive : s.statusSuspended}>
                       {r.status}
                     </span>
+                    {/*
+                      #7 PR C. The phase is spelled out beside the status rather
+                      than shown as a colour: two of these states look identical
+                      from outside — a train that has not departed and one that
+                      has berthed are both simply stopped — so the word is the
+                      only thing carrying the difference.
+                    */}
+                    {run && (
+                      <span style={s.automationPhase}>{AUTOMATION_PHASE_LABELS[run.phase]}</span>
+                    )}
                   </p>
                   <p style={s.routeMeta}>
                     {path.map((name, i) => (
@@ -232,6 +316,14 @@ export function RoutesPanel({
                     ))}
                   </p>
                   {r.reason && <p style={s.routeReason}>{r.reason}</p>}
+                  {/*
+                    A7's blockers, which are the one automation state visible
+                    nowhere else: the route is active, the mode is auto, and the
+                    train is simply not moving — indistinguishable from arrival
+                    unless something says why. The backend sends the rendered
+                    sentence so this does not have to know the vocabulary.
+                  */}
+                  {run?.blocker && <p style={s.routeBlocker}>Automation held: {run.blocker}</p>}
                 </div>
                 <div style={s.routeActions}>
                   {r.status === 'suspended' && (
@@ -288,6 +380,12 @@ const s = {
   routeLine:        { margin: '2px 0', fontSize: 13, color: '#cdd6f4' } as React.CSSProperties,
   routeMeta:        { margin: '2px 0', fontSize: 12 } as React.CSSProperties,
   routeReason:      { margin: '2px 0', fontSize: 11, color: '#f9e2af' } as React.CSSProperties,
+  // #7 PR C. Mauve for the phase — distinct from the green/yellow the route
+  // status already uses, so "active · running" reads as two facts rather than
+  // one repeated. The blocker borrows `routeReason`'s yellow because it is the
+  // same kind of statement: something an operator has to go and deal with.
+  automationPhase:  { marginLeft: 8, fontSize: 11, color: '#cba6f7' } as React.CSSProperties,
+  routeBlocker:     { margin: '2px 0', fontSize: 11, color: '#f9e2af' } as React.CSSProperties,
   stepDone:         { color: '#a6e3a1' } as React.CSSProperties,
   stepAhead:        { color: '#6c7086' } as React.CSSProperties,
   statusActive:     { color: '#a6e3a1', fontSize: 11, textTransform: 'uppercase' } as React.CSSProperties,

@@ -73,8 +73,19 @@ this system can actually express (A1):
 
 ## PR C — The operator surface (`feat/7-automation-surface`)
 
-`GET .../automation` and an `AUTOMATION_STATE` event; the three new fields in
-the Config UI; the automation phase on the monitor. Docs and `CLAUDE.md`.
+**Shipped.** Decision record: A14.
+
+`GET .../automation`, `AutomationRunView` in the WebSocket snapshot and on its
+own `AUTOMATION_STATE` event; the two speed columns in Configure → Locos; the
+authority and direction selects on the route request; the phase and any blocker
+on each live route row.
+
+Differed from the plan: **the monitor is untouched**. A phase is a property of a
+*journey* and the mimic draws the railway — there is still no train-at-a-spot to
+draw (`docs/braking.md` B7) and position is still block-granular, so a phase
+badge on the diagram would have had nothing to attach itself to. The same call
+#77 PR C made about a sensor's position. It lives on `RoutesPanel`, beside the
+route it belongs to.
 
 ---
 
@@ -132,3 +143,15 @@ is worth less than one that shows what was wrong with the obvious thing.
   anchor through `isAnchorUnambiguous`, which counts edges *from* the beam's own
   block — so a one-directional fixture silently declines every berth. The real
   compiler emits a row per direction, so the fixture was wrong, not the rule.
+
+### PR C
+
+- **One line was the whole of "automation is unreachable from the browser":**
+  `useLayoutConfig.requestRoute` hard-coded `authority: 'manual'`. Correct while
+  nothing could drive a route, and worth noting because nothing about it looked
+  like a gate.
+- **The monitor is untouched**, against the plan — see above.
+- **`AUTOMATION_STATE` is suppressed when unchanged**, and the view is therefore
+  *also* in the `STATE_SNAPSHOT`. Neither half works without the other: a
+  suppressed event stream means a browser opened mid-journey sees nothing, and a
+  snapshot-only view means it never updates.

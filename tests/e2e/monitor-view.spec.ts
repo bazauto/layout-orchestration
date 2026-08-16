@@ -190,6 +190,7 @@ const SNAPSHOT = {
   pointFaults: [],
   routeFaults: [],
   brakingFaults: [],
+  automationRuns: [],
 };
 
 const EDGES = [

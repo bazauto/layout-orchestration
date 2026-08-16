@@ -560,7 +560,7 @@ function LocosTab({ locos, ops }: { locos: Ops['config']['locos']; ops: Ops }) {
       {feedback && <p style={s.error}>{feedback}</p>}
       <table style={s.table}>
         <thead><tr>
-          {['Name', 'Addr', 'Type', 'Max Speed', 'Braking', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
+          {['Name', 'Addr', 'Type', 'Max Speed', 'Braking', 'Auto Speed', 'Crawl Speed', ''].map((h) => <th key={h} style={s.th}>{h}</th>)}
         </tr></thead>
         <tbody>
           {locos.map((l) => (
@@ -610,6 +610,32 @@ function LocosTab({ locos, ops }: { locos: Ops['config']['locos']; ops: Ops }) {
                   }}
                 />
               </td>
+              {/*
+                #7 A7. Both clear to `—` rather than to a blank, because
+                unconfigured is a real state with real consequences and a blank
+                cell reads as an oversight: no auto speed and automation departs
+                nothing, no crawl speed and it stops at the destination boundary
+                instead of berthing inside it. Same posture as a block's
+                unmeasured length.
+              */}
+              <td style={s.td}>
+                <EditableCell
+                  label="automation speed step"
+                  value={l.autoSpeedStep === null ? '' : String(l.autoSpeedStep)}
+                  placeholder="—"
+                  allowEmpty
+                  onSave={(v) => saveSpeedStep(v, (n) => ops.updateLoco(l.id, { autoSpeedStep: n }))}
+                />
+              </td>
+              <td style={s.td}>
+                <EditableCell
+                  label="crawl speed step"
+                  value={l.crawlSpeedStep === null ? '' : String(l.crawlSpeedStep)}
+                  placeholder="—"
+                  allowEmpty
+                  onSave={(v) => saveSpeedStep(v, (n) => ops.updateLoco(l.id, { crawlSpeedStep: n }))}
+                />
+              </td>
               <td style={s.td}><button onClick={() => runUpdate(ops.deleteLoco(l.id))} style={s.delBtn}>×</button></td>
             </tr>
           ))}
@@ -617,6 +643,27 @@ function LocosTab({ locos, ops }: { locos: Ops['config']['locos']; ops: Ops }) {
       </table>
     </div>
   );
+}
+
+/**
+ * Shared parse for the two automation speed columns.
+ *
+ * Empty means **clear**, not zero: `null` is A7's "not configured", and a zero
+ * speed step would be a train commanded to stand still while automation
+ * believed it was running. The backend refuses `0` on both columns for the same
+ * reason, so this only saves a round trip — it is not the guard.
+ */
+function saveSpeedStep(
+  raw: string,
+  save: (value: number | null) => Promise<SaveResult>,
+): Promise<SaveResult> {
+  const trimmed = raw.trim();
+  if (trimmed === '') return save(null);
+
+  const n = parseInt(trimmed, 10);
+  if (isNaN(n)) return Promise.resolve({ ok: false, message: 'Not a number' });
+  if (n < 1 || n > 126) return Promise.resolve({ ok: false, message: 'Must be a speed step 1–126' });
+  return save(n);
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
