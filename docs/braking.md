@@ -7,8 +7,19 @@
 > standard stop over HTTP. B12 records how the executor works; B7's forward
 > reference to #25 is now implemented, since point position feedback landed
 > first. **B4 gained #77's lead term** after the fact (`docs/sensor-position.md`
-> D9), which is what closed its adjacent-target refusal. What remains unbuilt is
-> #7 — nothing decides *when* to brake.
+> D9), which is what closed its adjacent-target refusal.
+>
+> **#7 PR A has since extended three things here**, and where it does,
+> `docs/automation.md` is the authority: `planBrakingSchedule` takes a
+> `toSpeedStep` so a ramp can end at a crawl rather than at a stand (A4 — it
+> changes what the ramp *commands*, deliberately not what it *requires*, so B5's
+> distance check is unchanged); `remainingRouteDistanceMm` takes a berth offset
+> beside #77's lead term, so B4's target can be a beam *inside* the destination
+> block rather than its entry boundary (A2/A3); and `buildBerthExpectation`
+> replaces B5's `path.slice` expectation for a berthing run, because that one
+> contains the destination block and would fault a textbook arrival (A9).
+> **What still remains unbuilt is the trigger** — nothing in this repository yet
+> decides *when* to brake. That is #7 PR B.
 
 Companion to `docs/pathfinding.md` and `docs/route-locking.md`. Those documents
 decided how track is reserved and how the road is set; driving the train along
@@ -191,10 +202,19 @@ answer, it is a collision if the guess is short.
 **Target semantics.** `targetIndex` names the path step whose **entry
 boundary** the train is asked to stop at; the default target is the
 destination step, so a braked run halts *just short of* its destination
-block, not inside it. Recorded limit: an automated route therefore does not
-berth *inside* its destination block — reaching a specific spot within a
-block needs a second, slower "creep" move, which is #7's territory, not this
-one's.
+block, not inside it.
+
+**#7 PR A built the creep move this paragraph used to defer.** The limit
+recorded here was that an automated route could not berth *inside* its
+destination block, and that reaching a specific spot within one needed a
+second, slower move which was #7's territory. It is now `docs/automation.md`
+A2: a run targets a **berthing beam** in the destination block, brakes toward
+it (`remainingRouteDistanceMm`'s berth offset), ramps down to a crawl rather
+than to a stand (A4), and stops when the beam breaks. `targetIndex` still means
+exactly what it says above — a berth is expressed as an *offset past* the
+target's entry boundary, not as a different target — so nothing in this section
+changes for a caller that does not ask for one. A destination with no trusted,
+measured beam still halts just short, exactly as described here.
 
 ## B5 — Margin, and the overrun check
 
@@ -464,7 +484,10 @@ bookkeeping path.
 - **Re-planning mid-ramp.** A schedule, once started, runs to completion or is
   aborted outright (B6) — it is never recomputed against new information
   while in flight.
-- **Berthing inside the destination block** (B4).
+- ~~**Berthing inside the destination block** (B4).~~ **Built by #7 PR A** —
+  `docs/automation.md` A2/A4. Left struck through rather than deleted because
+  the *reason* it was out of scope here still holds: berthing needs a closed
+  loop (a beam), and this model has none.
 - **A velocity model or temporal divergence detection** (B7) — deferred until
   a second calibration axis is worth opening.
 - **Any schema or MQTT contract change** (B9).

@@ -196,11 +196,15 @@ export interface RouteFaultView {
  * `speed-command-rejected` — a `setSpeed` the ramp issued was refused, so a
  * moving train is now uncommandable. `overrun` — a block at or beyond the
  * stopping target reported occupied while the run's expectation was armed.
- * Both Safe-Stop, and both are cleared only by an operator acknowledging.
+ * `unable-to-stop` and `berth-not-confirmed` are #7's two
+ * (`docs/automation.md` A10), added here rather than to a collection of their
+ * own so an operator has one place to look and one way to acknowledge.
+ * All four Safe-Stop, and all four are cleared only by an operator
+ * acknowledging.
  */
 export interface BrakingFaultView {
   locoAddress: number;
-  kind: 'speed-command-rejected' | 'overrun';
+  kind: 'speed-command-rejected' | 'overrun' | 'unable-to-stop' | 'berth-not-confirmed';
   reason: string;
   /** The route the run was planned against, or `null` for B8's unconstrained standard stop. */
   routeId: string | null;
@@ -217,6 +221,15 @@ export interface LocoRecord {
   type: string;
   maxSpeed: number;
   brakingFactor: number;
+  /**
+   * #7's two automation speeds (`docs/automation.md` A7), mirroring the
+   * backend's `LocoRecord`. `null` is the ordinary state and means "not
+   * configured", which refuses rather than defaults: no `autoSpeedStep` and
+   * automation never departs this loco; no `crawlSpeedStep` and it stops at the
+   * destination's entry boundary instead of berthing inside it.
+   */
+  autoSpeedStep: number | null;
+  crawlSpeedStep: number | null;
 }
 
 // ─── Topology (mirrors backend domain/types.ts) ───────────────────────────────

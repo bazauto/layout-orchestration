@@ -45,7 +45,7 @@ import {
   RouteReservation,
   SensorObservation,
 } from './types';
-import { TrackGraph } from './graph';
+import { TrackGraph, edgesFrom } from './graph';
 import { blockLabel, edgeLabel, locoLabel, pointLabel } from './naming';
 import { leadDistanceMm } from './sensorPosition';
 
@@ -168,6 +168,18 @@ export interface BrakingScheduleRequest {
   direction: Direction;
   /** Distance available for the stop, or `null` for an unconstrained calibration stop (B8). */
   availableDistanceMm: number | null;
+  /**
+   * The speed step the ramp ends at (#7, `docs/automation.md` A4). Defaults to
+   * `0` — a full stop, which is every pre-#7 caller's behaviour byte-for-byte.
+   * A berthing run passes the loco's crawl step instead.
+   *
+   * **This changes what the ramp commands, not what it requires.** The distance
+   * check below is still the full-stop one, deliberately: "could this train
+   * have come to a stand in the track available?" is answerable without
+   * assuming the berthing beam works, and the slack it leaves over a ramp that
+   * only has to reach crawl speed *is* the crawl allowance. See A4.
+   */
+  toSpeedStep?: number;
 }
 
 export type BrakingPlan =
@@ -190,9 +202,16 @@ export function planBrakingSchedule(
   model: StoppingDistanceModel = scalarStoppingDistance,
 ): BrakingPlan {
   const { profile, fromCommandedSpeedStep, direction, availableDistanceMm } = request;
+  const toSpeedStep = request.toSpeedStep ?? 0;
 
   if (fromCommandedSpeedStep === 0) {
     return { ok: false, reason: { kind: 'already-stopped', locoAddress: profile.locoAddress } };
+  }
+  if (toSpeedStep >= fromCommandedSpeedStep) {
+    return {
+      ok: false,
+      reason: { kind: 'target-speed-not-slower', fromSpeedStep: fromCommandedSpeedStep, toSpeedStep },
+    };
   }
 
   const estimate = model(profile, { commandedSpeedStep: fromCommandedSpeedStep, direction });
@@ -200,6 +219,8 @@ export function planBrakingSchedule(
     return { ok: false, reason: { kind: 'model-unavailable', fault: estimate.fault } };
   }
 
+  // A4: the full-stop figure, whatever the ramp ends at. The slack this leaves
+  // over a ramp that only has to reach `toSpeedStep` is the crawl allowance.
   const requiredMm = requiredDistanceMm(estimate.distanceMm);
   if (availableDistanceMm !== null && requiredMm > availableDistanceMm) {
     return {
@@ -208,29 +229,37 @@ export function planBrakingSchedule(
     };
   }
 
-  const steps = buildSteps(fromCommandedSpeedStep, direction);
+  const steps = buildSteps(fromCommandedSpeedStep, toSpeedStep, direction);
   const schedule: BrakingSchedule = {
     locoAddress: profile.locoAddress,
     steps,
     estimatedStoppingDistanceMm: estimate.distanceMm,
     requiredDistanceMm: requiredMm,
+    endsAtSpeedStep: toSpeedStep,
     totalDurationMs: steps[steps.length - 1].atOffsetMs,
   };
   return { ok: true, schedule };
 }
 
 /**
- * Linear step-down from `fromSpeedStep` to 0 (B3). The first step is issued
- * immediately (`atOffsetMs: 0`) and is already below the current speed — the
- * loop always runs at least once because `planBrakingSchedule` refuses
- * `fromSpeedStep === 0` before calling this.
+ * Linear step-down from `fromSpeedStep` to `toSpeedStep` (B3, extended by #7's
+ * A4). The first step is issued immediately (`atOffsetMs: 0`) and is already
+ * below the current speed — the loop always runs at least once because
+ * `planBrakingSchedule` has already refused `fromSpeedStep === 0` and
+ * `toSpeedStep >= fromSpeedStep` before calling this.
+ *
+ * The decrement is clamped at `toSpeedStep`, so a ramp ending at a crawl stops
+ * there rather than stepping past it, and the last step keeps `direction`
+ * rather than becoming `'stop'` — a crawling train is still moving, and
+ * commanding `'stop'` at a non-zero speed step is the
+ * `speed-direction-mismatch` the model refuses on the way in.
  */
-function buildSteps(fromSpeedStep: number, direction: Direction): BrakingStep[] {
+function buildSteps(fromSpeedStep: number, toSpeedStep: number, direction: Direction): BrakingStep[] {
   const steps: BrakingStep[] = [];
   let s = fromSpeedStep;
   let t = 0;
-  while (s > 0) {
-    s = Math.max(0, s - BRAKING_STEP_DECREMENT);
+  while (s > toSpeedStep) {
+    s = Math.max(toSpeedStep, s - BRAKING_STEP_DECREMENT);
     steps.push({ atOffsetMs: t, speedStep: s, direction: s === 0 ? 'stop' : direction });
     t += BRAKING_TICK_MS;
   }
@@ -271,6 +300,20 @@ function buildSteps(fromSpeedStep: number, direction: Direction): BrakingStep[] 
  * the whole reason #77 was promoted ahead of #7. With a fix the lead term is
  * the only distance there is, and it is honestly bounded.
  *
+ * **`berthOffsetMm` is #7's mirror of `lead` at the far end** (A2/A3): how far
+ * *past* the entry boundary of `path[targetIndex]` the train is being asked to
+ * run, because the stopping point is a beam inside the destination block rather
+ * than its entry boundary. Resolved by the caller via
+ * `sensorPosition.ts#berthingBeamIn` and passed in as a plain number, so the
+ * beam whose offset sets this distance is provably the same beam the crawl then
+ * watches for arrival — selecting it twice is how the two would come to
+ * disagree.
+ *
+ * Like `lead` it is purely additive and omitting it reproduces B4's answer
+ * exactly, and like `lead` a negative value cannot subtract: it is clamped at
+ * zero. Unlike `lead` it does not decay, because it is the position of a
+ * screwed-down beam and not an observation of a moving train (A3).
+ *
  * Refuses `unmeasured-track` on the first block with no measured length,
  * naming it. Deliberately does **not** fall back to `DEFAULT_BLOCK_LENGTH_MM`
  * (the pathfinder's cost-only guess, P2 in docs/pathfinding.md) — guessing a
@@ -283,6 +326,7 @@ export function remainingRouteDistanceMm(
   graph: TrackGraph,
   targetIndex: number,
   lead?: { observations: readonly SensorObservation[]; now: Date },
+  berthOffsetMm?: number,
 ): { ok: true; distanceMm: number } | { ok: false; reason: BrakingRefusal } {
   if (targetIndex <= reservation.confirmedIndex) {
     return {
@@ -301,7 +345,10 @@ export function remainingRouteDistanceMm(
     distanceMm += lengthMm;
   }
 
-  return { ok: true, distanceMm: distanceMm + leadTermMm(reservation, graph, lead) };
+  return {
+    ok: true,
+    distanceMm: distanceMm + leadTermMm(reservation, graph, lead) + Math.max(0, berthOffsetMm ?? 0),
+  };
 }
 
 /**
@@ -344,6 +391,53 @@ export function buildStopExpectation(
     routeId: reservation.id,
     targetIndex,
     forbiddenBlockIds: reservation.path.slice(targetIndex).map((step) => step.blockId),
+  };
+}
+
+/**
+ * The overrun expectation for a **berthing** run (#7, `docs/automation.md` A9):
+ * every block the graph joins to the destination, less the one the train
+ * arrived from. "The track beyond the end of the route."
+ *
+ * `buildStopExpectation` is exactly wrong for a berthing run and this exists
+ * because of it. That one forbids `path.slice(targetIndex)`, which for a
+ * berthing run *contains the destination block* — the block the train is
+ * supposed to end up in. Armed unchanged, a textbook berthing arrival would
+ * Safe-Stop the layout at the instant it succeeded.
+ *
+ * What this catches is the thing nothing caught before #7: a train running out
+ * past its destination into track no route holds. `onOccupancyChange` finds the
+ * route holding the block that changed, and an unreserved block has no holder,
+ * so a runaway raised nothing at all.
+ *
+ * `targetIndex` is recorded as the destination step for the record, though
+ * nothing reads it back for a berthing expectation — the forbidden set is
+ * derived from the graph, not from a path slice.
+ *
+ * **A terminal destination yields an empty forbidden set**, and that is honest
+ * rather than broken: there is no block past the buffers to detect a train that
+ * reaches them. Recorded as a limit in A9.
+ */
+export function buildBerthExpectation(
+  reservation: RouteReservation,
+  graph: TrackGraph,
+): BrakingStopExpectation {
+  const destinationIndex = reservation.path.length - 1;
+  const destinationBlockId = reservation.path[destinationIndex]?.blockId;
+  const arrivedFromBlockId = reservation.path[destinationIndex - 1]?.blockId ?? null;
+
+  const forbidden = new Set<BlockId>();
+  if (destinationBlockId !== undefined) {
+    for (const edge of edgesFrom(graph, destinationBlockId)) {
+      if (edge.toBlockId !== arrivedFromBlockId) forbidden.add(edge.toBlockId);
+    }
+  }
+
+  return {
+    locoAddress: reservation.locoAddress,
+    routeId: reservation.id,
+    targetIndex: destinationIndex,
+    forbiddenBlockIds: [...forbidden],
   };
 }
 
@@ -404,6 +498,8 @@ export function describeBrakingRefusal(reason: BrakingRefusal, book?: NameBook):
       return `edge ${edgeLabel(reason.edgeId, book)} does not exist in the current track graph`;
     case 'target-behind-train':
       return `target index ${reason.targetIndex} is not ahead of confirmed index ${reason.confirmedIndex}`;
+    case 'target-speed-not-slower':
+      return `a ramp cannot end at speed step ${reason.toSpeedStep} when it starts from ${reason.fromSpeedStep}`;
     case 'unknown-loco':
       return `loco ${locoLabel(reason.locoAddress, book)} is not in the roster`;
     case 'ambiguous-loco':

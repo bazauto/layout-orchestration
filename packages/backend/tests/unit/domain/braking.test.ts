@@ -4,6 +4,7 @@ import {
   BRAKING_SAFETY_MARGIN,
   BRAKING_TICK_MS,
   MIN_STOPPING_DISTANCE_MM,
+  buildBerthExpectation,
   buildStopExpectation,
   describeBrakingRefusal,
   isBrakingOverrun,
@@ -445,6 +446,262 @@ describe('buildStopExpectation / isBrakingOverrun', () => {
     const expectation = buildStopExpectation(r, 2);
     expect(isBrakingOverrun(expectation, 'b3', 'clear')).toBe(false);
     expect(isBrakingOverrun(expectation, 'b3', 'unknown')).toBe(false);
+  });
+});
+
+// ─── #7's ramp-to-a-crawl (docs/automation.md A4) ──────────────────────────────
+
+describe('planBrakingSchedule with a toSpeedStep', () => {
+  it('defaults to a full stop, byte-for-byte with every pre-#7 caller', () => {
+    const withDefault = planBrakingSchedule({
+      profile: profile(),
+      fromCommandedSpeedStep: 40,
+      direction: 'fwd',
+      availableDistanceMm: null,
+    });
+    const withExplicitZero = planBrakingSchedule({
+      profile: profile(),
+      fromCommandedSpeedStep: 40,
+      direction: 'fwd',
+      availableDistanceMm: null,
+      toSpeedStep: 0,
+    });
+    expect(withDefault).toEqual(withExplicitZero);
+    expect(withDefault.ok).toBe(true);
+    if (!withDefault.ok) return;
+    expect(withDefault.schedule.endsAtSpeedStep).toBe(0);
+    expect(withDefault.schedule.steps.at(-1)).toEqual({
+      atOffsetMs: expect.any(Number),
+      speedStep: 0,
+      direction: 'stop',
+    });
+  });
+
+  it('ramps down to the crawl step and stops there, keeping the direction', () => {
+    // A crawling train is still moving, so the last step must NOT be 'stop' —
+    // that pairing is the `speed-direction-mismatch` the model refuses on.
+    const plan = planBrakingSchedule({
+      profile: profile(),
+      fromCommandedSpeedStep: 40,
+      direction: 'fwd',
+      availableDistanceMm: null,
+      toSpeedStep: 8,
+    });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+
+    expect(plan.schedule.endsAtSpeedStep).toBe(8);
+    expect(plan.schedule.steps.map((s) => s.speedStep)).toEqual([32, 24, 16, 8]);
+    expect(plan.schedule.steps.every((s) => s.direction === 'fwd')).toBe(true);
+  });
+
+  it('clamps at the crawl step rather than stepping past it', () => {
+    // 30 - 8 - 8 - 8 would land on 6, below the crawl step. The last decrement
+    // is short instead.
+    const plan = planBrakingSchedule({
+      profile: profile(),
+      fromCommandedSpeedStep: 30,
+      direction: 'fwd',
+      availableDistanceMm: null,
+      toSpeedStep: 10,
+    });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.schedule.steps.map((s) => s.speedStep)).toEqual([22, 14, 10]);
+  });
+
+  it('still requires the FULL stopping distance, not the partial ramp (A4)', () => {
+    // The whole of A4: `toSpeedStep` changes what the ramp commands and
+    // deliberately not what it requires. Both calls refuse on the same figure.
+    const available = 100;
+    const stop = planBrakingSchedule({
+      profile: profile(),
+      fromCommandedSpeedStep: 126,
+      direction: 'fwd',
+      availableDistanceMm: available,
+    });
+    const toCrawl = planBrakingSchedule({
+      profile: profile(),
+      fromCommandedSpeedStep: 126,
+      direction: 'fwd',
+      availableDistanceMm: available,
+      toSpeedStep: 8,
+    });
+    expect(stop).toEqual(toCrawl);
+    expect(toCrawl).toEqual({
+      ok: false,
+      reason: { kind: 'insufficient-distance', requiredMm: 625, availableMm: available },
+    });
+  });
+
+  it('reports the full-stop estimate on a ramp that ends at a crawl', () => {
+    const plan = planBrakingSchedule({
+      profile: profile({ brakingFactor: 0.5, maxSpeed: 126 }),
+      fromCommandedSpeedStep: 126,
+      direction: 'fwd',
+      availableDistanceMm: null,
+      toSpeedStep: 8,
+    });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.schedule.estimatedStoppingDistanceMm).toBe(500);
+    expect(plan.schedule.requiredDistanceMm).toBe(625);
+  });
+
+  it('refuses a target speed that is not below the starting speed', () => {
+    // Refused rather than clamped: it means the roster's crawl step and the
+    // speed the train is running at disagree about which is slower, and a
+    // "brake" that accelerates is not something to interpret charitably.
+    for (const toSpeedStep of [20, 25]) {
+      expect(
+        planBrakingSchedule({
+          profile: profile(),
+          fromCommandedSpeedStep: 20,
+          direction: 'fwd',
+          availableDistanceMm: null,
+          toSpeedStep,
+        }),
+      ).toEqual({
+        ok: false,
+        reason: { kind: 'target-speed-not-slower', fromSpeedStep: 20, toSpeedStep },
+      });
+    }
+  });
+
+  it('still refuses an already-stopped loco before it looks at the target speed', () => {
+    expect(
+      planBrakingSchedule({
+        profile: profile(),
+        fromCommandedSpeedStep: 0,
+        direction: 'stop',
+        availableDistanceMm: null,
+        toSpeedStep: 0,
+      }),
+    ).toEqual({ ok: false, reason: { kind: 'already-stopped', locoAddress: 3 } });
+  });
+});
+
+// ─── #7's berth term (docs/automation.md A2/A3) ────────────────────────────────
+
+describe('remainingRouteDistanceMm with a berth offset', () => {
+  it('adds the berth offset to the intermediate sum', () => {
+    // Confirmed in b1, target b4 (index 3): b2 + b3 = 1000mm to b4's entry
+    // boundary, plus 700mm into b4 to reach the beam.
+    const result = remainingRouteDistanceMm(
+      reservation({ confirmedIndex: 0 }),
+      fourBlockGraph(),
+      3,
+      undefined,
+      700,
+    );
+    expect(result).toEqual({ ok: true, distanceMm: 1700 });
+  });
+
+  it('stacks with #77 lead term at the other end of the route', () => {
+    const result = remainingRouteDistanceMm(
+      reservation({ confirmedIndex: 0 }),
+      fourBlockGraph(),
+      3,
+      { observations: [beam()], now: NOW },
+      700,
+    );
+    expect(result).toEqual({ ok: true, distanceMm: 400 + 1000 + 700 });
+  });
+
+  it('is what makes an ADJACENT berthed target a real distance', () => {
+    // The B4/D-K case again, from the other side: no intermediate blocks at
+    // all, no position fix, and the berth offset is the only distance there is.
+    const result = remainingRouteDistanceMm(
+      reservation({ confirmedIndex: 0 }),
+      fourBlockGraph(),
+      1,
+      undefined,
+      600,
+    );
+    expect(result).toEqual({ ok: true, distanceMm: 600 });
+  });
+
+  it('omitting it reproduces the pre-#7 answer exactly', () => {
+    const without = remainingRouteDistanceMm(reservation({ confirmedIndex: 0 }), fourBlockGraph(), 3);
+    const withZero = remainingRouteDistanceMm(
+      reservation({ confirmedIndex: 0 }),
+      fourBlockGraph(),
+      3,
+      undefined,
+      0,
+    );
+    expect(without).toEqual(withZero);
+  });
+
+  it('cannot subtract — a negative offset is clamped to zero', () => {
+    const result = remainingRouteDistanceMm(
+      reservation({ confirmedIndex: 0 }),
+      fourBlockGraph(),
+      3,
+      undefined,
+      -900,
+    );
+    expect(result).toEqual({ ok: true, distanceMm: 1000 });
+  });
+
+  it('does not rescue unmeasured intermediate track', () => {
+    // A beam in the destination is evidence about the destination and nothing
+    // else — exactly what #77 D9 says about the lead term.
+    const result = remainingRouteDistanceMm(
+      reservation({ confirmedIndex: 0 }),
+      fourBlockGraph({ b2: null }),
+      3,
+      undefined,
+      700,
+    );
+    expect(result).toEqual({ ok: false, reason: { kind: 'unmeasured-track', blockId: 'b2' } });
+  });
+});
+
+// ─── #7's berthing overrun expectation (docs/automation.md A9) ─────────────────
+
+describe('buildBerthExpectation', () => {
+  it('forbids the track BEYOND the destination, and not the destination itself', () => {
+    // The whole point: a berthing train is supposed to enter b4, so the
+    // ordinary `path.slice(targetIndex)` expectation would Safe-Stop the layout
+    // at the instant a textbook arrival succeeded.
+    const graph = buildTrackGraph(LAYOUT, [
+      ...fourBlockEdges(),
+      edge({ id: 'e4', fromBlockId: 'b4', fromEnd: 'east', toBlockId: 'b5', toEnd: 'west' }),
+    ]);
+    const expectation = buildBerthExpectation(reservation({ confirmedIndex: 2 }), graph);
+
+    expect(expectation.forbiddenBlockIds).toEqual(['b5']);
+    expect(isBrakingOverrun(expectation, 'b4', 'occupied')).toBe(false);
+    expect(isBrakingOverrun(expectation, 'b5', 'occupied')).toBe(true);
+  });
+
+  it('never forbids the block the train arrived from', () => {
+    // b4 joins back to b3 in the reverse direction on a real compiled graph,
+    // and the train's own tail is in b3 — forbidding it would fault every
+    // arrival.
+    const graph = buildTrackGraph(LAYOUT, [
+      ...fourBlockEdges(),
+      edge({ id: 'e3r', fromBlockId: 'b4', fromEnd: 'west', toBlockId: 'b3', toEnd: 'east' }),
+      edge({ id: 'e4', fromBlockId: 'b4', fromEnd: 'east', toBlockId: 'b5', toEnd: 'west' }),
+    ]);
+    const expectation = buildBerthExpectation(reservation({ confirmedIndex: 2 }), graph);
+    expect(expectation.forbiddenBlockIds).toEqual(['b5']);
+  });
+
+  it('is EMPTY for a terminal destination, which is honest rather than broken', () => {
+    // A9's recorded limit: there is no block past the buffers to detect a train
+    // that reaches them. The answer to that is a buffer stop, not code.
+    const expectation = buildBerthExpectation(reservation({ confirmedIndex: 2 }), fourBlockGraph());
+    expect(expectation.forbiddenBlockIds).toEqual([]);
+    expect(isBrakingOverrun(expectation, 'b4', 'occupied')).toBe(false);
+  });
+
+  it('records the destination step as its target index', () => {
+    const expectation = buildBerthExpectation(reservation(), fourBlockGraph());
+    expect(expectation.targetIndex).toBe(3);
+    expect(expectation.routeId).toBe('route-1');
+    expect(expectation.locoAddress).toBe(3);
   });
 });
 

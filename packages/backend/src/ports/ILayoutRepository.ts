@@ -34,6 +34,18 @@ export interface LocoRecord {
    * stopping distances. 1.0 = stops immediately; lower values = longer braking.
    */
   brakingFactor: number;
+  /**
+   * The DCC speed step automation runs this loco at between departure and the
+   * brake trigger (#7, `docs/automation.md` A7). `null` = automation never
+   * departs it, and there is deliberately no fallback derived from `maxSpeed`.
+   */
+  autoSpeedStep: number | null;
+  /**
+   * The slowest step this loco moves reliably at — the berthing crawl's speed
+   * (A2/A5). `null` = no crawl phase, so an automated run stops at the
+   * destination block's entry boundary instead of berthing inside it.
+   */
+  crawlSpeedStep: number | null;
 }
 
 export interface BlockRecord {

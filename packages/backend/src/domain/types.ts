@@ -52,6 +52,18 @@ export type PointPosition = 'normal' | 'reverse' | 'unknown';
 /** Loco direction of travel. */
 export type Direction = 'fwd' | 'rev' | 'stop';
 
+/**
+ * A direction a train can actually travel in — `Direction` less `'stop'`
+ * (#7, `docs/automation.md` A7).
+ *
+ * Exists because "which way round is this loco sitting" and "what is it
+ * currently commanded to do" are different questions with overlapping
+ * vocabularies, and `'stop'` is only ever an answer to the second. Deriving it
+ * from `Direction` rather than restating the two members keeps them from
+ * drifting apart.
+ */
+export type TravelDirection = Exclude<Direction, 'stop'>;
+
 /** Who has control authority over a loco or block. */
 export type Authority = 'manual' | 'auto';
 
@@ -700,6 +712,17 @@ export interface RouteReservation {
   /** Who drives this route once granted — does not affect whether it can be
    * granted (D7); governs what a manual throttle/force-point command does. */
   authority: Authority;
+  /**
+   * Which way the loco faces for this journey (#7, `docs/automation.md` A7), or
+   * `null`. Never `'stop'`: this is an operator's statement about orientation,
+   * not a commanded state.
+   *
+   * `null` is ordinary for a `manual`-authority route and **refuses departure**
+   * for an `auto` one — the DCC direction bit depends on which way round the
+   * loco sits on the rails, which nothing in this system can derive from the
+   * path's `entryEnd`/`exitEnd` geometry.
+   */
+  direction: TravelDirection | null;
   status: RouteStatus;
   path: RoutePathStep[];
   holds: RouteHold[];
@@ -846,10 +869,20 @@ export interface BrakingStep {
 export interface BrakingSchedule {
   locoAddress: LocoAddress;
   steps: BrakingStep[];
-  /** What the model predicts (B1). Never confirmed (B7). */
+  /** What the model predicts for a full stop from the starting speed (B1). Never confirmed (B7). Unchanged by a ramp that ends at a crawl — see `docs/automation.md` A4. */
   estimatedStoppingDistanceMm: number;
   /** estimate + margin (B5). */
   requiredDistanceMm: number;
+  /**
+   * The speed step the last step of this ramp commands (#7, A4): `0` for an
+   * ordinary stop, the loco's crawl step for a berthing run.
+   *
+   * An executor needs this to tell "the ramp is over, the train is stopped"
+   * from "the ramp is over, the train is now crawling towards its beam" —
+   * reading `steps[steps.length - 1].speedStep` would work and is exactly the
+   * derivation worth doing once, here, rather than at each call site.
+   */
+  endsAtSpeedStep: number;
   totalDurationMs: number;
 }
 
@@ -875,6 +908,15 @@ export type BrakingRefusal =
   | { kind: 'unmeasured-track'; blockId: BlockId }
   | { kind: 'unknown-edge'; edgeId: BlockEdgeId }
   | { kind: 'target-behind-train'; targetIndex: number; confirmedIndex: number }
+  /**
+   * A ramp was asked to end at a speed that is not below the one it starts from
+   * (#7, `docs/automation.md` A4) — a crawl step at or above the current
+   * commanded speed. Refused rather than clamped: it means the roster's crawl
+   * step and the speed the train is actually running at disagree about which is
+   * slower, and "brake" that accelerates is not a thing to work out a sensible
+   * interpretation of.
+   */
+  | { kind: 'target-speed-not-slower'; fromSpeedStep: number; toSpeedStep: number }
   | { kind: 'unknown-loco'; locoAddress: LocoAddress }
   | { kind: 'ambiguous-loco'; locoAddress: LocoAddress; count: number }
   | { kind: 'unknown-loco-state'; locoAddress: LocoAddress }
@@ -904,8 +946,30 @@ export type BrakingRefusal =
  * `locoAddress` in `SystemHealth.brakingFaults` — same posture as
  * `SensorFault`/`RouteFault`. `speed-command-rejected` is a `setSpeed`
  * rejection mid-ramp (B6); `overrun` is B5's armed-expectation check firing.
+ *
+ * #7 adds two more rather than opening a fifth latched collection
+ * (`docs/automation.md` A10): every one of these is "this loco's automated stop
+ * did not go as promised", which is what this collection already means, and a
+ * second fault vocabulary would make an operator learn two ways to be told the
+ * same thing.
+ *
+ * `unable-to-stop` — the automation sweep reached the point where a stop was
+ * required and the plan was refused (insufficient distance, unmeasured track, a
+ * point that has not confirmed). The train is moving with no plan that stops it
+ * inside its authority. It should be unreachable in normal running: A6's
+ * approach margin exists so the trigger fires while the plan is still
+ * grantable, so this latching means a constant is wrong or the world moved
+ * faster than `MAX_CREDIBLE_SPEED_MM_PER_S` says it can.
+ *
+ * `berth-not-confirmed` — the berthing crawl ran for `CRAWL_TIMEOUT_MS` without
+ * the beam breaking (A11): a dead beam, a stalled train, or a crawl speed step
+ * below what the loco actually moves at.
  */
-export type BrakingFaultKind = 'speed-command-rejected' | 'overrun';
+export type BrakingFaultKind =
+  | 'speed-command-rejected'
+  | 'overrun'
+  | 'unable-to-stop'
+  | 'berth-not-confirmed';
 
 export interface BrakingFault {
   locoAddress: LocoAddress;

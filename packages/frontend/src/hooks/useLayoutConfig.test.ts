@@ -65,6 +65,8 @@ function loco(overrides: Partial<LocoRecord> = {}): LocoRecord {
     type: 'diesel',
     maxSpeed: 100,
     brakingFactor: 1,
+    autoSpeedStep: null,
+    crawlSpeedStep: null,
     ...overrides,
   };
 }

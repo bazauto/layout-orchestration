@@ -3,6 +3,7 @@ import { ILayoutRepository } from '../../../ports/ILayoutRepository';
 import { INameBook } from '../../../ports/INameBook';
 import { LayoutService, LocoNotFaultedError } from '../../../services/LayoutService';
 import { describeBrakingRefusal } from '../../../domain/braking';
+import { locoCreateSchema, locoUpdateSchema } from '../../../services/validation';
 import { layoutLabel } from '../../../domain/naming';
 import { requireAdmin } from '../auth/hook';
 
@@ -22,38 +23,35 @@ export async function locoRoutes(
   // Roster config (editing which locos exist) is admin-only. Driving an
   // existing loco (THROTTLE_COMMAND/FUNCTION_COMMAND over WebSocket) is not
   // gated by role — 'operator' may drive.
-  fastify.post<{
-    Params: { layoutId: string };
-    Body: {
-      name: string;
-      address: number;
-      type?: string;
-      maxSpeed?: number;
-      brakingFactor?: number;
-    };
-  }>('/api/layouts/:layoutId/locos', { preHandler: requireAdmin }, async (req, reply) => {
-    const loco = await repo.createLoco({
-      layoutId: req.params.layoutId,
-      name: req.body.name,
-      address: req.body.address,
-      type: req.body.type ?? 'unknown',
-      maxSpeed: req.body.maxSpeed ?? 126,
-      brakingFactor: req.body.brakingFactor ?? 0.5,
-    });
-    // D5: refresh after the write so the new loco's name is available to
-    // the next operator-facing string that renders it.
-    await nameBook.refresh(req.params.layoutId);
-    return reply.status(201).send(loco);
-  });
+  fastify.post<{ Params: { layoutId: string }; Body: unknown }>(
+    '/api/layouts/:layoutId/locos',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const parsed = locoCreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ error: 'Invalid loco payload', details: parsed.error.flatten() });
+      }
+      const loco = await repo.createLoco({ layoutId: req.params.layoutId, ...parsed.data });
+      // D5: refresh after the write so the new loco's name is available to
+      // the next operator-facing string that renders it.
+      await nameBook.refresh(req.params.layoutId);
+      return reply.status(201).send(loco);
+    },
+  );
 
-  fastify.put<{
-    Params: { layoutId: string; id: string };
-    Body: { name?: string; address?: number; type?: string; maxSpeed?: number; brakingFactor?: number };
-  }>(
+  fastify.put<{ Params: { layoutId: string; id: string }; Body: unknown }>(
     '/api/layouts/:layoutId/locos/:id',
     { preHandler: requireAdmin },
     async (req, reply) => {
-      const updated = await repo.updateLoco(req.params.id, req.body);
+      const parsed = locoUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ error: 'Invalid loco payload', details: parsed.error.flatten() });
+      }
+      const updated = await repo.updateLoco(req.params.id, parsed.data);
       await nameBook.refresh(req.params.layoutId);
       return reply.status(200).send(updated);
     },

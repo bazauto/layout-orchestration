@@ -32,6 +32,35 @@ export const locos = sqliteTable('locos', {
   maxSpeed: integer('max_speed').notNull().default(126),
   /** Braking factor 0.0–1.0. Used by automation engine for stopping distance calculations. */
   brakingFactor: real('braking_factor').notNull().default(0.5),
+  /**
+   * The DCC speed step automation runs this loco at between departure and the
+   * brake trigger (#7, `docs/automation.md` A7). NULL = automation never
+   * departs this loco.
+   *
+   * Nullable and refusing rather than defaulting, deliberately. There is **no
+   * fraction-of-`max_speed` fallback**: `max_speed` is advisory and unenforced
+   * everywhere else in the system (B2, `docs/braking.md`), so deriving a speed
+   * a train actually moves at from it would be building on sand. A shunter's
+   * line speed is not a Britannia's, and only an operator knows which.
+   */
+  autoSpeedStep: integer('auto_speed_step'),
+  /**
+   * The slowest DCC speed step this loco moves reliably at — the speed the
+   * berthing crawl runs at (#7, A2/A5). NULL = no crawl phase, therefore no
+   * berthing: an automated run targets the destination block's *entry*
+   * boundary and stops there, which is `docs/braking.md` B4's behaviour
+   * unchanged.
+   *
+   * A property of the decoder and the mechanism, not of the layout, which is
+   * why it sits here beside `braking_factor` rather than being a constant.
+   *
+   * Deliberately no CHECK constraint on either column, following DD9's call on
+   * `sensors.in_service` and B9's on `blocks.length_mm`: a CHECK on an existing
+   * SQLite table forces a rebuild of a table on a database deployed to a live
+   * layout. `locoCreateSchema`/`locoUpdateSchema` enforce `[1, 126]` on every
+   * write path.
+   */
+  crawlSpeedStep: integer('crawl_speed_step'),
 });
 
 // ─── Blocks ───────────────────────────────────────────────────────────────────
@@ -270,6 +299,28 @@ export const routeReservations = sqliteTable(
     layoutId: text('layout_id').notNull().references(() => layouts.id, { onDelete: 'cascade' }),
     locoAddress: integer('loco_address').notNull(),
     authority: text('authority').notNull(),
+    /**
+     * Which way the loco faces for *this* journey — `'fwd'` or `'rev'`, or
+     * NULL (#7, `docs/automation.md` A7). The same two members `Direction`
+     * already uses, less `'stop'`, so it drops straight into a `setSpeed`
+     * command without a translation step.
+     *
+     * An operator input, because it is not a derivable fact: the path carries
+     * `entryEnd`/`exitEnd`, which is the geometric direction of travel along
+     * the track, but the DCC direction bit depends on which way round the loco
+     * is sitting on the rails and nothing in this system can know that. There
+     * is no loco feedback channel and never will be (B7, `docs/braking.md`).
+     *
+     * It lives here rather than on `locos` because it is a property of the
+     * journey — the same loco runs forward out of the yard and reverse back
+     * into it — and it belongs beside `authority`, which is already "who drives
+     * this route".
+     *
+     * NULL is the ordinary state for a `manual`-authority route and refuses
+     * departure for an `auto` one. No CHECK, per the note on `locos` above;
+     * `routeRequestSchema` enforces the two values on the write path.
+     */
+    direction: text('direction'),
     status: text('status').notNull(),
     path: text('path').notNull(),
     confirmedIndex: integer('confirmed_index').notNull(),

@@ -33,6 +33,7 @@ import {
   RouteReservation,
   RouteRejection,
   SystemStatus,
+  TravelDirection,
 } from './types';
 import { TrackGraph, collectPointConditions } from './graph';
 import { describeBlocker } from './pathfinding';
@@ -50,6 +51,16 @@ export interface ReservationRequest {
   layoutId: LayoutId;
   locoAddress: LocoAddress;
   authority: Authority;
+  /**
+   * Which way round the loco sits for this journey (#7, `docs/automation.md`
+   * A7), or `null`. Carried straight through onto the reservation and never
+   * validated against the path: the path's `entryEnd`/`exitEnd` is geometric
+   * direction along the track, and the DCC direction bit is loco orientation.
+   * Nothing in this system can derive one from the other, so there is nothing
+   * here to check it against — planning is not the layer that finds out this is
+   * wrong (`docs/automation.md`'s last recorded limit).
+   */
+  direction?: TravelDirection | null;
   startBlockId: BlockId;
   /** Ordered edge ids forming the path. Empty is a rejection (`empty-path`). */
   edgeIds: BlockEdgeId[];
@@ -257,6 +268,7 @@ export function planReservation(
     layoutId: request.layoutId,
     locoAddress: request.locoAddress,
     authority: request.authority,
+    direction: request.direction ?? null,
     status: 'active',
     path,
     holds,

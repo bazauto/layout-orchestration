@@ -42,6 +42,8 @@ const LOCOS: LocoRecord[] = [
     type: 'steam',
     maxSpeed: 100,
     brakingFactor: 1,
+    autoSpeedStep: null,
+    crawlSpeedStep: null,
   },
 ];
 

@@ -385,6 +385,43 @@ export const sensorPositionSchema = z
   })
   .strict();
 
+/** A DCC speed step: an integer on `[1, 126]`. Zero is excluded deliberately — every column using this names a speed a train *moves* at, and "stopped" is not one of them. */
+const movingSpeedStepSchema = z.number().int().min(1).max(126);
+
+/**
+ * Write schema for a loco roster entry.
+ *
+ * This route took a raw, unvalidated body before #7. It is validated now
+ * because two of its fields became DCC speed steps that automation issues
+ * without an operator in the loop (`docs/automation.md` A7) — an unchecked
+ * `autoSpeedStep` is a train departing at a speed nobody chose. The pre-existing
+ * fields are folded into the same schema rather than left beside it: a partly
+ * validated body is the shape that lets the next field be added unchecked.
+ *
+ * `autoSpeedStep`/`crawlSpeedStep` default to `null`, which is A7's refuse-rather-
+ * than-guess state — an unconfigured loco is one automation will not depart, and
+ * every existing roster row is exactly that after migration `0014`.
+ */
+export const locoCreateSchema = z
+  .object({
+    name: z.string().min(1),
+    address: z.number().int().min(1).max(9999),
+    type: z.string().min(1).default('unknown'),
+    maxSpeed: z.number().int().min(0).max(126).default(126),
+    brakingFactor: z.number().min(0).max(1).default(0.5),
+    /** A7: the line speed automation runs this loco at. `null` = never departs. No fraction-of-`maxSpeed` fallback. */
+    autoSpeedStep: movingSpeedStepSchema.nullable().default(null),
+    /** A7: the slowest step this loco reliably moves at. `null` = no crawl, therefore no berthing (B4's boundary stop instead). */
+    crawlSpeedStep: movingSpeedStepSchema.nullable().default(null),
+  })
+  .strict();
+
+export type LocoCreateInput = z.infer<typeof locoCreateSchema>;
+
+export const locoUpdateSchema = locoCreateSchema.partial().strict();
+
+export type LocoUpdateInput = z.infer<typeof locoUpdateSchema>;
+
 export const sensorCreateSchema = z
   .object({
     name: z.string().min(1),
@@ -751,6 +788,12 @@ export const routeReservationRowSchema = z.object({
   layoutId: z.string().min(1),
   locoAddress: z.number().int().min(1).max(9999),
   authority: authoritySchema,
+  /**
+   * #7 A7. Nullable, and `'stop'` is deliberately not admissible: this records
+   * which way round the loco sits, not a commanded state. A row written before
+   * migration `0014` reads NULL, which is exactly "no direction stated".
+   */
+  direction: z.enum(['fwd', 'rev']).nullable(),
   status: routeStatusSchema,
   path: z.string(),
   confirmedIndex: z.number().int().min(0),
@@ -827,6 +870,7 @@ export function parseReservationRow(row: unknown, holdRows: readonly unknown[]):
     layoutId: parsedRow.data.layoutId,
     locoAddress: parsedRow.data.locoAddress,
     authority: parsedRow.data.authority,
+    direction: parsedRow.data.direction,
     status: parsedRow.data.status,
     path,
     holds,
@@ -864,6 +908,13 @@ export const routeRequestSchema = z
   .object({
     locoAddress: z.number().int().min(1).max(9999),
     authority: z.enum(['manual', 'auto']),
+    /**
+     * #7 A7: which way round the loco sits for this journey. Optional, because
+     * a route is a valid interlocking whether or not anything drives it — an
+     * `auto` route granted without one is simply never departed. `'stop'` is
+     * not admissible: this states orientation, not a commanded state.
+     */
+    direction: z.enum(['fwd', 'rev']).optional(),
     startBlockId: z.string().min(1),
     edgeIds: z.array(z.string().min(1)).optional(),
     destinationBlockId: z.string().min(1).optional(),

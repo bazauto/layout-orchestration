@@ -104,8 +104,8 @@ Implemented:
 - GitHub Actions CI
 
 Planned next:
-- Collision avoidance and speed control (#7) — deciding *when* to brake. Its blocker,
-  sub-block position (#77), has landed; what is left there is fitting and measuring beams
+- Collision avoidance and speed control (#7) — **in progress**. PR A landed the decision
+  model (`docs/automation.md`) and is wired to nothing; PR B is the sweep that drives it
 - Automation engine / schedules
 
 ## Workspace Layout
@@ -413,7 +413,9 @@ unroutable; the compiler disambiguates them by suffix and both carry edges.
 (#4): a route is found, its track reserved and **its points thrown**. Braking landed too
 (#6) — the system can be *asked* to stop a train at a route boundary and will run the ramp
 — but nothing decides when to ask, and nothing accelerates or drives a train along the road
-it has been given. That is #7.
+it has been given. That is #7, and it is **in progress**: PR A has landed the decision
+model (`docs/automation.md`), deliberately wired to nothing, so every sentence above is
+still true of the running system. PR B is what makes them false.
 
 **A braked stop to the very next block needs a beam in the block behind it.** Occupancy is
 block-granular, so on its own the model will only promise the *intermediate* track between
@@ -507,10 +509,14 @@ preamble in `docs/sensor-simulation.md`.
 
 ## Next Milestones
 
-1. Collision avoidance and speed control (#7) — deciding *when* to brake. Its blocker,
-   sub-block position (#77), is done (`docs/sensor-position.md`), as is per-loco braking
-   (#6); what #77 still needs is a beam fitted and measured on each block an automated
-   approach must slow into
+1. Collision avoidance and speed control (#7) — deciding *when* to brake, and driving an
+   `auto`-authority route from departure to a berthed stop. Both blockers are closed
+   (#77 `docs/sensor-position.md`, #6 `docs/braking.md`), and **PR A has landed**: the
+   model, inert, in `docs/automation.md`. PR B wires the sweep; PR C is the operator
+   surface. What the layout itself still needs is hardware — a beam on each block an
+   automated approach must slow into, and a **berthing beam** where a train should stand
+   in each destination (the platform, the goods shed). Without one, a run stops short of
+   its destination block instead of berthing inside it
 2. ESP firmware for point position feedback — #25 is complete in this repo, but nothing
    answers a `point/*/query` yet and no point has a feedback switch wired. Batch it with
    the WiThrottle→MQTT migration (#9); each is a flash-and-test cycle on the layout

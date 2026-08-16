@@ -6,6 +6,18 @@
 > beam in it; PR C landed the authoring column in Configure → Sensors. Westgate
 > Hollow has no positioned sensors yet, so its behaviour is unchanged until an
 > operator measures one.
+>
+> **#7 gave the same measured pair a second consumer at the other end of a
+> route.** `berthingBeamIn` (this module) resolves the beam a train should be
+> brought to a stand *at* — the platform, the goods shed — from exactly the
+> `positionTowardBlockId`/`positionOffsetMm` an operator already measured for D9,
+> accepting either anchor direction (`docs/automation.md` A3). It reuses D5's
+> ambiguity rule and `isContributingSensor`'s trust rule unchanged, and departs
+> from D6/D7 in two ways that are the point rather than an inconsistency: it
+> needs **no rising edge**, because a berth is where a beam *is* and not an
+> observation of a train, and it **does not decay**, because a screwed-down beam
+> is as true a minute later as when the tape came off it. Nothing about D8
+> changes — a berth beam breaking still clears nothing.
 
 Where a beam is, and — much more carefully — what the system is allowed to
 conclude from one having been broken.
