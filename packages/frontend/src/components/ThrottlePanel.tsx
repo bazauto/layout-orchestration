@@ -6,15 +6,23 @@ interface Props {
   locoRecords: LocoRecord[];
   disabled: boolean;
   send: (msg: ClientMessage) => void;
+  /**
+   * B8's standard stop (#6): the braking ramp, run against a loco at whatever
+   * speed it is commanded at. Resolves with the refusal text when the backend
+   * declines — "already stopped", "system is safe-stop" — which is shown
+   * inline rather than swallowed.
+   */
+  onBrake: (locoAddress: number) => Promise<{ ok: boolean; message?: string }>;
 }
 
 const CUSTOM = '__custom__';
 
-export function ThrottlePanel({ locos, locoRecords, disabled, send }: Props) {
+export function ThrottlePanel({ locos, locoRecords, disabled, send, onBrake }: Props) {
   const [selected, setSelected] = useState<string>(CUSTOM);
   const [customAddress, setCustomAddress] = useState(3);
   const [speed, setSpeed] = useState(0);
   const [direction, setDirection] = useState<Direction>('fwd');
+  const [brakeErrors, setBrakeErrors] = useState<Record<number, string>>({});
 
   const activeLocoRecord = locoRecords.find((l) => l.id === selected);
   const address = activeLocoRecord ? activeLocoRecord.address : customAddress;
@@ -33,6 +41,20 @@ export function ThrottlePanel({ locos, locoRecords, disabled, send }: Props) {
 
   const stop = (addr: number) => {
     send({ type: 'THROTTLE_COMMAND', payload: { locoAddress: addr, speed: 0, direction: 'stop' } });
+  };
+
+  /**
+   * The braked stop, beside the abrupt one (#6, docs/braking.md B8/B3).
+   * `Stop` commands speed 0 in a single step; `Brake` runs the standard ramp
+   * — eight DCC steps every 250 ms — which is both the gentler stop and the
+   * fixed, reproducible stimulus the `brakingFactor` calibration procedure
+   * measures against. They are deliberately separate controls: replacing
+   * `Stop` with a ramp would take away the operator's one immediate command
+   * that is not the layout-wide emergency stop.
+   */
+  const brake = async (addr: number) => {
+    const result = await onBrake(addr);
+    setBrakeErrors((e) => ({ ...e, [addr]: result.ok ? '' : (result.message ?? 'Brake refused') }));
   };
 
   const toggleLight = (addr: number, currentState: boolean) => {
@@ -142,9 +164,22 @@ export function ThrottlePanel({ locos, locoRecords, disabled, send }: Props) {
                     </button>
                   </td>
                   <td style={styles.td}>
-                    <button onClick={() => stop(loco.address)} disabled={disabled} style={styles.stopBtn}>
-                      Stop
-                    </button>
+                    <div style={styles.actions}>
+                      <button onClick={() => stop(loco.address)} disabled={disabled} style={styles.stopBtn}>
+                        Stop
+                      </button>
+                      <button
+                        onClick={() => brake(loco.address)}
+                        disabled={disabled}
+                        style={styles.brakeBtn}
+                        title="Run the standard braking ramp (docs/braking.md B3) rather than stopping in one step"
+                      >
+                        Brake
+                      </button>
+                    </div>
+                    {brakeErrors[loco.address] && (
+                      <p style={styles.brakeError}>{brakeErrors[loco.address]}</p>
+                    )}
                   </td>
                 </tr>
               );
@@ -254,6 +289,25 @@ const styles = {
     cursor: 'pointer',
     fontSize: 11,
     fontWeight: 700,
+  } as React.CSSProperties,
+  actions: {
+    display: 'flex',
+    gap: 6,
+  } as React.CSSProperties,
+  brakeBtn: {
+    background: '#fab387',
+    color: '#1e1e2e',
+    border: 'none',
+    borderRadius: 3,
+    padding: '2px 8px',
+    cursor: 'pointer',
+    fontSize: 11,
+    fontWeight: 700,
+  } as React.CSSProperties,
+  brakeError: {
+    margin: '4px 0 0',
+    fontSize: 11,
+    color: '#f38ba8',
   } as React.CSSProperties,
   empty: {
     color: '#6c7086',

@@ -11,6 +11,7 @@ import { apiFetch } from '../api';
 import {
   BlockEdgeRecord,
   BlockRecord,
+  BrakingFaultView,
   LocoRecord,
   PointFaultView,
   PointFeedbackMode,
@@ -211,6 +212,30 @@ export interface AcknowledgePointFaultResponse {
   systemStatus: SystemStatus;
   safeStopReason: string | null;
   faults: PointFaultView[];
+}
+
+/**
+ * Response of `POST .../locos/:address/acknowledge-fault` (#6) — mirrors the
+ * three above. Keyed by DCC address, not roster row id: a braking fault is
+ * about a train on the track (docs/braking.md B10).
+ */
+export interface AcknowledgeBrakingFaultResponse {
+  locoAddress: number;
+  cleared: true;
+  systemStatus: SystemStatus;
+  safeStopReason: string | null;
+  faults: BrakingFaultView[];
+}
+
+/** Response of `POST .../locos/:address/brake` (#6) — B8's standard stop, returning the schedule now running. */
+export interface BrakeLocoResponse {
+  schedule: {
+    locoAddress: number;
+    steps: Array<{ atOffsetMs: number; speedStep: number; direction: 'fwd' | 'rev' | 'stop' }>;
+    estimatedStoppingDistanceMm: number;
+    requiredDistanceMm: number;
+    totalDurationMs: number;
+  };
 }
 
 export function useLayoutConfig(layoutId: string | null) {
@@ -451,6 +476,32 @@ export function useLayoutConfig(layoutId: string | null) {
       { method: 'POST' },
     );
 
+  // ── Braking (#6, see docs/braking.md) ───────────────────────────────────
+  //
+  // Same posture as the fault acknowledges above: no `refresh()`, because
+  // neither a braking fault nor a running ramp is config — the authoritative
+  // updates arrive over the WebSocket as `BRAKING_FAULTS` and a stream of
+  // `LOCO_STATE` frames, one per ramp step.
+
+  const acknowledgeBrakingFault = async (
+    locoAddress: number,
+  ): Promise<MutationResult<AcknowledgeBrakingFaultResponse>> =>
+    mutate<AcknowledgeBrakingFaultResponse>(
+      `/api/layouts/${layoutId}/locos/${locoAddress}/acknowledge-fault`,
+      { method: 'POST' },
+    );
+
+  /**
+   * B8's standard stop: the calibration ramp, from whatever speed the loco is
+   * commanded at. A 409 body's `error` surfaces through `mutate` as `message`
+   * — which is exactly what an operator needs when the refusal is
+   * "already stopped" or "system is safe-stop".
+   */
+  const brakeLoco = async (locoAddress: number): Promise<MutationResult<BrakeLocoResponse>> =>
+    mutate<BrakeLocoResponse>(`/api/layouts/${layoutId}/locos/${locoAddress}/brake`, {
+      method: 'POST',
+    });
+
   const createLoco = async (
     name: string,
     address: number,
@@ -514,6 +565,8 @@ export function useLayoutConfig(layoutId: string | null) {
     cancelRoute,
     resumeRoute,
     acknowledgeRouteFault,
+    acknowledgeBrakingFault,
+    brakeLoco,
     createLoco,
     updateLoco,
     deleteLoco,

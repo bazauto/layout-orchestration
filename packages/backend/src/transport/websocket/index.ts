@@ -112,6 +112,8 @@ export async function registerWebSocket(
         pointFaults: layoutService.getPointFaults(),
         /** #4: latched route faults, same posture as `sensorFaults` above — the derived view, never the raw health object. */
         routeFaults: layoutService.getRouteFaults(),
+        /** #6: latched braking faults, same posture again — one per loco (B10). */
+        brakingFaults: layoutService.getBrakingFaults(),
       },
     };
     socket.send(JSON.stringify(snapshot));

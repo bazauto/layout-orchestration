@@ -22,12 +22,20 @@ import { EventEmitter } from 'events';
 import {
   BlockId,
   BlockState,
+  BrakingFault,
+  BrakingFaultView,
+  BrakingRefusal,
+  BrakingSchedule,
+  BrakingStep,
+  BrakingStopExpectation,
   Direction,
   FunctionCommand,
   LayoutEvent,
   LayoutId,
+  LocoAddress,
   LocoState,
   NameBook,
+  Occupancy,
   PointCommand,
   PointFault,
   PointFaultView,
@@ -53,6 +61,7 @@ import {
 import { LayoutStateManager } from '../domain/layoutState';
 import {
   canForcePointOverride,
+  canIssueAutoCommand,
   canIssueManualCommand,
   evaluateSystemSafeStop,
   isBlockEffectivelyOccupied,
@@ -60,6 +69,13 @@ import {
   isValidSpeed,
   SystemHealth,
 } from '../domain/safety';
+import {
+  BrakingPlan,
+  buildStopExpectation,
+  describeBrakingRefusal,
+  isBrakingOverrun,
+  toBrakingFaultView,
+} from '../domain/braking';
 import { deriveBlockOccupancy, isSensorFaultArmed, toSensorFaultView } from '../domain/occupancy';
 import { isEmptySensorPayload } from '../domain/sensorPayload';
 import {
@@ -70,7 +86,7 @@ import {
 import { pointReadingSchema } from '../domain/pointPayload';
 import { TrackGraph } from '../domain/graph';
 import { toRouteFaultView } from '../domain/routeLocking';
-import { blockLabel, layoutLabel, pluralise, pointLabel, sensorLabel } from '../domain/naming';
+import { blockLabel, layoutLabel, locoLabel, pluralise, pointLabel, sensorLabel } from '../domain/naming';
 import { IDccController } from '../ports/IDccController';
 import { IMqttAdapter } from '../ports/IMqttAdapter';
 import { ILayoutRepository, PointRecord, SensorRecord } from '../ports/ILayoutRepository';
@@ -84,6 +100,7 @@ import { SensorCreateInput, sensorReadingSchema, SensorUpdateInput } from './val
 import { INERT_NAME_BOOK } from './nameBook';
 import { loadTopology, TopologyLoadResult } from './topologyLoader';
 import { PointConfirmationService } from './PointConfirmationService';
+import { BrakingService } from './BrakingService';
 import { SystemClock } from '../adapters/clock/SystemClock';
 import {
   GrantOutcome,
@@ -91,6 +108,7 @@ import {
   ReservationOutcome,
   ReservationService,
   ResumeResult,
+  RouteNotFoundError,
 } from './ReservationService';
 
 /**
@@ -232,6 +250,35 @@ export class RouteNotFaultedError extends Error {
   }
 }
 
+/** Thrown by `acknowledgeBrakingFault` when the named loco has no fault latched (#6, B10). */
+export class LocoNotFaultedError extends Error {
+  constructor(readonly locoAddress: LocoAddress) {
+    super(`Loco ${locoAddress} has no latched braking fault`);
+    this.name = 'LocoNotFaultedError';
+  }
+}
+
+/**
+ * One braking ramp in flight (#6 PR B, B3). `timer` holds the handle for the
+ * *next* step only: the ramp chains one `IClock.setTimeout` into the next as
+ * each step is issued, rather than arming every step up front, so aborting is
+ * a single `cancel()` with no window in which a later timer survives.
+ */
+interface BrakingRun {
+  locoAddress: LocoAddress;
+  /** The route this run was planned against, or `null` for B8's unconstrained standard stop. */
+  routeId: RouteId | null;
+  schedule: BrakingSchedule;
+  /** Index into `schedule.steps` of the next step to issue. */
+  nextStepIndex: number;
+  timer: ClockTimer | null;
+}
+
+/** What `startStandardStop`/`startRouteStop` answer: the plan that is now running, or why there is none. */
+export type BrakingRunOutcome =
+  | { started: true; schedule: BrakingSchedule }
+  | { started: false; reason: BrakingRefusal };
+
 export class LayoutService extends EventEmitter {
   private layoutId: LayoutId | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -243,6 +290,7 @@ export class LayoutService extends EventEmitter {
     sensorFaults: {},
     pointFaults: {},
     routeFaults: {},
+    brakingFaults: {},
     recoveredRouteCount: 0,
   };
   private graph: TrackGraph | null = null;
@@ -253,6 +301,23 @@ export class LayoutService extends EventEmitter {
   private readonly options: LayoutServiceOptions;
   /** #25 D5: the confirmation-sweep handle, started next to the heartbeat and stopped in `stop()`. `null` when not running. */
   private confirmationSweepTimer: ClockTimer | null = null;
+  /**
+   * #6 PR B: the braking ramps currently in flight, one per loco — a second
+   * run for a loco replaces the first (see `beginBrakingRun`). Each holds the
+   * single live `IClock` timer for its *next* step; the ramp is a chain, not
+   * a fan of timers, so cancelling one handle stops the whole remaining run.
+   */
+  private readonly brakingRuns = new Map<LocoAddress, BrakingRun>();
+  /**
+   * B5's armed overrun expectations, one per loco. Deliberately **outlives
+   * its run**: the ramp finishing is not evidence the train stopped where it
+   * was told to, and rolling into the target block a second after the last
+   * speed command is exactly the overrun this exists to catch. Cleared only
+   * by the three things that make it meaningless — a manual throttle command
+   * for that loco (B6, the operator's command stands), its route ceasing to
+   * be active, or the expectation firing.
+   */
+  private readonly stopExpectations = new Map<LocoAddress, BrakingStopExpectation>();
 
   constructor(
     private readonly dcc: IDccController,
@@ -295,6 +360,15 @@ export class LayoutService extends EventEmitter {
      * dependency one-way.
      */
     private readonly onPointCommanded?: (pointId: PointId, position: 'normal' | 'reverse') => void,
+    /**
+     * #6: owns braking *planning* (docs/braking.md). Defaults to one scoped
+     * to this instance's own repository and state manager, mirroring
+     * `pointConfirmations` — a call site that wants a different
+     * `StoppingDistanceModel` (B2's seam, for a measured per-loco curve)
+     * constructs its own and passes it here. This service executes what that
+     * one plans and never re-implements any part of it.
+     */
+    private readonly braking: BrakingService = new BrakingService(repo, stateManager, log),
   ) {
     super();
     this.options = { ...DEFAULT_LAYOUT_SERVICE_OPTIONS, ...options };
@@ -377,6 +451,9 @@ export class LayoutService extends EventEmitter {
   async stop(): Promise<void> {
     this.stopHeartbeat();
     this.stopConfirmationSweep();
+    // Timers outlive a `stop()` that does not cancel them, and a ramp step
+    // firing against a disconnected adapter is noise at best.
+    this.abortAllBrakingRuns('service stopped');
 
     if (this.layoutId) {
       this.stateManager.setOffline();
@@ -402,6 +479,13 @@ export class LayoutService extends EventEmitter {
     if (!canIssueManualCommand(state.systemStatus)) {
       throw new Error(`Cannot issue command: system is ${state.systemStatus}`);
     }
+
+    // B6: manual wins (D6, docs/route-locking.md), so an in-flight braking
+    // ramp for this loco is aborted and its overrun expectation cleared —
+    // the operator's command stands, and the blocks the run promised the
+    // train would not reach are now theirs to enter. Done BEFORE the DCC
+    // command below, so no ramp step can land on top of it.
+    this.abortBrakingRun(cmd.locoAddress, 'manual throttle command', { clearExpectation: true });
 
     // D6: a manual throttle command for a loco that is the subject of an
     // auto-authority route cancels that route — the operator has taken the
@@ -528,6 +612,10 @@ export class LayoutService extends EventEmitter {
 
   async handleEmergencyStop(): Promise<void> {
     this.log.warn('[LayoutService] EMERGENCY STOP');
+    // B6: before the broadcast stop, never after — a ramp's next step is a
+    // scheduled `setSpeed`, and one landing after an emergency stop would
+    // restart a train the operator has just halted.
+    this.abortAllBrakingRuns('emergency stop');
     await this.dcc.emergencyStop();
 
     const stopped = this.stateManager.stopAllLocos();
@@ -1189,6 +1277,15 @@ export class LayoutService extends EventEmitter {
     if (isBlockEffectivelyOccupied(updated.occupancy)) {
       this.log.info('[LayoutService] Block occupied', { blockId, blockName: this.names.get().blocks.get(blockId) });
     }
+
+    // B5, checked BEFORE `onOccupancyChange` below: a train reaching its
+    // route's destination block is both a normal arrival and — under a
+    // braked run whose target was that block's entry boundary — an overrun,
+    // and the reservation engine cannot tell the two apart (D5,
+    // docs/route-locking.md). Completing the route clears the expectation
+    // through `publishReservationOutcome`, so asking first is what makes the
+    // fault reachable at all.
+    await this.checkBrakingOverrun(blockId, derived);
 
     if (this.layoutId) {
       const outcome = await this.reservations.onOccupancyChange(
@@ -2009,6 +2106,447 @@ export class LayoutService extends EventEmitter {
     } satisfies LayoutEvent);
   }
 
+  // ─── Braking runs (#6 PR B, see docs/braking.md) ──────────────────────────────
+
+  /**
+   * B8's unconstrained standard stop: the full ramp from the loco's current
+   * commanded speed, with no target and therefore **no overrun expectation**
+   * — there is no route to have one against. This is the fixed, reproducible
+   * stimulus B8's calibration procedure measures against, and the surface
+   * `POST .../locos/:address/brake` exposes.
+   */
+  async startStandardStop(locoAddress: LocoAddress): Promise<BrakingRunOutcome> {
+    if (!this.layoutId) throw new Error('[LayoutService] startStandardStop called before start()');
+
+    const online = this.refuseUnlessOnline();
+    if (online) return online;
+
+    const plan = await this.braking.planStop(this.layoutId, locoAddress);
+    return this.beginBrakingRun(plan, locoAddress, null, null);
+  }
+
+  /**
+   * Plans and runs a stop at the entry boundary of `path[targetIndex]` on a
+   * granted route (B4), arming B5's overrun expectation once the ramp's first
+   * command has actually gone out.
+   *
+   * This is the seam the automation engine (#7) drives; nothing in this
+   * service decides *when* to call it. A braking run has to be asked for —
+   * that is the whole boundary between #6 and #7.
+   *
+   * **Refused unless the system is online AND in an auto-capable mode** (B6).
+   * `canIssueAutoCommand` is the same predicate every other automated
+   * command is gated on: braking a train along a reserved road is an
+   * automation action, and a `manual`-mode layout is one where the operator
+   * is driving. `BrakingService` then applies the route-level refusals it
+   * owns (route not active, manual authority, unmeasured track, a point that
+   * has not confirmed) — this method deliberately re-checks none of them.
+   */
+  async startRouteStop(routeId: RouteId, targetIndex?: number): Promise<BrakingRunOutcome> {
+    if (!this.layoutId) throw new Error('[LayoutService] startRouteStop called before start()');
+
+    const state = this.stateManager.getState();
+    const online = this.refuseUnlessOnline();
+    if (online) return online;
+    if (!canIssueAutoCommand(state.systemStatus, state.systemMode)) {
+      return this.refuseBrakingRun({
+        kind: 'auto-not-permitted',
+        status: state.systemStatus,
+        mode: state.systemMode,
+      });
+    }
+
+    const reservation = this.reservations.getRoute(this.layoutId, routeId);
+    if (!reservation) throw new RouteNotFoundError(routeId);
+
+    const resolvedTargetIndex = targetIndex ?? reservation.path.length - 1;
+    const plan = await this.braking.planStopAtRouteBoundary(
+      this.layoutId,
+      reservation,
+      this.graph,
+      resolvedTargetIndex,
+    );
+
+    return this.beginBrakingRun(
+      plan,
+      reservation.locoAddress,
+      routeId,
+      buildStopExpectation(reservation, resolvedTargetIndex),
+    );
+  }
+
+  /** The current latched braking faults, oldest first — the first cause leads, matching `getRouteFaults`. */
+  getBrakingFaults(): BrakingFaultView[] {
+    return Object.values(this.health.brakingFaults)
+      .map(toBrakingFaultView)
+      .sort((a, b) => a.faultedAt.localeCompare(b.faultedAt));
+  }
+
+  /**
+   * Clears one latched braking fault (B10), releasing the Safe-Stop it holds.
+   *
+   * No arming threshold, for P8's reason restated in B10: a sensor can prove
+   * itself by publishing valid readings, and a loco cannot prove anything —
+   * it has already been Safe-Stopped, so nothing it does next is evidence.
+   * The operator's acknowledgement *is* the recovery, exactly as for a route
+   * fault.
+   *
+   * Any lingering overrun expectation for this loco is dropped here too. An
+   * `overrun` fault is latched by an expectation firing, and the expectation
+   * is disarmed at that moment (see `checkBrakingOverrun`) — but a
+   * `speed-command-rejected` fault can be acknowledged while an expectation
+   * from the aborted run is still armed, and leaving it would re-Safe-Stop
+   * the layout on the next occupancy report from track the operator has
+   * already dealt with.
+   */
+  async acknowledgeBrakingFault(
+    layoutId: LayoutId,
+    locoAddress: LocoAddress,
+  ): Promise<{
+    locoAddress: LocoAddress;
+    cleared: true;
+    systemStatus: SystemStatus;
+    safeStopReason: string | null;
+    faults: BrakingFaultView[];
+  }> {
+    if (this.layoutId !== layoutId) throw new LocoNotFaultedError(locoAddress);
+    if (!this.health.brakingFaults[locoAddress]) throw new LocoNotFaultedError(locoAddress);
+
+    const remaining = { ...this.health.brakingFaults };
+    delete remaining[locoAddress];
+    this.health = { ...this.health, brakingFaults: remaining };
+    this.stopExpectations.delete(locoAddress);
+
+    await this.evaluateAndApplySafeStop();
+    this.emitBrakingFaults();
+
+    const state = this.stateManager.getState();
+    this.log.info('[LayoutService] Braking fault acknowledged', {
+      layoutId,
+      locoAddress,
+      locoName: this.names.get().locos.get(locoAddress),
+    });
+
+    return {
+      locoAddress,
+      cleared: true,
+      systemStatus: state.systemStatus,
+      safeStopReason: state.safeStopReason,
+      faults: this.getBrakingFaults(),
+    };
+  }
+
+  /**
+   * B6's status gate, shared by both entry points: a ramp's *first* command
+   * is a non-zero speed step, so starting one while Safe-Stopped would be a
+   * ghost movement. Deliberately stricter than `canIssueManualCommand`,
+   * which permits a command in `safe-stop` precisely so an operator can
+   * recover — this is not that, and `handleEmergencyStop` remains the way to
+   * stop a train when the system is not online.
+   */
+  private refuseUnlessOnline(): BrakingRunOutcome | null {
+    const state = this.stateManager.getState();
+    if (state.systemStatus === 'online') return null;
+    return this.refuseBrakingRun({ kind: 'system-not-online', status: state.systemStatus });
+  }
+
+  private refuseBrakingRun(reason: BrakingRefusal): BrakingRunOutcome {
+    this.log.warn('[LayoutService] Braking run refused', {
+      layoutId: this.layoutId,
+      reason: describeBrakingRefusal(reason, this.names.get()),
+    });
+    return { started: false, reason };
+  }
+
+  /**
+   * Turns a granted `BrakingPlan` into a running ramp: issues step 0 inline
+   * and chains the rest onto the injected `IClock`.
+   *
+   * **Step 0 is awaited, not scheduled.** B6 draws a distinction the code has
+   * to keep: a rejection on the first command means nothing was ever
+   * commanded and the caller is told `started: false` — while still latching
+   * the fault, because the train is moving at its pre-braking speed and is
+   * now uncommandable, which is the hazard. A rejection mid-ramp cannot be
+   * reported to a caller who has long since returned, so it goes to the
+   * fault latch alone.
+   *
+   * **The expectation is armed only after step 0 succeeds.** Arming it before
+   * would leave a refused run's forbidden blocks live, so an unrelated train
+   * entering them later would fault a loco that never braked.
+   *
+   * A second run for a loco already braking replaces the first, cancelling
+   * its remaining steps: two ramps commanding one decoder is worse than
+   * either.
+   */
+  private async beginBrakingRun(
+    plan: BrakingPlan,
+    locoAddress: LocoAddress,
+    routeId: RouteId | null,
+    expectation: BrakingStopExpectation | null,
+  ): Promise<BrakingRunOutcome> {
+    if (!plan.ok) {
+      return this.refuseBrakingRun(plan.reason);
+    }
+
+    this.abortBrakingRun(locoAddress, 'superseded by a new braking run', { clearExpectation: true });
+
+    const run: BrakingRun = {
+      locoAddress,
+      routeId,
+      schedule: plan.schedule,
+      nextStepIndex: 0,
+      timer: null,
+    };
+    this.brakingRuns.set(locoAddress, run);
+
+    const firstStep = plan.schedule.steps[0];
+    run.nextStepIndex = 1;
+    try {
+      await this.issueBrakingStep(locoAddress, firstStep);
+    } catch (err) {
+      this.brakingRuns.delete(locoAddress);
+      const message = err instanceof Error ? err.message : String(err);
+      await this.raiseBrakingFault({
+        locoAddress,
+        kind: 'speed-command-rejected',
+        reason: `Braking run for loco ${locoLabel(locoAddress, this.names.get())} failed on its first command: ${message}`,
+        routeId,
+        blockId: null,
+      });
+      return { started: false, reason: { kind: 'command-rejected', message } };
+    }
+
+    if (expectation) {
+      this.stopExpectations.set(locoAddress, expectation);
+    }
+
+    this.log.info('[LayoutService] Braking run started', {
+      layoutId: this.layoutId,
+      locoAddress,
+      locoName: this.names.get().locos.get(locoAddress),
+      routeId,
+      steps: plan.schedule.steps.length,
+      estimatedStoppingDistanceMm: plan.schedule.estimatedStoppingDistanceMm,
+      requiredDistanceMm: plan.schedule.requiredDistanceMm,
+      totalDurationMs: plan.schedule.totalDurationMs,
+    });
+
+    this.scheduleNextBrakingStep(run);
+    return { started: true, schedule: plan.schedule };
+  }
+
+  /**
+   * Arms the timer for `run`'s next step, or retires the run when the ramp is
+   * done. The delay is the *difference* between consecutive `atOffsetMs`
+   * values, because each timer is armed as the previous step is issued —
+   * `BrakingStep.atOffsetMs` is measured from the first step (B3), not from
+   * the one before it.
+   *
+   * Retiring a finished run deliberately leaves its overrun expectation
+   * armed: reaching speed step 0 is a command, not a confirmation that the
+   * train stopped.
+   */
+  private scheduleNextBrakingStep(run: BrakingRun): void {
+    const step = run.schedule.steps[run.nextStepIndex];
+    if (!step) {
+      this.brakingRuns.delete(run.locoAddress);
+      this.log.info('[LayoutService] Braking run complete', {
+        layoutId: this.layoutId,
+        locoAddress: run.locoAddress,
+        locoName: this.names.get().locos.get(run.locoAddress),
+        routeId: run.routeId,
+      });
+      return;
+    }
+
+    const previousOffsetMs = run.schedule.steps[run.nextStepIndex - 1].atOffsetMs;
+    run.timer = this.clock.setTimeout(() => {
+      void this.runBrakingStep(run, step);
+    }, step.atOffsetMs - previousOffsetMs);
+  }
+
+  /**
+   * One scheduled step of a ramp. Re-reads `brakingRuns` before doing
+   * anything: a timer that has already fired cannot be cancelled, so an abort
+   * that lands between the fire and this callback is caught here rather than
+   * commanding a speed step for a run that no longer exists.
+   */
+  private async runBrakingStep(run: BrakingRun, step: BrakingStep): Promise<void> {
+    if (this.brakingRuns.get(run.locoAddress) !== run) return;
+
+    run.nextStepIndex += 1;
+    try {
+      await this.issueBrakingStep(run.locoAddress, step);
+    } catch (err) {
+      // B6: abort the run, latch a fault, Safe-Stop — deliberately NOT the
+      // cancel-and-release posture of `point-command-rejected`. A moving
+      // train the system cannot command is the last thing to release track
+      // underneath.
+      this.abortBrakingRun(run.locoAddress, 'speed command rejected mid-ramp', {
+        clearExpectation: false,
+      });
+      const message = err instanceof Error ? err.message : String(err);
+      await this.raiseBrakingFault({
+        locoAddress: run.locoAddress,
+        kind: 'speed-command-rejected',
+        reason: `Braking run for loco ${locoLabel(run.locoAddress, this.names.get())} aborted: speed command rejected mid-ramp (${message})`,
+        routeId: run.routeId,
+        blockId: null,
+      });
+      return;
+    }
+
+    this.scheduleNextBrakingStep(run);
+  }
+
+  /**
+   * Issues one ramp step and mirrors it into `LocoState` — the same
+   * publish/emit pair `stopLoco` and `handleThrottleCommand` do, so a browser
+   * watching a braking train sees the speed come down step by step.
+   *
+   * **`authority` is deliberately not written.** A braking run does not
+   * change who owns the loco: an auto-authority route's train stays `auto`,
+   * and a loco an operator is driving stays `manual` even while B8's
+   * calibration ramp is running. Writing `'auto'` here would silently take a
+   * train away from its driver.
+   *
+   * Rejections propagate — `beginBrakingRun`/`runBrakingStep` decide what a
+   * failed command means, and neither can decide it if this swallows the
+   * error the way `stopLoco` deliberately does.
+   */
+  private async issueBrakingStep(locoAddress: LocoAddress, step: BrakingStep): Promise<void> {
+    await this.dcc.setSpeed(locoAddress, step.speedStep, step.direction);
+    const locoState = this.stateManager.updateLoco(locoAddress, {
+      speed: step.speedStep,
+      direction: step.direction,
+    });
+    this.publishLocoState(locoState);
+    this.emit('event', { type: 'LOCO_STATE', payload: locoState } satisfies LayoutEvent);
+  }
+
+  /**
+   * Cancels a loco's in-flight ramp, if any. Returns whether there was one.
+   *
+   * `clearExpectation` is the B6 distinction between "stop commanding" and
+   * "forget what this run promised": a manual throttle command clears it (the
+   * operator's command stands, and the blocks ahead are theirs to enter now),
+   * while a mid-ramp command rejection does not — the train is still moving
+   * and reaching the target block is still the thing worth catching.
+   */
+  private abortBrakingRun(
+    locoAddress: LocoAddress,
+    reason: string,
+    options: { clearExpectation: boolean },
+  ): boolean {
+    if (options.clearExpectation) {
+      this.stopExpectations.delete(locoAddress);
+    }
+
+    const run = this.brakingRuns.get(locoAddress);
+    if (!run) return false;
+
+    run.timer?.cancel();
+    this.brakingRuns.delete(locoAddress);
+    this.log.warn('[LayoutService] Braking run aborted', {
+      layoutId: this.layoutId,
+      locoAddress,
+      locoName: this.names.get().locos.get(locoAddress),
+      routeId: run.routeId,
+      reason,
+    });
+    return true;
+  }
+
+  /**
+   * B6's emergency-stop row: every in-flight ramp is aborted **before**
+   * `dcc.emergencyStop()` goes out, so no pending timer can re-command a
+   * non-zero speed step after the broadcast stop. Called from
+   * `handleEmergencyStop` and from the Safe-Stop transition.
+   *
+   * Expectations are left armed: an emergency stop does not mean the train
+   * stopped where it was told to, and it may still coast into the block the
+   * run promised it would not reach.
+   */
+  private abortAllBrakingRuns(reason: string): void {
+    for (const locoAddress of [...this.brakingRuns.keys()]) {
+      this.abortBrakingRun(locoAddress, reason, { clearExpectation: false });
+    }
+  }
+
+  /**
+   * B5's armed check, applied to one block's freshly derived occupancy. Only
+   * `occupied` counts — `clear`/`unknown` are never evidence of an overrun on
+   * their own (`isBrakingOverrun`).
+   *
+   * The expectation is **disarmed as it fires**. Leaving it armed would
+   * re-latch on every subsequent recompute of the same block, and since a
+   * re-fault keeps the first cause, the operator could acknowledge the fault
+   * and have it reappear on the next sensor reading — an unclearable
+   * Safe-Stop.
+   *
+   * The run, if one is still in flight, is aborted before the fault is
+   * raised, for the same reason as the emergency-stop path: `raiseBrakingFault`
+   * ends in `dcc.emergencyStop()` via Safe-Stop, and no timer may re-command a
+   * speed step after that.
+   */
+  private async checkBrakingOverrun(blockId: BlockId, occupancy: Occupancy): Promise<void> {
+    for (const [locoAddress, expectation] of [...this.stopExpectations]) {
+      if (!isBrakingOverrun(expectation, blockId, occupancy)) continue;
+
+      this.stopExpectations.delete(locoAddress);
+      this.abortBrakingRun(locoAddress, 'overrun detected', { clearExpectation: true });
+      await this.raiseBrakingFault({
+        locoAddress,
+        kind: 'overrun',
+        reason: `Loco ${locoLabel(locoAddress, this.names.get())} overran its braking target: block ${blockLabel(blockId, this.names.get())} is occupied at or beyond the stopping point of route ${expectation.routeId}`,
+        routeId: expectation.routeId,
+        blockId,
+      });
+    }
+  }
+
+  /**
+   * Latches a braking fault and re-evaluates Safe-Stop, mirroring
+   * `raiseRouteFault` exactly — including keeping the FIRST cause on a
+   * re-fault (DD5). Every braking Safe-Stop goes through here; no braking
+   * path calls `stateManager.enterSafeStop` directly (P8's rule, restated by
+   * B10).
+   */
+  private async raiseBrakingFault(fault: Omit<BrakingFault, 'faultedAt'>): Promise<void> {
+    if (this.health.brakingFaults[fault.locoAddress]) {
+      this.emitBrakingFaults();
+      return;
+    }
+
+    this.health = {
+      ...this.health,
+      brakingFaults: {
+        ...this.health.brakingFaults,
+        [fault.locoAddress]: { ...fault, faultedAt: new Date() },
+      },
+    };
+    this.log.error('[LayoutService] Braking fault latched', {
+      layoutId: this.layoutId,
+      locoAddress: fault.locoAddress,
+      locoName: this.names.get().locos.get(fault.locoAddress),
+      routeId: fault.routeId,
+      blockId: fault.blockId,
+      blockName: fault.blockId ? this.names.get().blocks.get(fault.blockId) : undefined,
+      kind: fault.kind,
+      reason: fault.reason,
+    });
+
+    await this.evaluateAndApplySafeStop();
+    this.emitBrakingFaults();
+  }
+
+  private emitBrakingFaults(): void {
+    this.emit('event', {
+      type: 'BRAKING_FAULTS',
+      payload: { faults: this.getBrakingFaults() },
+    } satisfies LayoutEvent);
+  }
+
   private async stopLoco(locoAddress: number): Promise<void> {
     await this.dcc
       .setSpeed(locoAddress, 0, 'stop')
@@ -2028,6 +2566,23 @@ export class LayoutService extends EventEmitter {
 
   private publishReservationOutcome(outcome: ReservationOutcome): void {
     if (outcome.reservation) {
+      // B6's "route cancelled mid-ramp" row, widened to any route that has
+      // stopped being `active`. This is the one choke point every status
+      // transition already passes through, so a route cancelled by an
+      // operator, by a force override, by a violation, or suspended into
+      // Safe-Stop all reach it without a second bookkeeping path.
+      //
+      // The expectation goes with the run: a route that is no longer active
+      // has released, or is about to release, the track its expectation was
+      // about, and a *different* train entering those blocks must not fault
+      // the loco that used to be routed through them.
+      if (outcome.reservation.status !== 'active') {
+        this.abortBrakingRun(
+          outcome.reservation.locoAddress,
+          `route ${outcome.reservation.id} is ${outcome.reservation.status}`,
+          { clearExpectation: true },
+        );
+      }
       this.emit('event', { type: 'ROUTE_STATE', payload: outcome.reservation } satisfies LayoutEvent);
     }
     for (const block of outcome.changedBlocks) {
@@ -2084,6 +2639,9 @@ export class LayoutService extends EventEmitter {
     if (shouldStop && state.systemStatus !== 'safe-stop') {
       this.log.warn('[LayoutService] Entering Safe-Stop', { reason });
       this.stateManager.enterSafeStop(reason!);
+      // B6, same rule as `handleEmergencyStop`: no pending ramp step may
+      // survive the emergency stop below.
+      this.abortAllBrakingRuns(`safe-stop: ${reason}`);
       // Best-effort stop — DCC may be down, so we don't await
       this.dcc.emergencyStop().catch(() => {});
       this.stateManager.stopAllLocos();

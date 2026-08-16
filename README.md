@@ -9,7 +9,9 @@ This repository contains a local-first control stack for a DCC-based layout:
 The project is currently in the layout-definition and operator tooling phase. Route
 reservation, locking, and pathfinding have landed (see Current Status); a granted route
 reserves its track and sets its points, but driving the train along it is still manual.
-Braking models, collision avoidance, and scheduling are planned next.
+A per-loco braking model exists and can be asked to stop a train at a route boundary;
+what nothing does yet is decide *when* to ask. Collision avoidance and scheduling are
+planned next.
 
 ## Current Status
 
@@ -81,6 +83,11 @@ Implemented:
   A point key beside the canvas resolves the abbreviated point names and shows what
   each point is set to and who holds it. Connection health is always on screen, and a
   stale or disconnected diagram is covered rather than badged — see `docs/liveness.md`
+- Per-loco braking (#6): a deceleration ramp planned from the loco's `brakingFactor` and
+  the measured track ahead, run against an injected clock, with a `Brake` button beside
+  each loco's `Stop` for the calibration procedure in `docs/braking.md` B8. An overrun —
+  the train reaching a block at or beyond where it was told to stop — latches a fault and
+  Safe-Stops, because a reservation alone cannot tell an overrun from an arrival
 - Frontend operate screen for throttle, points, and live state
 - Frontend configuration screen for blocks, sensors, points, locos, and edges
 - Track editor with tile palette, rotation, keyboard shortcuts, hover ghost preview, and persistence
@@ -88,7 +95,8 @@ Implemented:
 - GitHub Actions CI
 
 Planned next:
-- Per-loco braking model (#6) and collision avoidance (#7) — driving a granted route
+- Collision avoidance and speed control (#7) — deciding *when* to brake, which needs
+  sub-block position (#77) first
 - Automation engine / schedules
 
 ## Workspace Layout
@@ -393,9 +401,17 @@ unroutable; the compiler disambiguates them by suffix and both carry edges.
 ### Routing and movement
 
 **Driving a granted route is manual.** Pathfinding, reservation and locking all landed
-(#4): a route is found, its track reserved and **its points thrown**. What is not automated
-is the throttle — nothing drives the train along the road it has been given. That is #6
-(per-loco braking) and #7 (collision avoidance).
+(#4): a route is found, its track reserved and **its points thrown**. Braking landed too
+(#6) — the system can be *asked* to stop a train at a route boundary and will run the ramp
+— but nothing decides when to ask, and nothing accelerates or drives a train along the road
+it has been given. That is #7.
+
+**A braked stop to the very next block is refused, not slowed.** Occupancy is
+block-granular, so the only distance the model will promise is the *intermediate* track
+between the block the train is confirmed in and the one it must stop short of — and for
+adjacent blocks that is zero. The train may already be hard against the exit. On a
+nine-block layout this is the common case, which is why sub-block position (#77) is a
+prerequisite for #7 rather than a refinement of it. See `docs/braking.md` B4.
 
 **A point lock is a position guarantee only for points configured to require feedback**
 (#25). The channel now exists: a point controller reports its observed position on
@@ -480,7 +496,8 @@ preamble in `docs/sensor-simulation.md`.
 
 ## Next Milestones
 
-1. Per-loco braking model (#6) and collision avoidance (#7)
+1. Sub-block position (#77) — a sensor's offset from a named block end — then collision
+   avoidance and speed control (#7) on top of it. Per-loco braking (#6) is done
 2. ESP firmware for point position feedback — #25 is complete in this repo, but nothing
    answers a `point/*/query` yet and no point has a feedback switch wired. Batch it with
    the WiThrottle→MQTT migration (#9); each is a flash-and-test cycle on the layout

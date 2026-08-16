@@ -93,7 +93,7 @@ export async function buildServer(
 
   // REST API routes
   await layoutRoutes(fastify, repo);
-  await locoRoutes(fastify, repo, nameBook);
+  await locoRoutes(fastify, repo, nameBook, layoutService);
   await blockRoutes(fastify, repo, topologyService, nameBook);
   await pointRoutes(fastify, repo, topologyService, nameBook, layoutService);
   await sensorRoutes(fastify, repo, layoutService);

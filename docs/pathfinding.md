@@ -224,19 +224,22 @@ that the real mechanism will undo.
 `SystemHealth.routeFaults: Record<RouteId, RouteFault>` is keyed, for the same
 reason `sensorFaults` is (docs/sensor-fault-recovery.md D2): acknowledging the
 fault an operator can see must never silently clear one they were never told
-about. Three kinds:
+about. Four kinds:
 
 | kind | cause | what happens to the route |
 |---|---|---|
 | `unexpected-occupancy` | a reserved block read `occupied` that was not the route's next expected step (D7) | cancelled, locks released |
 | `occupancy-unknown` | a reserved block stopped being determinable (below) | **suspended, locks retained** |
 | `point-command-rejected` | the DCC adapter refused a command while setting the road (P7) | cancelled, locks released |
+| `point-not-confirmed` | a held `positionFeedback: 'required'` point went `timeout`/`mismatch`/`indeterminate` (#25, `docs/point-feedback.md` D8) | **suspended, locks retained** |
 
 Priority in `evaluateSystemSafeStop` is MQTT, DCC, topology, sensor faults,
-**route faults**, recovered routes. Route faults sit below sensor faults
-because a sensor fault is usually the cause and the route fault the symptom: a
-detector that stopped reporting is what made the block undeterminable, and
-naming the detector points the operator at the thing to fix.
+point faults (#25), braking faults (#6), **route faults**, recovered routes.
+Route faults sit at the bottom of the fault group because they are usually the
+symptom rather than the cause: a detector that stopped reporting is what made
+the block undeterminable, a point that never threw is why the road is not
+known to be set, and an overrun is often what a route violation is reporting.
+Naming the cause points the operator at the thing to fix.
 
 ### Acknowledging
 

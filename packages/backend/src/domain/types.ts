@@ -835,6 +835,21 @@ export type BrakingRefusal =
   | { kind: 'auto-not-permitted'; status: SystemStatus; mode: SystemMode }
   | { kind: 'manual-authority'; routeId: RouteId }
   | { kind: 'route-not-active'; routeId: RouteId; status: RouteStatus }
+  /**
+   * B7's forward reference, now live (#25 landed): a point this route holds
+   * is not *confirmed* at the position the plan assumes. Every distance the
+   * model computes is measured along track the train may not be on, so the
+   * plan is refused rather than made against a road that may not be set.
+   * Only reachable for a `positionFeedback: 'required'` point —
+   * `effectivePosition` falls back to the commanded position for a `'none'`
+   * one, which is exactly the trust model that held before #25.
+   */
+  | {
+      kind: 'point-not-confirmed';
+      pointId: PointId;
+      requiredPosition: 'normal' | 'reverse';
+      effectivePosition: PointPosition;
+    }
   | { kind: 'command-rejected'; message: string };
 
 /**
@@ -958,6 +973,7 @@ export interface StateSnapshot {
   sensorFaults: SensorFaultView[];
   pointFaults: PointFaultView[];
   routeFaults: RouteFaultView[];
+  brakingFaults: BrakingFaultView[];
 }
 
 /**
@@ -980,6 +996,7 @@ export type ServerMessage =
   | { type: 'POINT_FAULTS'; payload: { faults: PointFaultView[] } }
   | { type: 'ROUTE_STATE'; payload: RouteReservation }
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
+  | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } }
   /**
    * D5, docs/liveness.md: an application-level message, not a protocol-level
