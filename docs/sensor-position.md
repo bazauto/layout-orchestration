@@ -1,9 +1,11 @@
 # Sub-block sensor position (#77)
 
-> **Status: PR A shipped.** The model, its persistence, its validated write path
-> and its runtime state exist; **nothing consumes a fix yet**, so the live
-> layout's behaviour is byte-identical to before it landed. PR B is the braking
-> consumption (D9), and it is what makes B4's adjacent-target refusal solvable.
+> **Status: PR A and PR B shipped.** PR A landed the model, its persistence, its
+> validated write path and its runtime state; PR B landed D9's lead term, which
+> **closes `docs/braking.md` B4's adjacent-target refusal** for any block with a
+> measured beam in it. Westgate Hollow has no positioned sensors yet, so its
+> behaviour is unchanged until an operator measures one. PR C is the authoring
+> form; until then a position is set over the API.
 
 Where a beam is, and — much more carefully — what the system is allowed to
 conclude from one having been broken.
@@ -239,6 +241,24 @@ the B4 sum unchanged. The whole feature can only ever hand back distance the old
 model refused to promise; it can never take distance away, and it can never turn
 a run that would have been granted into one that is not.
 
+**It never rescues unmeasured track either.** `unmeasured-track` still refuses on
+the first intermediate block with no `length_mm`, whatever the fix says — a beam
+in the confirmed block is evidence about the confirmed block and nothing else.
+
+`BrakingService` is what supplies the term, from the confirmed block's own sensor
+observations and an injected `IClock`. **The clock is optional and an absent one
+means no lead term at all** — never a default `SystemClock`, never a refusal,
+mirroring #103's inert `IGraphCompletenessView`. A service nobody wired has been
+told nothing about sub-block position, so the failure direction of a missed
+wiring is a run refused that could have been granted.
+
+One consequence worth naming: `handleSensorReading` now stamps a reading with
+`clock.now()` rather than `new Date()`. A reading's timestamp became load-bearing
+the moment a rising edge started producing a fix aged against `IClock`, and two
+different clocks would make a fix taken under `ManualClock` read as decades stale
+or decades early. Only that call site moved — a fault's `faultedAt` is displayed,
+never differenced.
+
 ## D10 — Whose train broke the beam
 
 The fix assumes the train that broke the beam is the one the route belongs to.
@@ -313,3 +333,10 @@ types may carry one today* — not a shape baked into the schema. Adding
   reckoning applies: this narrows the uncertainty, it does not close it.
 - **Nothing authors a position in the UI yet.** PR C. Until then the columns are
   reachable through `PUT /api/layouts/:layoutId/sensors/:id` only.
+- **B4's adjacent-target refusal is closed only where a beam is fitted.** A
+  confirmed block with no positioned sensor, or one whose beam has not been
+  broken since the train entered, still promises zero and still refuses. That is
+  a limit of coverage, not of the model, and the fix is a beam and a tape
+  measure rather than a code change.
+- **Nothing decides *when* to brake.** #7's boundary is untouched: this makes a
+  braked run to the next block *possible*, it does not make one *happen*.

@@ -2,11 +2,17 @@
  * Per-loco braking model (#6). See `docs/braking.md` for the decision record
  * (B1–B10) this module implements.
  *
- * Pure — imports only from `./types` and `./graph`. No clock, no `Date`, no
- * I/O of any kind. That purity is deliberate (B7): this module is a strictly
- * open-loop, dead-reckoning model. A commanded speed step and the reserved
- * track's measured length are the only inputs it ever sees; it has no
- * "current time" and no "actual speed" to be tempted into reading.
+ * Pure — imports nothing outside `domain/`, and reads no clock and no I/O of
+ * any kind. That purity is deliberate (B7): this module is a strictly
+ * open-loop, dead-reckoning model. A commanded speed step, the reserved
+ * track's measured length and — since #77 — an operator's sub-block
+ * measurement are the only inputs it ever sees; it has no "actual speed" to be
+ * tempted into reading.
+ *
+ * #77's lead term takes a `now` as an *argument* (`docs/sensor-position.md`
+ * D7), which is not a hole in that rule: the caller reads the clock, this
+ * module only subtracts. A `Date` arriving as data is no more a clock read than
+ * a block length is a tape measure.
  *
  * Two entry points:
  *  - `planBrakingSchedule` computes a full stop, from a starting speed to
@@ -37,9 +43,11 @@ import {
   NameBook,
   Occupancy,
   RouteReservation,
+  SensorObservation,
 } from './types';
 import { TrackGraph } from './graph';
 import { blockLabel, edgeLabel, locoLabel, pointLabel } from './naming';
+import { leadDistanceMm } from './sensorPosition';
 
 // ─── Constants (B1, B3, B5) ────────────────────────────────────────────────────
 
@@ -84,7 +92,7 @@ export type StoppingDistanceModel = (
   query: StoppingDistanceQuery,
 ) => StoppingDistanceEstimate;
 
-/** A valid DCC speed step: an integer in [0, 126]. Duplicated from `domain/safety.ts#isValidSpeed` rather than imported — this module imports only `./types` and `./graph` (B7's purity rule). */
+/** A valid DCC speed step: an integer in [0, 126]. Duplicated from `domain/safety.ts#isValidSpeed` rather than imported — `domain/safety.ts` carries system-status and authority policy this model has no business reaching into, which is the half of B7's purity rule that survives the `./naming` and `./sensorPosition` imports above. */
 function isValidSpeedStep(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= 126;
 }
@@ -238,31 +246,43 @@ function buildSteps(fromSpeedStep: number, direction: Direction): BrakingStep[] 
  * the entry boundary of `targetIndex` (B4).
  *
  * The target block contributes nothing: B4's target is its *entry* boundary,
- * not its far end. Nor does the confirmed block, because the train may be
- * anywhere within it.
+ * not its far end. The confirmed block contributes nothing **either, unless
+ * `lead` supplies a sub-block position fix** (#77 D9) — without one the train
+ * may be anywhere within it, including hard against the exit.
  *
  * **Joints contribute zero** (D5, `docs/track-graph-compilation.md`). The
  * undetected trackwork between two detected sections is not modelled, which
  * underestimates the available distance and therefore brakes early — the safe
  * direction.
  *
- * **Accepted consequence: an adjacent target yields zero.** When
- * `targetIndex === confirmedIndex + 1` there are no intermediate blocks, the
- * distance is `0`, and `planBrakingSchedule` refuses `insufficient-distance`.
- * That is correct under block-level occupancy — the train may already be hard
- * against the exit of its confirmed block — and it is the fail-safe direction,
- * but it is a real behaviour change from the edge-length model (#105).
+ * **`lead` can only ever hand back distance this model previously refused to
+ * promise.** Every way of not having a usable fix — no observations, an
+ * unmeasured or untrusted sensor, a fix measured toward a different exit of a
+ * branching block, an ambiguous anchor, or one aged past its travel allowance —
+ * contributes `0` and falls straight through to the B4 sum. Omitting `lead`
+ * entirely reproduces the pre-#77 behaviour exactly, which is what makes it
+ * impossible for this feature to turn a run that would have been granted into
+ * one that is refused.
+ *
+ * **B4's adjacent-target case is what this is for.** When
+ * `targetIndex === confirmedIndex + 1` there are no intermediate blocks and the
+ * sum is `0`; without a fix `planBrakingSchedule` then refuses
+ * `insufficient-distance`, which is correct under block-level occupancy and is
+ * the whole reason #77 was promoted ahead of #7. With a fix the lead term is
+ * the only distance there is, and it is honestly bounded.
  *
  * Refuses `unmeasured-track` on the first block with no measured length,
  * naming it. Deliberately does **not** fall back to `DEFAULT_BLOCK_LENGTH_MM`
  * (the pathfinder's cost-only guess, P2 in docs/pathfinding.md) — guessing a
  * cost to steer a search is fine; guessing a stopping distance is a collision
- * if the guess is short.
+ * if the guess is short. The lead term is not an exception to that rule: it is
+ * a measurement an operator took, decayed by a bound, not a guess.
  */
 export function remainingRouteDistanceMm(
   reservation: RouteReservation,
   graph: TrackGraph,
   targetIndex: number,
+  lead?: { observations: readonly SensorObservation[]; now: Date },
 ): { ok: true; distanceMm: number } | { ok: false; reason: BrakingRefusal } {
   if (targetIndex <= reservation.confirmedIndex) {
     return {
@@ -281,7 +301,31 @@ export function remainingRouteDistanceMm(
     distanceMm += lengthMm;
   }
 
-  return { ok: true, distanceMm };
+  return { ok: true, distanceMm: distanceMm + leadTermMm(reservation, graph, lead) };
+}
+
+/**
+ * The confirmed block's contribution (#77 D9), or `0`.
+ *
+ * The fix must be measured toward `path[confirmedIndex + 1]` — the boundary the
+ * train is about to cross — and not toward some other exit of a branching
+ * block, whose offset says nothing about the distance that matters here. Both
+ * path steps are read defensively: a reservation whose `confirmedIndex` has run
+ * off the end of its own path is a bug elsewhere, and the right response to one
+ * is to promise nothing rather than to index into `undefined`.
+ */
+function leadTermMm(
+  reservation: RouteReservation,
+  graph: TrackGraph,
+  lead: { observations: readonly SensorObservation[]; now: Date } | undefined,
+): number {
+  if (!lead) return 0;
+
+  const confirmed = reservation.path[reservation.confirmedIndex];
+  const next = reservation.path[reservation.confirmedIndex + 1];
+  if (!confirmed || !next) return 0;
+
+  return leadDistanceMm(lead.observations, graph, confirmed.blockId, next.blockId, lead.now);
 }
 
 /**

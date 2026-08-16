@@ -388,8 +388,20 @@ export class LayoutService extends EventEmitter {
      * `StoppingDistanceModel` (B2's seam, for a measured per-loco curve)
      * constructs its own and passes it here. This service executes what that
      * one plans and never re-implements any part of it.
+     *
+     * The default hands on **this instance's own `clock`**, which is what
+     * enables #77's lead term (`docs/sensor-position.md` D7/D9). A call site
+     * passing its own `BrakingService` and omitting the clock gets the
+     * pre-#77 behaviour rather than a wrong one — an unwired service is told
+     * nothing about sub-block position and so promises nothing extra.
      */
-    private readonly braking: BrakingService = new BrakingService(repo, stateManager, log),
+    private readonly braking: BrakingService = new BrakingService(
+      repo,
+      stateManager,
+      log,
+      undefined,
+      clock,
+    ),
   ) {
     super();
     this.options = { ...DEFAULT_LAYOUT_SERVICE_OPTIONS, ...options };
@@ -1215,7 +1227,15 @@ export class LayoutService extends EventEmitter {
       return;
     }
 
-    this.stateManager.recordSensorReading(sensorId, result.data.state, new Date());
+    // `this.clock.now()`, not `new Date()` (#77 D7). A reading's timestamp
+    // became load-bearing the moment a rising edge started producing a
+    // position fix that `BrakingService` ages against `IClock`: two different
+    // clocks would make a fix taken under `ManualClock` read as decades old or
+    // decades in the future. Only this call site changed — a fault's
+    // `faultedAt` is displayed, never differenced, so moving every timestamp
+    // in this service onto the port is unrelated churn (docs/braking.md's
+    // note on the heartbeat interval).
+    this.stateManager.recordSensorReading(sensorId, result.data.state, this.clock.now());
     await this.recomputeBlock(obs.blockId);
   }
 
