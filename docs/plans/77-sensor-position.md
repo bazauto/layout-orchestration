@@ -30,15 +30,18 @@ distance the braking model computes is byte-identical to before.
 
 ## PR B — The braking consumption (`77-sensor-position-braking`)
 
+**Shipped.**
+
 `remainingRouteDistanceMm` gains its one optional lead term (D9); `BrakingService`
 resolves the applicable fixes from `LayoutStateManager` and the live graph and
-passes them down. A scenario test covering the case #77 was promoted for: a
-braked run to the *immediately next* block, refused without a fix and granted
-with one, plus the stale-fix and wrong-neighbour fall-throughs.
+passes them down. `tests/scenario/sensor-position.scenario.test.ts` covers the
+case #77 was promoted for — a braked run to the *immediately next* block, refused
+without a fix and granted with one — plus every fall-through: a never-broken
+beam, a clear beam, a decayed fix, a wrong-neighbour anchor, an out-of-service
+sensor, and unmeasured track further along that no fix rescues.
 
 `docs/braking.md` B4's "accepted consequence" paragraph and its matching limit
-are rewritten by this PR, not before it — the refusal is still real until the
-term exists.
+are rewritten by this PR, not before it.
 
 ## PR C — Authoring and display
 
@@ -63,3 +66,21 @@ position is config, not live state, and there is no train-at-a-spot to draw
   work started, by #105: length is on `blocks.length_mm`. Nothing here needed to
   reopen it, and D1's anchor means the length is not even required to *use* a
   position, only to sanity-check one at the write path.
+
+### PR B
+
+- **`handleSensorReading` moved onto `IClock`**, which the plan did not
+  anticipate. It stamped readings with `new Date()` while the new lead term ages
+  a fix against the injected clock; under `ManualClock` the two disagree by
+  decades. Only that one call site moved — a fault's `faultedAt` is displayed,
+  never differenced, so moving every timestamp in the service would be the
+  unrelated churn `docs/braking.md` already refuses for the heartbeat interval.
+- **`BrakingService`'s clock is optional and inert when absent**, rather than
+  defaulting to a `SystemClock`. Same shape as #103's `IGraphCompletenessView`:
+  an unwired service has been told nothing and promises nothing extra, so a
+  missed wiring refuses a run that could have been granted rather than the
+  reverse.
+- The scenario fixture's b1 is **1200mm, not 500** — the 700mm beam offset has to
+  be a measurement the write path would actually accept, or the test proves
+  something about a state the system does not permit. The write-path check caught
+  this on the first run.

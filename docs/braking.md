@@ -6,7 +6,9 @@
 > expectation, latches `SystemHealth.brakingFaults` (B10), and exposes B8's
 > standard stop over HTTP. B12 records how the executor works; B7's forward
 > reference to #25 is now implemented, since point position feedback landed
-> first. What remains unbuilt is #7 — nothing decides *when* to brake.
+> first. **B4 gained #77's lead term** after the fact (`docs/sensor-position.md`
+> D9), which is what closed its adjacent-target refusal. What remains unbuilt is
+> #7 — nothing decides *when* to brake.
 
 Companion to `docs/pathfinding.md` and `docs/route-locking.md`. Those documents
 decided how track is reserved and how the road is set; driving the train along
@@ -146,14 +148,34 @@ reading overshoots by the destination block's own length — the direction that
 causes an overrun.
 
 **Accepted consequence: an adjacent target yields zero distance and the run is
-refused.** When `targetIndex === confirmedIndex + 1` there are no intermediate
-blocks, the sum is `0`, and `planBrakingSchedule` refuses
-`insufficient-distance`. This is correct under block-level occupancy — there is
-genuinely no track between the two boundaries that the model can promise — and
-it is the fail-safe direction. It is nonetheless a real behaviour change from
-the edge-length model, and it is recorded as a limit rather than worked around.
-Stopping at the next block along needs the sub-block position #77 supplies
-(`docs/sensor-position.md`), not a fudged distance here.
+refused — *unless* a sub-block position fix says otherwise.** When
+`targetIndex === confirmedIndex + 1` there are no intermediate blocks and the
+sum is `0`, so `planBrakingSchedule` refuses `insufficient-distance`. That is
+correct under block-level occupancy alone — there is genuinely no track between
+the two boundaries that the model can promise — and it is the fail-safe
+direction. It was recorded as a limit rather than worked around, and #77 is what
+closed it, with real position rather than a fudged distance here.
+
+**#77's lead term** (`docs/sensor-position.md` D9) adds *one* optional quantity
+to the sum above: the distance from a position fix in the **confirmed** block to
+the boundary the train is about to cross. `remainingRouteDistanceMm` takes an
+optional `lead` and `BrakingService` supplies it from the confirmed block's own
+sensor observations and the injected `IClock`.
+
+It is deliberately incapable of making this model less safe:
+
+- **It only ever adds.** Every way of not having a usable fix — no measurement,
+  a sensor out of service or faulted, no `clear → occupied` transition yet, a
+  beam measured toward a *different* exit of a branching block, an ambiguous
+  anchor, or a fix aged past its travel allowance — contributes `0` and falls
+  straight through to the sum. Omitting `lead` reproduces the pre-#77 answer
+  exactly. No run that would have been granted can be refused because of it.
+- **It never rescues unmeasured track.** `unmeasured-track` still refuses on the
+  first intermediate block with no `length_mm`, whatever the fix says: a beam in
+  the confirmed block is evidence about the confirmed block and nothing else.
+- **It is a measurement, not a guess**, which is why it is not an exception to
+  the `DEFAULT_BLOCK_LENGTH_MM` rule below. An operator took it with a tape, and
+  it is then *reduced* by a worst-case bound before use.
 
 **Any block in that stretch with `length_mm IS NULL` refuses outright**
 (`unmeasured-track`), naming the block. `schema.ts` and `docs/topology.md`
@@ -474,18 +496,18 @@ bookkeeping path.
   simulator, because its constants would be chosen to match this model and it
   would therefore prove nothing about the real layout. Real validation is
   B8's on-layout procedure.
-- **B4's adjacent-target refusal is now a stated prerequisite for #7.** A
-  braked run to the *immediately next* block has zero available distance and
-  is refused. On a nine-block layout most routes are two or three steps, so
-  "slow as you approach the block ahead" — #7's central move — refuses in the
-  common case. Sub-block position (#77) is therefore a prerequisite for #7
-  rather than a later refinement. Recorded 2026-08-16; the fix is real
-  position, never a fudged distance here. **#77's model has landed**
-  (`docs/sensor-position.md`) — a sensor's `offsetMm` toward a *neighbouring
+- **B4's adjacent-target refusal is CLOSED, for a block with a measured beam
+  in it.** It was recorded here as the reason #77 was promoted ahead of #7
+  (2026-08-16): a braked run to the *immediately next* block had zero available
+  distance, and on a nine-block layout most routes are two or three steps, so
+  "slow as you approach the block ahead" refused in the common case. #77 landed
+  the measurement (`docs/sensor-position.md` — `offsetMm` toward a *neighbouring
   block*, not from a named block end, because a block-end label is regenerated
-  by every compile and would silently come to name a different end (D2 there).
-  Nothing consumes it yet: `remainingRouteDistanceMm` gains its one optional
-  lead term in #77 PR B, and this limit stands verbatim until it does.
+  by every compile) and B4's lead term consumes it. **What remains is a limit of
+  coverage, not of the model**: a confirmed block with no positioned beam, or
+  one whose beam has not been broken since the train entered, still promises
+  nothing and still refuses. That is the honest answer, and it is fixed by
+  fitting a beam, not by changing anything here.
 - **Moving `LayoutService`'s heartbeat `setInterval` onto `IClock`** is
   out of scope here as unrelated churn — `IClock` exists for this model's
   ramp timers, not as a blanket replacement for every timer in the service.
