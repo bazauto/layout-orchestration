@@ -404,7 +404,12 @@ describe('BrakingService — sub-block position (#77)', () => {
       inService: true,
       position: beamOffsetMm === null ? null : { towardBlockId: 'b2', offsetMm: beamOffsetMm },
     });
-    stateManager.recordSensorReading('beam-1', 'occupied', NOW);
+    stateManager.recordSensorReading('beam-1', 'occupied', NOW, 'live');
+    // #28: trust is a verdict `LayoutService` writes, not something the state
+    // manager infers from a reading — so a test driving the manager directly
+    // has to say so. Without it the beam is untrusted, `isContributingSensor`
+    // filters it out, and every #77 case here reads as an unmeasured block.
+    stateManager.setSensorTrusted('beam-1', true);
     return { repo, stateManager, clock: new ManualClock(NOW) };
   }
 

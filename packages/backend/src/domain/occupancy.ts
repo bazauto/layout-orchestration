@@ -21,9 +21,20 @@ import { Occupancy, SensorFault, SensorFaultView, SensorObservation } from './ty
  * system has stopped trusting it. A sensor that has never reported (or was
  * just de-serviced/faulted and had its reading nulled — DD6) has nothing to
  * contribute either.
+ *
+ * `!o.trusted` is the fourth way to contribute nothing (#28 D9): a sensor
+ * whose reading is known only from a retained replay, or from which no live
+ * reading has arrived inside the freshness window, has stopped being evidence
+ * of anything. It is one conjunct rather than a fourth clause in
+ * `deriveBlockOccupancy` deliberately — see that function's note.
+ *
+ * Stays clock-free. `trusted` is a stored verdict `LayoutService` writes on
+ * every live reading and every trust sweep (#28 D5), which is what spares this
+ * predicate's other two consumers — `positionFixFrom` and `berthingBeamIn`,
+ * both in `domain/sensorPosition.ts` — from having to be handed a clock.
  */
 export function isContributingSensor(o: SensorObservation): boolean {
-  return o.inService && !o.faulted && o.lastReading !== null;
+  return o.inService && !o.faulted && o.trusted && o.lastReading !== null;
 }
 
 /**
@@ -48,6 +59,16 @@ export function isContributingSensor(o: SensorObservation): boolean {
  *     D8): knowing precisely where a beam is makes a broken beam a position
  *     fix, and leaves an unbroken one saying exactly as much as it did before,
  *     which is nothing.
+ *
+ * **#28 adds no fourth clause, and that is deliberate.** The obvious shape for
+ * sensor liveness was "any untrusted sensor poisons the block to `unknown`",
+ * which would have meant rewriting these three. Instead an untrusted sensor is
+ * simply not eligible (`isContributingSensor`), and a block whose every sensor
+ * has gone quiet falls through clause 3 exactly as a block with no sensors
+ * does. Clause 2 is the reason to care: it is load-bearing and subtle — only a
+ * `block_detection` sensor may assert `clear` — and a flat "occupied wins, any
+ * untrusted poisons, otherwise clear" rewrite would have silently regressed it
+ * back to letting an IR beam clear a whole block.
  */
 export function deriveBlockOccupancy(observations: readonly SensorObservation[]): Occupancy {
   const eligible = observations.filter(isContributingSensor);

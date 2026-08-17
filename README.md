@@ -486,11 +486,35 @@ Sharp edges worth knowing:
 - Faults are **in-memory only** and lost on restart. There is no audit trail of what
   faulted when.
 - **Nothing marks a sensor out of service automatically**, however many times it faults.
-- **A silent sensor is not a fault** under this model — only a malformed one is. That
-  device-liveness gap is shared with #25 and will be decided together with it.
+- **A silent sensor is still not a *fault*** — but since #28 it is no longer ignored
+  either. Silence now degrades the track that sensor observes (below); only a malformed
+  payload latches a fault.
 - **A block with no in-service sensor able to determine it reads `unknown` indefinitely.**
   No route may be granted over it and none can resume through it for as long as that holds
   (`docs/sensor-fault-recovery.md` D6).
+
+**A retained reading is never trusted on its own** (#28, `docs/sensor-trust.md`). MQTT
+retention tells a new subscriber what was last published and nothing about whether the
+publisher is still alive — so a controller that died reporting `clear` replayed that
+`clear` to every future subscriber, and the backend believed it. Sensor hardware is now
+contractually obliged to **re-publish its current reading at least every 30 s**, and a
+sensor from which no *live* message has arrived inside `SENSOR_FRESHNESS_TIMEOUT_MS`
+(default 90 s) is untrusted: every block it reports degrades to `unknown`, which is
+already treated as occupied.
+
+Two things about that are deliberate and look like oversights:
+
+- **A stale sensor degrades its own track; a malformed one still halts the layout.** A
+  device *lying* cannot be trusted now and gets an immediate Safe-Stop; a device *dying*
+  is stale and gets a freshness window scoped to what it observes.
+- **A stale sensor does not poison a block another live detector still covers**, and does
+  not raise occupancy from its last reading either. Untrusted means "not evidence", in
+  both directions. Only losing a block's *last* trusted detector degrades it.
+
+**Until the firmware re-asserts, every sensor-backed block on real hardware reads
+`unknown`.** That is the honest state rather than a regression — nothing could previously
+tell a live detector from a dead one. Manual driving is unaffected; route granting and
+automation over unobserved track are refused. The firmware side is #9 and #50.
 
 **Parse failures on operator-facing requests are ordinary 4xx/`ERROR` responses**, not a
 Safe-Stop. The fail-safe rule in `docs/mqtt-contract.md` is scoped to sensor and control
@@ -526,10 +550,16 @@ preamble in `docs/sensor-simulation.md`.
    a limit of coverage, not of the model. Each loco also needs its automation and crawl
    speed steps set in Configure → Locos, and each automated route a direction; until then
    automation departs nothing
-2. ESP firmware for point position feedback — #25 is complete in this repo, but nothing
-   answers a `point/*/query` yet and no point has a feedback switch wired. Batch it with
-   the WiThrottle→MQTT migration (#9); each is a flash-and-test cycle on the layout
-3. Automation engine / schedules
+2. ESP firmware, as **one** flash-and-test cycle rather than three. Three obligations are
+   now waiting on the same boards, and all three are specified against a stable contract:
+   the WiThrottle→MQTT migration (#9); answering `point/*/query` for point position
+   feedback (#50 — #25 is complete in this repo, but nothing answers a query yet and no
+   point has a feedback switch wired); and #28's **30 s re-assert** on
+   `sensor/*/reading`, which is roughly ten lines and without which every sensor-backed
+   block reads `unknown`
+3. Order and scheduling systems — #7's automation engine has landed; what it deliberately
+   does not do is decide *where* a train should go, sequence two trains through a
+   junction, or plan a timetable
 4. A shared workspace package for the remaining backend↔frontend duplicates
    (`findBlockRuns`, `TILE_LEGS` vs `diagram/trackGeometry.ts`, and the heartbeat
    constants). #75 unified the editor↔monitor seam *inside* the frontend and deliberately

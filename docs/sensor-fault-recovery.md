@@ -333,11 +333,17 @@ has no `retained` branch to speak of, and none should be added speculatively.
 
 - **Per-sensor `clearAfterValidReadings` override** — layout-wide config only
   (D1).
-- **Sensor liveness / staleness** — a sensor that goes *silent* rather than
-  malformed is not a fault under this decision, and `Occupancy`'s doc comment
-  already mentions a "sensor timeout" that nothing implements. That is device
-  liveness, which #25 (point position feedback) shares; decide the two
-  together.
+- ~~**Sensor liveness / staleness**~~ — **closed by #28** (`docs/sensor-trust.md`).
+  A silent sensor is still not a *fault*, which is what this decision said and
+  what remains true; what changed is that silence is no longer *ignored*.
+  Hardware is now contractually obliged to re-assert every 30 s, and a sensor
+  with no live reading inside the freshness window is untrusted — it stops
+  contributing to `deriveBlockOccupancy`, so the track it observes degrades to
+  `unknown`. The split is deliberate: a malformed payload is a device lying and
+  Safe-Stops (D2 here); silence is a device dying and degrades, scoped to what
+  that sensor sees. #25 answered the same question for points independently, and
+  the two now fall out of one rule about retention rather than being decided
+  together as this entry anticipated.
 - **Fault history** — faults are in-memory and are lost on restart. No audit
   trail of what faulted when. Worth having eventually; not needed to make
   recovery possible.

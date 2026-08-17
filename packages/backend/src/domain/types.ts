@@ -43,7 +43,12 @@ export type LocoAddress = number;
 
 // ─── State Enumerations ───────────────────────────────────────────────────────
 
-/** Block occupancy. Unknown is the safe default on startup or after sensor timeout. */
+/**
+ * Block occupancy. Unknown is the safe default on startup or after sensor
+ * timeout — and since #28 that "sensor timeout" is real rather than aspirational:
+ * a sensor with no live reading inside `SENSOR_FRESHNESS_TIMEOUT_MS` stops
+ * contributing and its blocks land here (`docs/sensor-trust.md`).
+ */
 export type Occupancy = 'occupied' | 'clear' | 'unknown';
 
 /** Point position. Unknown until first confirmation received from DCC controller. */
@@ -430,9 +435,34 @@ export interface SensorObservation {
   inService: boolean;
   /** Latched by a malformed payload; cleared only by acknowledge or out-of-service. */
   faulted: boolean;
+  /**
+   * Whether this sensor's reading may currently be believed (#28 D5/D6).
+   *
+   * The liveness twin of `faulted`, and stored for the same reason: it is a
+   * verdict `LayoutService` writes (on every live reading, and on every trust
+   * sweep) so that `isContributingSensor` stays clock-free and its three
+   * consumers — occupancy, `positionFixFrom`, `berthingBeamIn` — do not each
+   * have to be handed a clock and a timeout.
+   *
+   * False until a LIVE reading arrives, so a retained replay from a dead
+   * controller can never assert clear track, and false again once one has not
+   * arrived inside `SENSOR_FRESHNESS_TIMEOUT_MS`. Lags the truth by at most
+   * one sweep interval (D8).
+   */
+  trusted: boolean;
   /** Latest validated reading, or null (never read, faulted, or de-serviced). */
   lastReading: 'occupied' | 'clear' | null;
   lastReadingAt: Date | null;
+  /**
+   * Receipt time of the last **live** (non-retained) reading — the evidence
+   * `trusted` is the verdict on (#28 D6). `null` means one has never arrived,
+   * which is why a retained-only sensor is never trusted regardless of age.
+   *
+   * Deliberately distinct from `lastReadingAt`, which moves on a retained
+   * replay too: the pair is what expresses "known only from the broker's
+   * archive" without a third provenance enum that could disagree with them.
+   */
+  lastLiveReadingAt: Date | null;
   /** Mirror of the `sensors` position columns, or `null` for an unmeasured sensor (#77 D3). Config, not observation — it moves only when an operator re-measures. */
   position: SensorPosition | null;
   /**

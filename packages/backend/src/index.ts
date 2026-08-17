@@ -196,6 +196,8 @@ async function main() {
       clearAfterValidReadings: config.sensors.clearAfterValidReadings,
       pointSweepIntervalMs: config.points.sweepIntervalMs,
       pointFaultClearAfterConfirmations: config.points.faultClearAfterConfirmations,
+      sensorFreshnessTimeoutMs: config.sensors.freshnessTimeoutMs,
+      sensorTrustSweepMs: config.sensors.trustSweepIntervalMs,
     },
     nameBook,
     completeness,

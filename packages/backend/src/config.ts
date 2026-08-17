@@ -94,6 +94,26 @@ export const config = {
      */
     clearAfterValidReadings: parseInt(process.env.SENSOR_FAULT_CLEAR_READINGS ?? '3', 10),
     /**
+     * D11 (docs/sensor-trust.md): how long (ms) a sensor may go without a
+     * LIVE reading before it is untrusted and every block it reports degrades
+     * to `unknown`. Default 90 s = 3 x the contract's 30 s re-assert
+     * interval, which absorbs two consecutive lost messages.
+     *
+     * Lowering it below twice the firmware interval flaps blocks to `unknown`
+     * on ordinary packet loss.
+     */
+    freshnessTimeoutMs: parseInt(process.env.SENSOR_FRESHNESS_TIMEOUT_MS ?? '90000', 10),
+    /**
+     * D8/D11: how often (ms) the trust sweep re-evaluates freshness. Expiry
+     * has no triggering message — that is the entire point of it — so a lazy
+     * predicate would leave a block that went stale at 02:00 still reported
+     * `clear` until something unrelated happened to ask.
+     *
+     * Its own timer, never folded into the heartbeat: that would make the
+     * heartbeat interval load-bearing for a safety deadline.
+     */
+    trustSweepIntervalMs: parseInt(process.env.SENSOR_TRUST_SWEEP_MS ?? '5000', 10),
+    /**
      * #65: bench-testing tool. When true the process can FABRICATE sensor
      * readings — it can make the orchestrator believe a block is clear while
      * a train stands in it. Off by default; never enabled on a live layout.
