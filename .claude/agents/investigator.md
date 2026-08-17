@@ -52,10 +52,12 @@ crossing (#26), the pathfinder not searching around point conflicts (P5), point 
 being position guarantees (#25). A report that lands on one of those is outcome B, and the
 whole job is explaining *why* it is that way, with the reference.
 
-Then check the authoritative documents for the area — the table at the top of `CLAUDE.md`
-maps subject to document. `docs/` holds the reasoning; if the behaviour is specified there
-and the code matches the spec, you are in outcome B (or D, if the spec itself is the
-problem — say which).
+Then work down the three layers, stopping as soon as you know enough: the index line in
+`CLAUDE.md` says what exists, `docs/current-state.md` says what it consists of, and the
+decision record named in the index says why. Read only the section for the area under
+investigation, and **grep a decision record for the id you want** (`grep -n "^### D7"`)
+rather than reading 40 KB whole. If the behaviour is specified there and the code matches
+the spec, you are in outcome B (or D, if the spec itself is the problem — say which).
 
 Then check the tracker, before spending anything on reproduction:
 
