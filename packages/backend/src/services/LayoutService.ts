@@ -81,6 +81,7 @@ import {
   toBrakingFaultView,
 } from '../domain/braking';
 import { deriveBlockOccupancy, isSensorFaultArmed, toSensorFaultView } from '../domain/occupancy';
+import { DEFAULT_SENSOR_FRESHNESS_TIMEOUT_MS, isSensorFresh } from '../domain/sensorTrust';
 import { isEmptySensorPayload } from '../domain/sensorPayload';
 import { sensorPositionOf } from '../domain/sensorPosition';
 import {
@@ -130,12 +131,18 @@ export interface LayoutServiceOptions {
   pointSweepIntervalMs: number;
   /** D4: consecutive confirming readings a latched `PointFault` needs before an operator may acknowledge it — the point-side twin of `clearAfterValidReadings`. */
   pointFaultClearAfterConfirmations: number;
+  /** D11 (docs/sensor-trust.md): how long, in ms, a sensor may go without a LIVE reading before it is untrusted and its blocks degrade to `unknown`. */
+  sensorFreshnessTimeoutMs: number;
+  /** D8: how often, in ms, the trust sweep re-evaluates `isSensorFresh` over every registered sensor. */
+  sensorTrustSweepMs: number;
 }
 
 export const DEFAULT_LAYOUT_SERVICE_OPTIONS: LayoutServiceOptions = {
   clearAfterValidReadings: 3,
   pointSweepIntervalMs: 250,
   pointFaultClearAfterConfirmations: 1,
+  sensorFreshnessTimeoutMs: DEFAULT_SENSOR_FRESHNESS_TIMEOUT_MS,
+  sensorTrustSweepMs: 5000,
 };
 
 export interface LayoutServiceLogger {
@@ -345,6 +352,8 @@ export class LayoutService extends EventEmitter {
   private readonly stopExpectations = new Map<LocoAddress, BrakingStopExpectation>();
   /** #7 A6: the automation sweep's handle, armed in `start()` and cancelled in `stop()` — the sibling of `confirmationSweepTimer`. */
   private automationSweepTimer: ClockTimer | null = null;
+  /** #28 D8: the sensor trust sweep's handle. Third of the three, same lifecycle — leaving it uncancelled in `stop()` leaks it into every test file that starts a service. */
+  private sensorTrustSweepTimer: ClockTimer | null = null;
   /** The last `AUTOMATION_STATE` payload put on the bus, so a sweep that changed nothing says nothing. `null` until the first emit. */
   private lastAutomationState: string | null = null;
 
@@ -462,6 +471,24 @@ export class LayoutService extends EventEmitter {
         `[LayoutService] pointFaultClearAfterConfirmations must be an integer >= 1, got ${this.options.pointFaultClearAfterConfirmations}`,
       );
     }
+    // #28: same posture again. A nonsense freshness window is a safety
+    // threshold like the rest — set it to 0 and every sensor is permanently
+    // untrusted (the whole layout reads `unknown`), set it negative and the
+    // comparison never fires. Both must fail at boot rather than at the first
+    // sweep.
+    if (
+      !Number.isInteger(this.options.sensorFreshnessTimeoutMs) ||
+      this.options.sensorFreshnessTimeoutMs < 1
+    ) {
+      throw new Error(
+        `[LayoutService] sensorFreshnessTimeoutMs must be an integer >= 1, got ${this.options.sensorFreshnessTimeoutMs}`,
+      );
+    }
+    if (!Number.isInteger(this.options.sensorTrustSweepMs) || this.options.sensorTrustSweepMs < 1) {
+      throw new Error(
+        `[LayoutService] sensorTrustSweepMs must be an integer >= 1, got ${this.options.sensorTrustSweepMs}`,
+      );
+    }
   }
 
   // ─── Lifecycle ───────────────────────────────────────────────────────────────
@@ -500,6 +527,7 @@ export class LayoutService extends EventEmitter {
     this.startHeartbeat();
     this.startConfirmationSweep();
     this.startAutomationSweep();
+    this.startSensorTrustSweep();
 
     // #25 D2: recovers position live from every 'required' point — the only
     // recovery consistent with D1's retention argument, since nothing about
@@ -513,6 +541,7 @@ export class LayoutService extends EventEmitter {
     this.stopHeartbeat();
     this.stopConfirmationSweep();
     this.stopAutomationSweep();
+    this.stopSensorTrustSweep();
     // Timers outlive a `stop()` that does not cancel them, and a ramp step
     // firing against a disconnected adapter is noise at best.
     this.abortAllBrakingRuns('service stopped');
@@ -1280,8 +1309,119 @@ export class LayoutService extends EventEmitter {
     // `faultedAt` is displayed, never differenced, so moving every timestamp
     // in this service onto the port is unrelated churn (docs/braking.md's
     // note on the heartbeat interval).
-    this.stateManager.recordSensorReading(sensorId, result.data.state, this.clock.now());
+    // #28 D7: a retained delivery is recorded but promotes nothing. It moves
+    // `lastReading`/`lastReadingAt` (so logs and diagnostics see it), leaves
+    // `lastLiveReadingAt` and the rising edge alone, and — crucially — does
+    // NOT set `trusted`. A dead controller's archived `clear` therefore
+    // arrives, is stored, and never becomes evidence: the block falls through
+    // `deriveBlockOccupancy` clause 3 to `unknown`, which is the truth.
+    //
+    // A live reading is the only thing that earns trust, and it earns it here
+    // rather than waiting for the next sweep — a sensor coming back must
+    // restore its block at once, not up to `sensorTrustSweepMs` later.
+    const receivedAt = this.clock.now();
+    this.stateManager.recordSensorReading(
+      sensorId,
+      result.data.state,
+      receivedAt,
+      retained ? 'retained' : 'live',
+    );
+    if (!retained && !obs.trusted) {
+      this.stateManager.setSensorTrusted(sensorId, true);
+      this.log.info('[LayoutService] Sensor trusted — first live reading inside the freshness window', {
+        layoutId: this.layoutId,
+        sensorId,
+        sensorName: this.names.get().sensors.get(sensorId),
+        blockId: obs.blockId,
+        blockName: obs.blockId ? this.names.get().blocks.get(obs.blockId) : undefined,
+      });
+    } else if (retained) {
+      this.log.info(
+        '[LayoutService] Retained sensor reading — recorded, not trusted (docs/sensor-trust.md D7)',
+        {
+          layoutId: this.layoutId,
+          sensorId,
+          sensorName: this.names.get().sensors.get(sensorId),
+          blockId: obs.blockId,
+          blockName: obs.blockId ? this.names.get().blocks.get(obs.blockId) : undefined,
+          reading: result.data.state,
+        },
+      );
+    }
     await this.recomputeBlock(obs.blockId);
+  }
+
+  // ─── Sensor trust sweep (see docs/sensor-trust.md D8) ─────────────────────────
+
+  /**
+   * Re-evaluates every registered sensor's freshness and recomputes the blocks
+   * whose answer changed.
+   *
+   * A sweep rather than a lazy check on read, for the reason D8 records: expiry
+   * has no triggering message — that is the entire point of it — and the
+   * operator UI is push-based, so "something will ask eventually" may mean
+   * never. A block that went stale at 02:00 has to *announce* it.
+   *
+   * Only blocks whose trust actually flipped are recomputed, so a quiet,
+   * healthy layout does no work and publishes nothing. `recomputeBlock` is
+   * itself change-gated (DD2), but reaching it needlessly for every sensor
+   * every 5 s would put a derivation and a reservation-engine call on a timer
+   * for no reason.
+   *
+   * Deliberately does NOT touch faults, Safe-Stop, or the reservation engine
+   * directly: a stale sensor degrades its own track and nothing more (D10).
+   * The route-level consequence, if the degraded block belongs to a live route,
+   * is `recomputeBlock`'s existing `occupancy-unknown` path — the same one a
+   * de-serviced sensor already goes down.
+   */
+  private async runSensorTrustSweep(): Promise<void> {
+    const now = this.clock.now();
+    const staleBlockIds = new Set<BlockId>();
+
+    for (const observation of this.stateManager.listSensorObservations()) {
+      const fresh = isSensorFresh(observation, now, this.options.sensorFreshnessTimeoutMs);
+      if (fresh === observation.trusted) continue;
+
+      this.stateManager.setSensorTrusted(observation.sensorId, fresh);
+      if (observation.blockId) staleBlockIds.add(observation.blockId);
+
+      // Only the false transition is worth a log line. The true one is
+      // already logged at the reading that caused it, and a sweep can only
+      // ever promote a sensor whose live reading arrived between two ticks —
+      // which `handleSensorReading` has already reported.
+      if (!fresh) {
+        this.log.warn(
+          '[LayoutService] Sensor untrusted — no live reading inside the freshness window',
+          {
+            layoutId: this.layoutId,
+            sensorId: observation.sensorId,
+            sensorName: this.names.get().sensors.get(observation.sensorId),
+            blockId: observation.blockId,
+            blockName: observation.blockId
+              ? this.names.get().blocks.get(observation.blockId)
+              : undefined,
+            lastLiveReadingAt: observation.lastLiveReadingAt?.toISOString() ?? null,
+            freshnessTimeoutMs: this.options.sensorFreshnessTimeoutMs,
+          },
+        );
+      }
+    }
+
+    for (const blockId of staleBlockIds) {
+      await this.recomputeBlock(blockId);
+    }
+  }
+
+  /** D8: started next to the heartbeat, stopped in `stop()`. On `this.clock`, never a bare `setInterval` — the seam `ManualClock` drives, and the reason this is testable without real time passing. */
+  private startSensorTrustSweep(): void {
+    this.sensorTrustSweepTimer = this.clock.setInterval(() => {
+      void this.runSensorTrustSweep();
+    }, this.options.sensorTrustSweepMs);
+  }
+
+  private stopSensorTrustSweep(): void {
+    this.sensorTrustSweepTimer?.cancel();
+    this.sensorTrustSweepTimer = null;
   }
 
   /**

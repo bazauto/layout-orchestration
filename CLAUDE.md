@@ -21,6 +21,7 @@ style preferences.
 | `docs/auth.md` | Local authentication scheme, the three roles, and the pre-TLS threat model |
 | `docs/liveness.md` | Connection health: the heartbeat, why staleness is a property of the connection and not of an entity, and how the mimic degrades (D5–D7, M1–M5) |
 | `docs/sensor-fault-recovery.md` | Sensor-fault latch recovery and the per-sensor occupancy model |
+| `docs/sensor-trust.md` | Sensor liveness: why a retained reading is never trusted on its own, the mandated 30 s re-assert, and the degrade-vs-Safe-Stop split (D1–D14) |
 | `docs/braking.md` | Per-loco braking model, deceleration profile, and calibration (B1–B10) |
 | `docs/automation.md` | Automation engine (#7): what drives a train, the berthing beam as a stop target, the brake trigger, and the one invariant it exists to keep (A1–A13) |
 | `docs/sensor-position.md` | Sub-block sensor position: the anchor, the rising-edge fix, its decay, and why a clear beam still clears nothing (D1–D12) |
@@ -184,6 +185,7 @@ row rather than appending the new story beneath the old one.**
 | **Route locking** (#3) | `ReservationService` is the sole owner of lock policy; `LayoutStateManager` stays storage. `domain/routeLocking.ts` is the pure planning/release logic; `route_reservations`/`route_holds` carry DB-level exclusivity via partial unique indexes. `TopologyService` refuses a topology write against anything an active or suspended route holds (409). | `docs/route-locking.md` |
 | **Pathfinding** (#4, #105) | `domain/pathfinding.ts#findPath` — a pure, direction-aware Dijkstra whose search state is **(block, end entered by)**, which is what makes the no-reversal rule structural rather than a post-filter. A hop costs the **block it lands in** (`DEFAULT_BLOCK_LENGTH_MM` when unmeasured), so what discriminates two routes is the intermediate track, and a detour can win with more hops. The pathfinder proposes, `planReservation` disposes. `SystemHealth.routeFaults` latches route violations. | `docs/pathfinding.md` |
 | **Sensor-fault recovery** (#34, supersedes #27's scalar pair) | `SystemHealth.sensorFaults` is a keyed collection, one latched fault per sensor, with `acknowledgeSensorFault` and `sensors.in_service` for recovery. Block occupancy is **derived**, not last-write-wins: `domain/occupancy.ts#deriveBlockOccupancy` is the only thing that feeds `ReservationService.onOccupancyChange`. | `docs/sensor-fault-recovery.md` |
+| **Sensor trust and liveness** (#28) | A retained reading is no longer evidence. The contract now **obliges hardware to re-assert every 30 s** and states the rule both retention decisions follow from: *telemetry may be retained only where the publisher is contractually obliged to re-assert it, and a retained delivery is never trusted on its own* — which is what makes the `sensor`/`point` asymmetry one decision rather than two. `SensorObservation` gains `lastLiveReadingAt` (the evidence) and `trusted` (the verdict); `domain/sensorTrust.ts#isSensorFresh` is the pure predicate, and `LayoutService`'s **trust sweep** on `IClock` is the only thing that sets `trusted` false — a live reading sets it true in `recordSensorReading`, at the instant that makes it true. **One conjunct, not a fourth clause** (D9): `isContributingSensor` gains `&& o.trusted`, so `deriveBlockOccupancy`'s three ordered clauses are untouched and #77's `positionFixFrom`/`berthingBeamIn` inherit the rule for free. `retained` is plumbed already (#25 D3) — this consumes it. **No schema change, no migration** (D13), and observations still stay off the WS snapshot (D14, still #76's question). | `docs/sensor-trust.md` |
 | **Local auth** (#20), **user/role management** (#53), **roles in the UI** (#61, #63) | argon2id + session tokens pure in `domain/auth.ts`; one Fastify `onRequest` hook rejects unauthenticated requests before any route, including the `/ws` upgrade. `AuthService` owns all user policy; the repository stays storage. `requireAdmin` on every topology/config write and all of `/api/users`. `POST /api/emergency-stop` is the single deliberately unauthenticated path. **Three roles**: `admin` edits, `operator` drives, `monitor` only watches. A monitor's driving commands are refused **at the WebSocket edge** by a role captured **once at the upgrade** into a per-connection `const` — never a per-message lookup, which is what preserves "auth is enforced only at the connection edge, never mid-connection". A refusal is an `ERROR` reply, **never a socket close**; `EMERGENCY_STOP` is absent from the gated list and reachable by every role. The fallback when `request.user` is somehow absent is `'monitor'`, the *least* privileged — an unreachable defensive branch still resolves fail-safe. The frontend mirrors all of it as **affordance, not authorisation** (`TABS_BY_ROLE` in `App.tsx`): admin gets four tabs, operator gets Operate + Monitor, monitor gets Monitor alone, and `appTab` starts at the role's first visible tab. Hiding a tab does nothing to `curl`. | `docs/auth.md` |
 | **Operator-facing names** (#54) | `NameBook` (`domain/types.ts`) + pure helpers in `domain/naming.ts`; every `describe*` takes an optional trailing `book?: NameBook` and, without one, renders raw ids byte-for-byte as before. `NameBookCache` (`services/nameBook.ts`) behind the `INameBook` port is injected into the three services as an optional trailing constructor parameter. | `docs/naming.md` |
 | **Track Editor authoring** (#69, #94, #103 PR 6) | Canvas extent derives from content plus a margin — there is no fixed grid to hit, and `MAX_COORDINATE` is admission control, not an edge. Undo is client-side and **per stroke**, so a stray right-drag is one click to reverse; it is never persisted. `⌂` fits content. Pan/zoom persist per layout. The canvas is keyboard-navigable (`role="application"`): a `cursor` state moves on arrow keys, paints on Enter/Space, erases on Delete, and Escape exits to the toolbar; one `aria-live` string (`diagram/cursorAnnouncement.ts`) is both the visible readout and the screen-reader announcement. Ruler gutters and a crosshair give a persistent spatial reference; diagnostics with a coordinate (`diagnosticCoordinate`) are click-to-jump buttons, and `jumpToCell` is the one implementation any surface naming a cell uses. **Nothing about a compiled opening is drawn on the canvas** (D15): the boundary tick, the `⊣` stop glyph and the label that #103 step 6.1 added are all gone, with `diagram/openings.ts`, `portMarkGeometry`, `computePortsAtCell`, `computeOpeningsAtCell` and `OPENING` in `encoding.ts`. D-H's argument was about *authoring* — a mark at the wrong boundary is visibly wrong where a plausible label is not — and it lapsed once the graph was compiled and applied: an opening's name is disposable output nobody reads off the diagram, and the check moved to the compile diff under review. `GET .../grid/openings` is still read, for the **keyboard readout alone** (`computeOpeningsAtCursor`), which still says `opening yard-3 at the east boundary, buffered`; the Edges tab and compile diff keep the labels that mean something. **`Ends ⟳` and `Ends ✎` are gone** (#103 PR 6.2), with `BlockEndsPanel` and `useBlockEnds`: both existed only to reconcile a stored copy of the opening names with the drawing, and there is one copy now. Nothing in the browser reads `block_ends`. Two rules survive the panel and apply to whatever comes next: a list of controls, never a click on the drawn label (the canvas is `role="application"` and a click there paints), and one shared `jumpToCell`. | `docs/track-editor.md` D15 |
@@ -245,6 +247,23 @@ Things that look like bugs or oversights and are not. Each was a deliberate deci
   Safe-Stop" rule and is not: an empty message asserts nothing about occupancy, and halting
   the layout because someone cleared a retained flag is a nuisance, not a safety win.
   `null`, `{}` and whitespace-only payloads all still fault.
+- **A stale sensor degrades only its own blocks; a malformed one still Safe-Stops the
+  layout** (#28 D10). It reads as an inconsistency and is the whole design: a malformed
+  payload is a device **lying**, so its output cannot be trusted *now* — immediate and
+  sharp. Silence is a device **dying**, so its output is *stale* — a freshness window,
+  scoped to the track it observes. Degrading refuses new routes but does not stop a train
+  already moving under automation; Safe-Stop does, and that is not a trade #28 needs.
+  The original #28 plan proposed softening the malformed case and was explicitly
+  overruled on the issue.
+- **A stale sensor does NOT poison a block another live detector still covers** (#28 D9),
+  and it does not raise occupancy from its last reading either. Untrusted means "not
+  evidence", in both directions. #34 had already settled this for a *faulted* sensor;
+  making silence poison while a device publishing garbage does not would point the wrong
+  way. Only losing a block's **last** trusted detector degrades it — which is the common
+  case and the one #28 was filed for.
+- **A retained delivery never demotes a trusted sensor**, so a broker blip does not flap
+  every block to `unknown`. Trust is a property of the device, not the connection; a long
+  outage needs no special case because the sweep runs on its own clock throughout it.
 
 ### Open limits
 
@@ -283,6 +302,18 @@ Recorded rather than closed — do not treat any of these as bugs to fix in pass
   behaviour has changed**. #25 is complete in this repository (PR A the channel, PR B the route
   interaction); what is outstanding is **firmware**: nothing answers a `point/*/query` yet, and
   no point has a feedback switch wired. See `docs/project-plan.md`.
+- **Until the firmware re-asserts, every sensor-backed block on the live layout reads
+  `unknown`** (#28 D12). This is the one entry here that *changes* Westgate Hollow's
+  behaviour rather than recording an unchanged limit, so expect it to look like a
+  regression on the first hardware run. It is not: nothing in the system could tell a
+  live detector from a dead one, so every `clear` it has ever reported was believed on no
+  evidence. Manual driving is unaffected (`canIssueManualCommand` does not consult
+  occupancy); what is refused is route granting and automation over track nothing is
+  currently observing — the correct direction to be wrong in. The fix is roughly ten
+  lines of firmware (re-publish the held value on a 30 s timer, same topic, still
+  retained), batched with #9 and #50 into one flash-and-test cycle. `USE_SIMULATOR=true`
+  is unaffected — nothing generates sensor traffic there, so those blocks read `unknown`
+  before and after.
 - **Two routes fouling at a plain (non-switched) diamond crossing is not caught**, since
   neither shares a block or a point (#26). Westgate Hollow has none today; the editor now
   says so when one is drawn (`diamond-blind-spot`), which is a warning, not a fix.

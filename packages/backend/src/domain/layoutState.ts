@@ -249,10 +249,16 @@ export class LayoutStateManager {
   // derived occupancy); this class just holds whatever it is told.
 
   /**
-   * Upsert of config fields. Preserves `faulted`, `lastReading`,
-   * `lastReadingAt` and `lastRisingEdgeAt` for an already-registered sensor —
-   * only `LayoutService` decides to change those. A no-op... it always
-   * creates/updates; never throws.
+   * Upsert of config fields. Preserves `faulted`, `trusted`, `lastReading`,
+   * `lastReadingAt`, `lastLiveReadingAt` and `lastRisingEdgeAt` for an
+   * already-registered sensor — only `LayoutService` decides to change those.
+   * A no-op... it always creates/updates; never throws.
+   *
+   * A *newly* registered sensor starts `trusted: false` with no live reading
+   * (#28 D6), so it contributes nothing until it has been heard from live.
+   * That is the fail-safe default and it is also what makes a restart honest:
+   * every sensor is untrusted at boot and earns trust back within one
+   * re-assert interval.
    *
    * `position` is config, not observation (#77 D3), so it is taken from the
    * caller like `blockId` and `type` rather than preserved: re-measuring a
@@ -274,8 +280,10 @@ export class LayoutStateManager {
       inService: config.inService,
       position: config.position,
       faulted: existing?.faulted ?? false,
+      trusted: existing?.trusted ?? false,
       lastReading: existing?.lastReading ?? null,
       lastReadingAt: existing?.lastReadingAt ?? null,
+      lastLiveReadingAt: existing?.lastLiveReadingAt ?? null,
       lastRisingEdgeAt: existing?.lastRisingEdgeAt ?? null,
     };
     this.state.sensors.set(config.sensorId, updated);
@@ -304,18 +312,72 @@ export class LayoutStateManager {
    * had its reading cleared. A repeated `occupied` deliberately leaves it where
    * it was: a device re-publishing its state on a timer would otherwise appear
    * to re-observe a train that has long since gone, and every position fix
-   * taken from it would be indefinitely fresh.
+   * taken from it would be indefinitely fresh. That reasoning became a great
+   * deal more load-bearing with #28, which makes re-publishing on a timer a
+   * contract obligation rather than a hypothetical.
+   *
+   * `provenance` is #28 D7 and is the single conditional the whole fix lives
+   * in. A `'retained'` delivery is recorded — `lastReading`/`lastReadingAt`
+   * move, so logs and diagnostics see it — but it advances neither
+   * `lastLiveReadingAt` nor the rising edge:
+   *
+   *  - not liveness, because a retained message is the broker's archive and
+   *    says nothing about whether the publisher still exists;
+   *  - not a position fix, because a retained `occupied` is a copy of a train's
+   *    arrival at an *unknown* time, and #77 D6 exists to stop exactly that
+   *    being credited as distance.
+   *
+   * A consequence that looks like a bug and is not: retained `occupied`
+   * followed by live `occupied` stamps **no** rising edge at all, because the
+   * transition test sees `occupied → occupied`. Correct — the train was already
+   * standing there before anything was watching, so no fix is better than one
+   * stamped at the wrong instant.
    */
-  recordSensorReading(sensorId: SensorId, reading: 'occupied' | 'clear', at: Date): void {
+  recordSensorReading(
+    sensorId: SensorId,
+    reading: 'occupied' | 'clear',
+    at: Date,
+    provenance: 'live' | 'retained',
+  ): void {
     const existing = this.state.sensors.get(sensorId);
     if (!existing) return;
-    const rising = reading === 'occupied' && existing.lastReading !== 'occupied';
+    const live = provenance === 'live';
+    const rising = live && reading === 'occupied' && existing.lastReading !== 'occupied';
     this.state.sensors.set(sensorId, {
       ...existing,
+      // A live reading received *now* is fresh now, under any timeout — so
+      // recording one restores trust here rather than waiting for the next
+      // sweep to notice. That is a tautology, not a policy: how long freshness
+      // then lasts is `isSensorFresh` and the sweep's business, and only they
+      // ever set this false. Keeping the two halves together is what stops a
+      // reading being recorded without the trust that comes with it.
+      trusted: live ? true : existing.trusted,
       lastReading: reading,
       lastReadingAt: at,
+      lastLiveReadingAt: live ? at : existing.lastLiveReadingAt,
       lastRisingEdgeAt: rising ? at : existing.lastRisingEdgeAt,
     });
+  }
+
+  /**
+   * Writes the liveness verdict (#28 D5). Storage only, exactly like
+   * `setSensorFaulted` beside it: `LayoutService`'s trust sweep owns when it
+   * flips, using `isSensorFresh` against the injected clock. No-op for an
+   * unknown `sensorId`.
+   *
+   * In practice the sweep is the only thing that sets it **false** — a live
+   * reading sets it true through `recordSensorReading` above, at the instant
+   * that makes it true.
+   */
+  setSensorTrusted(sensorId: SensorId, trusted: boolean): void {
+    const existing = this.state.sensors.get(sensorId);
+    if (!existing) return;
+    this.state.sensors.set(sensorId, { ...existing, trusted });
+  }
+
+  /** Every registered sensor observation, in no particular order. The trust sweep's input (#28 D8). */
+  listSensorObservations(): SensorObservation[] {
+    return [...this.state.sensors.values()];
   }
 
   /**
@@ -326,14 +388,23 @@ export class LayoutStateManager {
    * observation from a sensor the system has stopped trusting is not one to
    * keep crediting distance from. Nulling it also re-arms the rising edge, so
    * the sensor's next `occupied` is a fresh fix rather than a continuation.
+   *
+   * **Liveness goes with it too** (#28). Without that, a sensor de-serviced for
+   * a week and then put back would return still carrying `trusted: true`, and
+   * the first thing it heard — quite possibly a retained replay from a
+   * controller that has been off the whole time — would be believed on the
+   * strength of a week-old assertion. Clearing both here means trust is always
+   * earned by a live reading received *since* the sensor last became eligible.
    */
   clearSensorReading(sensorId: SensorId): void {
     const existing = this.state.sensors.get(sensorId);
     if (!existing) return;
     this.state.sensors.set(sensorId, {
       ...existing,
+      trusted: false,
       lastReading: null,
       lastReadingAt: null,
+      lastLiveReadingAt: null,
       lastRisingEdgeAt: null,
     });
   }

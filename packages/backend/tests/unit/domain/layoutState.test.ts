@@ -237,8 +237,14 @@ describe('LayoutStateManager', () => {
         type: 'block_detection',
         inService: true,
         faulted: false,
+        // #28 D6: a newly registered sensor is untrusted until a LIVE reading
+        // arrives. This is the fail-safe default and it is what makes a
+        // restart honest — every sensor starts as evidence of nothing and
+        // earns trust back inside one re-assert interval.
+        trusted: false,
         lastReading: null,
         lastReadingAt: null,
+        lastLiveReadingAt: null,
         position: null,
         lastRisingEdgeAt: null,
       });
@@ -246,7 +252,7 @@ describe('LayoutStateManager', () => {
 
     it('re-registering preserves faulted and lastReading while updating blockId/type/inService/position', () => {
       manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
-      manager.recordSensorReading('s1', 'occupied', new Date('2026-01-01T00:00:00.000Z'));
+      manager.recordSensorReading('s1', 'occupied', new Date('2026-01-01T00:00:00.000Z'), 'live');
       manager.setSensorFaulted('s1', true);
 
       const reRegistered = manager.registerSensor({
@@ -268,6 +274,11 @@ describe('LayoutStateManager', () => {
       // ...while the fix itself, which records *when* a train was seen and not
       // where, survives the re-registration.
       expect(reRegistered.lastRisingEdgeAt).toEqual(new Date('2026-01-01T00:00:00.000Z'));
+      // #28: liveness survives it too, for the same reason — re-registering is
+      // a config edit (the operator changed a block or an offset), not an
+      // assertion that the device stopped reporting.
+      expect(reRegistered.trusted).toBe(true);
+      expect(reRegistered.lastLiveReadingAt).toEqual(new Date('2026-01-01T00:00:00.000Z'));
     });
 
     it('unregisterSensor removes the observation', () => {
@@ -286,7 +297,7 @@ describe('LayoutStateManager', () => {
     it('recordSensorReading sets lastReading and lastReadingAt', () => {
       manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
       const at = new Date('2026-01-01T00:00:00.000Z');
-      manager.recordSensorReading('s1', 'clear', at);
+      manager.recordSensorReading('s1', 'clear', at, 'live');
       const observation = manager.getSensorObservation('s1');
       expect(observation?.lastReading).toBe('clear');
       expect(observation?.lastReadingAt).toBe(at);
@@ -294,7 +305,7 @@ describe('LayoutStateManager', () => {
 
     it('clearSensorReading nulls lastReading, lastReadingAt and the position fix', () => {
       manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
-      manager.recordSensorReading('s1', 'occupied', new Date());
+      manager.recordSensorReading('s1', 'occupied', new Date(), 'live');
       manager.clearSensorReading('s1');
       const observation = manager.getSensorObservation('s1');
       expect(observation?.lastReading).toBeNull();
@@ -309,17 +320,17 @@ describe('LayoutStateManager', () => {
     it('recordSensorReading takes a position fix on clear -> occupied, and on the first reading of all', () => {
       manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'ir_position', inService: true, position: null });
       const first = new Date('2026-01-01T00:00:00.000Z');
-      manager.recordSensorReading('s1', 'occupied', first);
+      manager.recordSensorReading('s1', 'occupied', first, 'live');
       expect(manager.getSensorObservation('s1')?.lastRisingEdgeAt).toBe(first);
 
       const cleared = new Date('2026-01-01T00:00:05.000Z');
-      manager.recordSensorReading('s1', 'clear', cleared);
+      manager.recordSensorReading('s1', 'clear', cleared, 'live');
       // A clear does not take a fix and does not discard the one already held —
       // the train having passed only means more time has elapsed.
       expect(manager.getSensorObservation('s1')?.lastRisingEdgeAt).toBe(first);
 
       const second = new Date('2026-01-01T00:00:09.000Z');
-      manager.recordSensorReading('s1', 'occupied', second);
+      manager.recordSensorReading('s1', 'occupied', second, 'live');
       expect(manager.getSensorObservation('s1')?.lastRisingEdgeAt).toBe(second);
     });
 
@@ -327,8 +338,8 @@ describe('LayoutStateManager', () => {
       manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'ir_position', inService: true, position: null });
       const rising = new Date('2026-01-01T00:00:00.000Z');
       const republished = new Date('2026-01-01T00:00:30.000Z');
-      manager.recordSensorReading('s1', 'occupied', rising);
-      manager.recordSensorReading('s1', 'occupied', republished);
+      manager.recordSensorReading('s1', 'occupied', rising, 'live');
+      manager.recordSensorReading('s1', 'occupied', republished, 'live');
 
       const observation = manager.getSensorObservation('s1');
       expect(observation?.lastReadingAt).toBe(republished);
@@ -338,9 +349,96 @@ describe('LayoutStateManager', () => {
       expect(observation?.lastRisingEdgeAt).toBe(rising);
     });
 
+    // ── #28: provenance (see docs/sensor-trust.md D6/D7) ────────────────
+
+    it('a retained reading is recorded but advances neither liveness nor trust', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
+      const at = new Date('2026-01-01T00:00:00.000Z');
+      manager.recordSensorReading('s1', 'clear', at, 'retained');
+
+      const observation = manager.getSensorObservation('s1');
+      // Recorded — not thrown away. A retained value is worth displaying and
+      // logging; it is just not evidence of live track.
+      expect(observation?.lastReading).toBe('clear');
+      expect(observation?.lastReadingAt).toBe(at);
+      // ...but the two fields that make it believable stay put.
+      expect(observation?.lastLiveReadingAt).toBeNull();
+      expect(observation?.trusted).toBe(false);
+    });
+
+    it('a live reading sets liveness AND trust, because a reading received now is fresh now', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
+      const at = new Date('2026-01-01T00:00:00.000Z');
+      manager.recordSensorReading('s1', 'clear', at, 'live');
+
+      const observation = manager.getSensorObservation('s1');
+      expect(observation?.lastLiveReadingAt).toBe(at);
+      // Trust is restored here rather than at the next sweep — a sensor
+      // coming back must restore its block at once, not up to a sweep
+      // interval later.
+      expect(observation?.trusted).toBe(true);
+    });
+
+    it('a retained reading NEVER demotes a sensor that is already trusted', () => {
+      // Trust is a property of the device, not of the connection. A broker
+      // blip replays retained values to a backend whose sensors are all
+      // perfectly alive; flapping them to untrusted would be a nuisance
+      // degrade, and the freshness window catches a genuinely dead one on its
+      // own schedule anyway.
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
+      const live = new Date('2026-01-01T00:00:00.000Z');
+      manager.recordSensorReading('s1', 'clear', live, 'live');
+      manager.recordSensorReading('s1', 'clear', new Date('2026-01-01T00:00:01.000Z'), 'retained');
+
+      const observation = manager.getSensorObservation('s1');
+      expect(observation?.trusted).toBe(true);
+      expect(observation?.lastLiveReadingAt).toBe(live);
+    });
+
+    it('a retained occupied takes NO position fix, and a live occupied after it takes none either', () => {
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'ir_position', inService: true, position: null });
+      manager.recordSensorReading('s1', 'occupied', new Date('2026-01-01T00:00:00.000Z'), 'retained');
+      // A retained `occupied` is an archived copy of a train arriving at an
+      // UNKNOWN time — crediting braking distance from it is exactly what
+      // #77 D6 exists to prevent.
+      expect(manager.getSensorObservation('s1')?.lastRisingEdgeAt).toBeNull();
+
+      manager.recordSensorReading('s1', 'occupied', new Date('2026-01-01T00:00:05.000Z'), 'live');
+      // Still none, and this looks like a bug and is not: the transition test
+      // sees `occupied -> occupied`. The train was already standing there
+      // before anything was watching, so the system genuinely does not know
+      // when it arrived — and no fix is better than one stamped wrongly.
+      expect(manager.getSensorObservation('s1')?.lastRisingEdgeAt).toBeNull();
+    });
+
+    it('clearSensorReading drops liveness and trust with the reading', () => {
+      // Otherwise a sensor de-serviced for a week and put back would return
+      // carrying `trusted: true`, and the first thing it heard — quite
+      // possibly a retained replay from a controller that had been off the
+      // whole time — would be believed on a week-old assertion.
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
+      manager.recordSensorReading('s1', 'clear', new Date('2026-01-01T00:00:00.000Z'), 'live');
+      manager.clearSensorReading('s1');
+
+      const observation = manager.getSensorObservation('s1');
+      expect(observation?.trusted).toBe(false);
+      expect(observation?.lastLiveReadingAt).toBeNull();
+    });
+
+    it('setSensorTrusted is a no-op on an unknown sensorId, and listSensorObservations returns every registered one', () => {
+      expect(() => manager.setSensorTrusted('ghost', true)).not.toThrow();
+      expect(manager.getSensorObservation('ghost')).toBeUndefined();
+
+      manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
+      manager.registerSensor({ sensorId: 's2', blockId: null, type: 'block_detection', inService: true, position: null });
+      // The trust sweep's input: every sensor, including one mapped to no
+      // block, which must not throw its way through the sweep.
+      expect(manager.listSensorObservations().map((o) => o.sensorId).sort()).toEqual(['s1', 's2']);
+    });
+
     it('setSensorFaulted toggles faulted without touching the reading', () => {
       manager.registerSensor({ sensorId: 's1', blockId: 'b1', type: 'block_detection', inService: true, position: null });
-      manager.recordSensorReading('s1', 'occupied', new Date());
+      manager.recordSensorReading('s1', 'occupied', new Date(), 'live');
       manager.setSensorFaulted('s1', true);
       expect(manager.getSensorObservation('s1')?.faulted).toBe(true);
       expect(manager.getSensorObservation('s1')?.lastReading).toBe('occupied');
@@ -349,7 +447,7 @@ describe('LayoutStateManager', () => {
     });
 
     it('every mutator is a no-op on an unknown sensorId — must not throw, must not create a phantom observation', () => {
-      expect(() => manager.recordSensorReading('ghost', 'occupied', new Date())).not.toThrow();
+      expect(() => manager.recordSensorReading('ghost', 'occupied', new Date(), 'live')).not.toThrow();
       expect(() => manager.clearSensorReading('ghost')).not.toThrow();
       expect(() => manager.setSensorFaulted('ghost', true)).not.toThrow();
       expect(() => manager.unregisterSensor('ghost')).not.toThrow();

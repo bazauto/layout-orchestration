@@ -188,6 +188,15 @@ transition test sees `occupied → occupied`. That is correct. The train was alr
 standing there before the backend was watching, so the system genuinely does not
 know when it arrived, and no fix is better than a fix stamped at the wrong instant.
 
+A retained delivery also **never demotes** a sensor that is already trusted.
+Trust is a property of the *device*, not of the connection: a sensor heard from
+live two seconds before a broker blip is still fresh two seconds after it, and a
+reconnect that flapped every block to `unknown` would be a nuisance degrade — the
+kind operators learn to click through. Nothing special is needed for a *long*
+outage either, because the sweep runs on its own clock regardless of connection
+state, so everything ages out during the outage and the replay on reconnect
+restores none of it. Both halves are pinned by case 7 of the scenario test.
+
 ### D8 — A sweep timer, not lazy evaluation on read
 
 Freshness expiry has no triggering message — that is the entire point of it.
@@ -206,8 +215,19 @@ sweep interval (5 s) against a 90 s window.
 
 ### D9 — `deriveBlockOccupancy` is extended by one conjunct, and its clauses are untouched
 
-The temptation is a fourth clause — "any untrusted sensor poisons the block to
-`unknown`". Refused. The change is one term in `isContributingSensor`:
+**#28's original plan specified the opposite**, and this is the one place the
+shipped work departs from it deliberately. That plan's D5 gave a four-clause
+rule in which *any* untrusted sensor poisoned its block to `unknown`. Refused,
+for a reason that did not exist when it was written: it predates #34, which
+built the derivation that shipped and had already answered the same question for
+a **faulted** sensor — it contributes nothing and poisons nothing, because a
+`block_detection` sensor is a whole-block monitor entitled to assert the block is
+empty on its own.
+
+Making *silence* poison while a device *actively publishing garbage* does not
+would be an inconsistency pointing the wrong way. So an untrusted sensor is
+ineligible in exactly the way a faulted or out-of-service one is, and the change
+is one term in `isContributingSensor`:
 
 ```
 o.inService && !o.faulted && o.trusted && o.lastReading !== null

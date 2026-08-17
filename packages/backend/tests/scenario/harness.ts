@@ -53,6 +53,16 @@ export const POINT_CONFIRM_TIMEOUT_MS = 8000;
 export const POINT_CONFIRM_SWEEP_MS = 250;
 export const POINT_CONFIRM_DELAY_MS = 150;
 
+/**
+ * #28 D11: the same defaults `config.sensors` carries. `SENSOR_REASSERT_MS` is
+ * not a backend setting at all — it is the interval `docs/mqtt-contract.md`
+ * obliges sensor *firmware* to re-publish on, and the number the freshness
+ * window is three of. A scenario simulating a healthy sensor re-asserts on it.
+ */
+export const SENSOR_FRESHNESS_TIMEOUT_MS = 90_000;
+export const SENSOR_TRUST_SWEEP_MS = 5000;
+export const SENSOR_REASSERT_MS = 30_000;
+
 export const LAYOUT_ID = 'scenario-layout';
 
 const silentLogger: LayoutServiceLogger & TopologyServiceLogger = {

@@ -14,8 +14,14 @@ function obs(overrides: Partial<SensorObservation> = {}): SensorObservation {
     type: 'block_detection',
     inService: true,
     faulted: false,
+    // #28: the fixture describes a sensor that has been heard from live and
+    // recently. These cases are about D3's three clauses, not about liveness,
+    // and an untrusted default would make every one of them vacuously
+    // `unknown`. The trust rule gets its own cases below.
+    trusted: true,
     lastReading: null,
     lastReadingAt: null,
+    lastLiveReadingAt: null,
     ...overrides,
   };
 }
@@ -35,6 +41,55 @@ describe('isContributingSensor', () => {
 
   it('is false when it has never reported', () => {
     expect(isContributingSensor(obs({ lastReading: null }))).toBe(false);
+  });
+
+  it('is false when untrusted, even with a perfectly good reading (#28 D9)', () => {
+    expect(isContributingSensor(obs({ lastReading: 'clear', trusted: false }))).toBe(false);
+    expect(isContributingSensor(obs({ lastReading: 'occupied', trusted: false }))).toBe(false);
+  });
+});
+
+describe('deriveBlockOccupancy — sensor liveness (#28 D9)', () => {
+  it("an untrusted detector's clear does NOT clear the block — it falls through to unknown", () => {
+    // The #28 case at the derivation level: a dead controller's retained
+    // `clear` is recorded on the observation and must resolve to `unknown`.
+    // No fourth clause was added for this; the sensor is simply ineligible
+    // and clause 3 does the rest.
+    expect(deriveBlockOccupancy([obs({ lastReading: 'clear', trusted: false })])).toBe('unknown');
+  });
+
+  it("an untrusted detector's occupied does not raise occupancy either", () => {
+    // Untrusted means "not evidence", in both directions. Raising occupancy
+    // from a stale reading would be safe but wrong, and it would make a block
+    // that a dead sensor last saw a train in permanently unroutable with no
+    // way to tell why.
+    expect(deriveBlockOccupancy([obs({ lastReading: 'occupied', trusted: false })])).toBe('unknown');
+  });
+
+  it('a stale sensor does NOT poison a block a trusted detector still covers', () => {
+    // Deliberate, and a divergence from #28's original plan (which specified
+    // "any untrusted sensor poisons"). That plan predates #34's derivation,
+    // which had already settled the same question for a FAULTED sensor: it
+    // contributes nothing and poisons nothing, because a `block_detection`
+    // sensor is a whole-block monitor entitled to assert the block is empty.
+    // Making silence poison while a device publishing garbage does not would
+    // be an inconsistency pointing the wrong way.
+    const stale = obs({ sensorId: 'dead', lastReading: 'clear', trusted: false });
+    const live = obs({ sensorId: 'alive', lastReading: 'clear', trusted: true });
+    expect(deriveBlockOccupancy([stale, live])).toBe('clear');
+  });
+
+  it('a trusted occupied still wins over a trusted clear — liveness does not disturb clause 1', () => {
+    const occupied = obs({ sensorId: 'a', lastReading: 'occupied' });
+    const clear = obs({ sensorId: 'b', lastReading: 'clear' });
+    expect(deriveBlockOccupancy([occupied, clear])).toBe('occupied');
+  });
+
+  it('a trusted IR clear still clears nothing — clause 2 is untouched by #28', () => {
+    // The subtle clause, and the reason liveness was added as a conjunct
+    // rather than as a rewrite: only a `block_detection` sensor may assert
+    // clear, and that must survive this change unaltered.
+    expect(deriveBlockOccupancy([obs({ type: 'ir_position', lastReading: 'clear' })])).toBe('unknown');
   });
 });
 
