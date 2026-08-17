@@ -40,7 +40,20 @@ to land them correctly, with tests, and report honestly.
    field, stop and report it. Amending `docs/mqtt-contract.md` is a design decision and
    breaks the ESP firmware.
 
-7. **Commit at step boundaries** whenever you have been told to commit at all. One commit
+7. **Never commit to `main`.** Everything here reaches `main` through a PR. Before your
+   first commit, check you are not on `main` (`git rev-parse --abbrev-ref HEAD`); if you
+   are, fetch and branch off `origin/main` — not local `main`, which goes stale within the
+   hour because PRs merge fast:
+
+   ```powershell
+   git fetch origin
+   git checkout -b <type>/<slug> origin/main
+   ```
+
+   Never merge `main` into your branch — merge commits are disabled and it breaks the
+   rebase button. Use `git rebase origin/main`. You do not open the PR; that is `/pr`.
+
+8. **Commit at step boundaries** whenever you have been told to commit at all. One commit
    per plan step, made as soon as that step's tests pass — not one large commit at the end.
    A long run can be interrupted (a session limit, a crash, a timeout), and the difference
    between the two shapes is the difference between resuming from a known-good step and

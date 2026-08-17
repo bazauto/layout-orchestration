@@ -213,101 +213,91 @@ One line per area: enough to know whether it is what you are touching. The long 
 
 ### Traps
 
-Things that look like bugs or oversights and are not. Each was a deliberate decision:
+Things that look like bugs or oversights and are not — each was a deliberate decision.
+**One line each; the reasoning is in the record named at the end of the line.** Grep it for
+the id (`grep -n "^### D9" docs/sensor-trust.md`) before concluding any of these is wrong.
 
-- **A point `command` arms the confirmation deadline; a `query` deliberately does not**
-  (`point-feedback.md` D6). A fault means something the backend *commanded* did not happen;
-  an unanswered query just leaves the point `unreported` and untraversable. Arming on query
-  would halt the layout at boot for any instrumented point whose controller was powered off.
-- **A `retained` point reading is dropped with a warn rather than faulted.** It confirms
-  nothing and arms nothing, so the point times out on its own schedule. A malformed or
-  id-mismatched payload still faults, retained or not.
+- A point `command` arms the confirmation deadline; a **`query` deliberately does not** —
+  arming on query would halt the layout at boot for any instrumented point whose controller
+  was powered off (`point-feedback.md` D6).
+- A **`retained` point reading is dropped with a warn, not faulted** — it confirms nothing
+  and arms nothing. A malformed or id-mismatched payload still faults, retained or not
+  (`point-feedback.md`).
 - **Safe-Stop goes through `SystemHealth`/`evaluateAndApplySafeStop`, never
-  `stateManager.enterSafeStop` directly.** #4 fixed a live bug where a route violation
-  bypassed `SystemHealth`, so the next unrelated health evaluation cleared it.
-- **`migrations/0006_users_last_admin_guard.sql` has no `schema.ts` change**, and that is
-  correct — SQLite triggers cannot be expressed in Drizzle's DSL, so it was generated with
-  `drizzle-kit generate --custom`. Do not "fix" the missing structural change.
-- **A malformed sensor payload is a Safe-Stop on the first message, with no tolerance**,
-  while a malformed *operator UI* request is an ordinary 400. The fail-safe rule is scoped
-  to sensor/control topics; turning a bad UI request into a layout halt would be a bug.
-- **`NameBookCache.refresh` catches `BlockEdgeRowInvalidError` and nothing else.** It runs
-  before `loadTopology` inside `reloadTopology`, so a wider catch would regress #10's
-  Safe-Stop-not-throw guarantee.
-- **`ReservationService.resume` returning `resumed: true` is provisional.** The service has
-  no DCC access; `LayoutService.resumeRoute` must re-command every held point before the
-  resume counts, and rolls back to `suspended` with locks retained if any is rejected.
+  `stateManager.enterSafeStop` directly** — #4 fixed a live bug where the next unrelated
+  health evaluation cleared a route violation (`topology.md`).
+- **`migrations/0006_users_last_admin_guard.sql` has no `schema.ts` change, and that is
+  correct** — SQLite triggers are outside Drizzle's DSL, so it was generated with
+  `drizzle-kit generate --custom` (`auth.md`).
+- **A malformed sensor payload Safe-Stops on the first message; a malformed operator UI
+  request is an ordinary 400.** The fail-safe rule is scoped to sensor/control topics
+  (`sensor-trust.md`).
+- **`NameBookCache.refresh` catches `BlockEdgeRowInvalidError` and nothing else** — it runs
+  before `loadTopology`, so a wider catch regresses #10's Safe-Stop-not-throw guarantee
+  (`naming.md`).
+- **`ReservationService.resume` returning `resumed: true` is provisional** —
+  `LayoutService.resumeRoute` must re-command every held point, and rolls back to
+  `suspended` with locks retained if any is rejected (`route-locking.md`).
 - **A `grid_tiles.metadata` blob that fails to parse reads as `{}` instead of throwing**,
-  unlike every other row parser (`track-grid.md` D10). A bad `block_edges` row Safe-Stops
-  because the pathfinder plans on it; a tile decides nothing, and refusing to open the
-  Track Editor over one legacy cell removes the only tool that can fix it.
-- **An empty payload on a sensor topic is a retained-clear, not a malformed reading** —
-  `handleSensorReading` returns before the Zod parse and raises no fault (#65 D7). An empty
-  message asserts nothing about occupancy. `null`, `{}` and whitespace-only still fault.
-- **A stale sensor degrades only its own blocks; a malformed one still Safe-Stops the
-  layout** (#28 D10). A malformed payload is a device **lying** — immediate and sharp.
-  Silence is a device **dying** — a freshness window, scoped to the track it observes. The
-  original #28 plan proposed softening the malformed case and was explicitly overruled.
-- **A stale sensor does NOT poison a block another live detector still covers** (#28 D9),
-  and does not raise occupancy from its last reading. Untrusted means "not evidence", in
-  both directions. Only losing a block's **last** trusted detector degrades it.
+  unlike every other row parser — a tile decides nothing, and refusing to open the Track
+  Editor over one legacy cell removes the only tool that can fix it (`track-grid.md` D10).
+- **An empty payload on a sensor topic is a retained-clear, not a malformed reading** — it
+  asserts nothing about occupancy. `null`, `{}` and whitespace-only still fault (#65 D7).
+- **A stale sensor degrades only its own blocks; a malformed one Safe-Stops the layout.** A
+  malformed payload is a device *lying*; silence is a device *dying*. Softening the
+  malformed case was proposed and explicitly overruled (#28 D10).
+- **A stale sensor does not poison a block another live detector still covers**, and does
+  not raise occupancy from its last reading — untrusted means "not evidence", in both
+  directions (#28 D9).
 - **A retained delivery never demotes a trusted sensor**, so a broker blip does not flap
-  every block to `unknown`. Trust is a property of the device, not the connection.
+  every block to `unknown` — trust is a property of the device, not the connection (#28).
 
 ### Open limits
 
-Recorded rather than closed — do not treat any of these as bugs to fix in passing:
+Recorded rather than closed — **none of these is a bug to fix in passing.** One line each;
+`README.md` §Known Limits is the long form, with the document behind each position.
 
-- **Read the live DB with its `-wal`, or you will read a stale layout.** `data/layout.db`
-  is in WAL mode and the log runs to megabytes; copying the `.db` alone silently drops
-  recent drawing edits. It has already cost a round of wrong conclusions. Copy
-  `layout.db`, `layout.db-wal` and `layout.db-shm` together, and prefer a fresh
-  measurement over any count quoted in the docs.
+- **Read the live DB with its `-wal`, or you will read a stale layout.** `data/layout.db` is
+  in WAL mode with a log running to megabytes; copy `layout.db`, `layout.db-wal` and
+  `layout.db-shm` together. Copying the `.db` alone silently drops recent drawing edits and
+  has already cost a round of wrong conclusions. Prefer a fresh measurement over any count
+  quoted in the docs.
 - **Until the firmware re-asserts, every sensor-backed block on the live layout reads
-  `unknown`** (#28 D12). Expect this to look like a regression on the first hardware run.
-  It is not: nothing could tell a live detector from a dead one, so every `clear` was
-  believed on no evidence. Manual driving is unaffected; what is refused is route granting
-  and automation over unobserved track. The fix is ~10 lines of firmware (re-publish on a
-  30 s timer), batched with #9 and #50. `USE_SIMULATOR=true` is unaffected.
+  `unknown`** (#28 D12). Expect this to look like a regression on the first hardware run; it
+  is not. Manual driving is unaffected — what is refused is routing and automation over
+  unobserved track. Fix is ~10 lines of firmware, batched with #9 and #50.
+  `USE_SIMULATOR=true` is unaffected.
 - **A point lock is an authority guarantee, and a position guarantee only for points
-  configured `positionFeedback: 'required'`** (#25). Every point on the live layout is
-  `'none'`, so **nothing about the live layout's behaviour has changed**. #25 is complete
-  in this repository; what is outstanding is **firmware** — nothing answers `point/*/query`
-  yet and no feedback switch is wired.
+  configured `positionFeedback: 'required'`** (#25). Every live point is `'none'`, so live
+  behaviour is unchanged. #25 is complete here; what is outstanding is **firmware**.
 - **A braked run to the *immediately next* block is refused unless a beam says otherwise**
-  (`braking.md` B4). #77 PR B closed the model half — a position fix in the confirmed block
-  contributes the distance to the boundary. What is left is a limit of **coverage**: a
-  confirmed block with no positioned beam, or one whose beam has not been broken since the
-  train entered, still promises zero. Fitting a beam fixes it with no code change.
-- **Automation's coverage tracks where the beams are.** A destination with no trusted,
-  measured `ir_position` beam gets no berth — the run stops at the destination block's
-  *entry* boundary and an operator finishes the move. A loco with no `crawl_speed_step`
-  gets the same. Same coverage-not-model limit as above.
-- **#7 deliberately does not schedule.** One route, one train, one destination, granted by
-  an operator. Nothing decides *where* a train should go, sequences two trains through a
-  junction, or plans a timetable. That is the next feature, not this one.
+  (`braking.md` B4). The model half is closed; what is left is **coverage** — fitting a beam
+  fixes it with no code change.
+- **Automation's coverage tracks where the beams are.** No trusted, measured `ir_position`
+  beam at the destination — or no `crawl_speed_step` on the loco — means no berth: the run
+  stops at the destination block's entry boundary and an operator finishes the move.
+- **#7 deliberately does not schedule.** One route, one train, one destination, granted by an
+  operator. Nothing sequences two trains or plans a timetable. That is the next feature.
 - **Driving a granted route is manual** unless it is an `auto`-authority route on a layout
   where an operator has set `locos.auto_speed_step` and the route's `direction` (A12).
 - **Two routes fouling at a plain (non-switched) diamond crossing is not caught** (#26).
   Westgate Hollow has none; the editor warns when one is drawn (`diamond-blind-spot`).
-- **A point tile's leg mapping is unverifiable authored data** (`track-grid.md` D9).
-  Nothing can check which way round a physical point is wired.
+- **A point tile's leg mapping is unverifiable authored data** — nothing can check which way
+  round a physical point is wired (`track-grid.md` D9).
 - **The pathfinder does not search around a point-position conflict** (`pathfinding.md` P5),
   so a path can exist that it will not find.
-- **Lock messages name the route id, not the train holding it** (`naming.md` D3) — a route
-  has a different invalidation lifetime from the rest of the `NameBook`.
-- **Duplicates hand-maintained across the backend↔frontend wire.** A change to one wants
-  the other: `findBlockRuns`, `TILE_LEGS`/`EDGE_OFFSET` (frontend `diagram/trackGeometry.ts`,
-  with `trackGeometry.test.ts` asserting the table literally), `HEARTBEAT_INTERVAL_MS`, and
-  `effectivePosition`. Closing them needs a shared workspace package spanning a CommonJS
-  backend and an ESM frontend — nobody has scoped it. **#75 did not close these**; it closed
-  the editor↔monitor seam *inside* the frontend.
+- **Lock messages name the route id, not the train holding it** (`naming.md` D3).
+- **Duplicates hand-maintained across the backend↔frontend wire** — a change to one wants the
+  other: `findBlockRuns`, `TILE_LEGS`/`EDGE_OFFSET` (frontend `diagram/trackGeometry.ts`, with
+  `trackGeometry.test.ts` asserting the table literally), `HEARTBEAT_INTERVAL_MS`, and
+  `effectivePosition`. Closing them needs a shared package spanning a CommonJS backend and an
+  ESM frontend; nobody has scoped it. **#75 did not close these** — it closed the
+  editor↔monitor seam *inside* the frontend.
 - **Westgate Hollow's authoring passes are done and the compiled graph is applied**
-  (2026-08-14): one connected component, no gaps, `compiled_graphs` carries the matching
-  fingerprint. `unclassified-tile` and `block-without-detection` being silent is a finished
-  pass, not a broken check.
-- **#103's rejected alternatives stay rejected** — the anchor coordinate (#97) and a
-  16-point bearing, for `end-label-collision` and for #77's anchor alike. The refusals
-  existed only because a derived label was being used as an identifier; a *disposable*
-  description may be guessed at freely. Reach for that argument before making any derived
-  name referenceable. Full history in `docs/track-graph-compilation.md`.
+  (2026-08-14): one connected component, no gaps, matching fingerprint in `compiled_graphs`.
+  `unclassified-tile` and `block-without-detection` being silent is a finished pass, not a
+  broken check.
+- **#103's rejected alternatives stay rejected** — the anchor coordinate (#97) and a 16-point
+  bearing, for `end-label-collision` and for #77's anchor alike. A *disposable* description
+  may be guessed at freely; reach for that argument before making any derived name
+  referenceable (`track-graph-compilation.md`).

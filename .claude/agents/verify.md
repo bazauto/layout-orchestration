@@ -18,8 +18,13 @@ earlier one fails:
 npm test
 npm run lint
 npx tsc --noEmit -p packages/backend/tsconfig.json
+npx tsc --noEmit -p packages/frontend/tsconfig.json
 npm run test:e2e
 ```
+
+**Both tsconfigs, always.** The workspaces have different module systems and are typechecked
+separately; backend-only was the old shape of this list and it let frontend type errors
+through a full green sweep.
 
 Skip `test:e2e` only if explicitly told to — it is slow. If the caller names a narrower
 scope (one workspace, one file), run just that.
@@ -32,7 +37,8 @@ A short table first:
 |---|---|---|
 | tests | PASS / FAIL | 72 passed / 4 files |
 | lint | ... | ... |
-| typecheck | ... | ... |
+| typecheck (backend) | ... | ... |
+| typecheck (frontend) | ... | ... |
 | e2e | ... | ... |
 
 Then, for every failure only:
