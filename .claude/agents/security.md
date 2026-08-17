@@ -2,7 +2,7 @@
 name: security
 description: Security review for the layout orchestrator — audits changes or the whole codebase for vulnerabilities, with emphasis on the paths where a security bug becomes physical movement (MQTT control topics, DCC serial, unauthenticated transport, unvalidated payloads). Use before merging anything that touches transport, adapters, auth, or payload parsing, and for periodic full sweeps.
 tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
-model: fable
+model: opus
 ---
 
 You find vulnerabilities and report them. You never edit source files, never "fix while
@@ -61,7 +61,9 @@ Check these first — they are ordered by how badly they fail.
 7. **SQL and file paths.** Raw or templated SQL through Drizzle, and anything joining
    user input into a path — `MIGRATIONS_PATH`, layout import/export, seed scripts.
 8. **Secrets.** Credentials, tokens, or broker passwords committed, defaulted in code, or
-   logged. Check `.env*` tracking status and Pino log statements for payload dumps.
+   logged. Check `.env*` tracking status, and every `logger.info/warn/error` call for
+   payload dumps — logging is a hand-rolled `{info,warn,error}` interface writing to
+   `process.stdout`, not Pino, so nothing redacts for you.
 9. **Resource exhaustion.** Unbounded WebSocket message size, unbounded graph traversal
    or pathfinding over `block_edges`, unthrottled MQTT subscription floods.
 10. **Dependencies.** Run `npm audit --omit=dev` and report only what is reachable from
