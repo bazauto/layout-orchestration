@@ -1,15 +1,26 @@
 /**
  * SerialDccAdapter
  *
- * Communicates with the custom DCC EX-based command station over a serial/USB connection.
- * Command format is a simplified subset of DCC EX: <t REG ADDR SPEED DIR>
+ * Communicates with the PicoDCC command station over a serial/USB connection,
+ * speaking a subset of DCC EX.
  *
- * This adapter is excluded from test coverage because it requires physical hardware.
+ * **The command strings are not here.** They live in `domain/dccWireFormat.ts`,
+ * pure and unit-tested, because this file is excluded from test coverage —
+ * it needs physical hardware — and that exclusion is exactly how #147's
+ * wrong-loco throttle command survived. This adapter opens the port, writes,
+ * and reports connection changes; what the bytes mean is the domain's.
+ *
  * Use SimulatedDccAdapter in all tests.
  */
 
 import { EventEmitter } from 'events';
 import { IDccController } from '../../ports/IDccController';
+import {
+  formatEmergencyStop,
+  formatSetFunction,
+  formatSetPoint,
+  formatSetSpeed,
+} from '../../domain/dccWireFormat';
 
 export interface SerialDccLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -26,10 +37,7 @@ export interface SerialDccConfig {
  * Lazily imports serialport to allow the rest of the application to boot
  * without native bindings when the simulator is active.
  */
-async function openPort(
-  path: string,
-  baudRate: number,
-): Promise<import('serialport').SerialPort> {
+async function openPort(path: string, baudRate: number): Promise<import('serialport').SerialPort> {
   const { SerialPort } = await import('serialport');
   return new Promise((resolve, reject) => {
     const port = new SerialPort({ path, baudRate }, (err) => {
@@ -94,33 +102,20 @@ export class SerialDccAdapter implements IDccController {
     this.emitter.on('connectionChange', handler);
   }
 
-  async setSpeed(
-    address: number,
-    speed: number,
-    direction: 'fwd' | 'rev' | 'stop',
-  ): Promise<void> {
-    // DCC EX format: <t 1 ADDRESS SPEED DIRECTION>
-    // Direction: 1 = forward, 0 = reverse. Speed 0 = stop regardless of direction.
-    const dir = direction === 'rev' ? 0 : 1;
-    const effectiveSpeed = direction === 'stop' ? 0 : speed;
-    await this.write(`<t 1 ${address} ${effectiveSpeed} ${dir}>`);
+  async setSpeed(address: number, speed: number, direction: 'fwd' | 'rev' | 'stop'): Promise<void> {
+    await this.write(formatSetSpeed(address, speed, direction));
   }
 
   async setFunction(address: number, fn: number, state: boolean): Promise<void> {
-    // DCC EX format: <F ADDRESS FUNCTION STATE>
-    await this.write(`<F ${address} ${fn} ${state ? 1 : 0}>`);
+    await this.write(formatSetFunction(address, fn, state));
   }
 
   async setPoint(dccAddress: number, position: 'normal' | 'reverse'): Promise<void> {
-    // DCC EX format: <a DCC_ADDRESS SUBADDRESS ACTIVATE>
-    // We use subaddress 0, activate=1 for normal, activate=0 for reverse.
-    const activate = position === 'normal' ? 1 : 0;
-    await this.write(`<a ${dccAddress} 0 ${activate}>`);
+    await this.write(formatSetPoint(dccAddress, position));
   }
 
   async emergencyStop(): Promise<void> {
-    // DCC EX format: <!>
-    await this.write('<!>');
+    await this.write(formatEmergencyStop());
   }
 
   private write(cmd: string): Promise<void> {

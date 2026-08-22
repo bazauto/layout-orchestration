@@ -13,7 +13,11 @@ export interface IDccController {
 
   /**
    * Sets the speed and direction of a loco.
-   * @param address DCC address (1–9999)
+   *
+   * The ranges are the command station's, not this interface's — it validates
+   * and rejects, nothing here does (`domain/dccWireFormat.ts`).
+   *
+   * @param address DCC address (1–10239, the 14-bit long-address space)
    * @param speed DCC speed step (0–126)
    * @param direction Direction of travel
    */

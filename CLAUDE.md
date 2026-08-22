@@ -210,6 +210,7 @@ One line per area: enough to know whether it is what you are touching. The long 
 | **Sub-block sensor position** (#77) | `position_toward_block_id` + `position_offset_mm`, anchored to an operator-owned **block id**. A **rising edge** sets the fix and it decays by a worst-case travel allowance; **a clear beam still clears nothing.** Consumed as the `lead` term in `remainingRouteDistanceMm`. | `sensor-position.md` |
 | **Automation engine** (#7) | Drives an `auto`-authority route: departs, runs, brakes, crawls, berths. The invariant is that **a train under automation never passes the end of its authority**. A 250 ms sweep, not an occupancy hook; the stop target is a **berthing beam**. | `automation.md` |
 | **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) — publishes to the sensor's own `mqttTopic` so the broker echoes it back through ordinary ingestion, byte-identical to hardware. | `sensor-simulation.md` |
+| **DCC wire format** (#147) | `domain/dccWireFormat.ts` builds every DCC-EX command string; `SerialDccAdapter` only writes them. Throttle is the current **three-field** `<t CAB SPEED DIR>` — the legacy leading register shifts every field and moved the wrong train. Formats, never validates. | issue #153 (index) |
 
 ### Traps
 
