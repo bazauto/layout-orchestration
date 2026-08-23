@@ -267,12 +267,66 @@ export function parseDccResponse(frame: string): DccResponse {
   return { kind: 'unrecognised', raw: frame };
 }
 
-/** Convenience for the adapter: frame a chunk and parse everything complete in it. */
+/**
+ * Convenience for the adapter: frame a chunk and parse everything complete in it.
+ *
+ * `frames` comes back alongside `responses` — same length, same order — because
+ * parsing drops the text it came from for every kind but `unrecognised`, and
+ * that text is what an operator watching journald needs when a reply and a
+ * command disagree. Carrying it here rather than adding a `raw` field to every
+ * variant keeps `DccResponse` to fields something actually decides on.
+ */
 export function readResponses(buffer: string): {
   responses: DccResponse[];
+  /** The frame body each response was parsed from, brackets stripped. Parallel to `responses`. */
+  frames: string[];
   rest: string;
   discarded: number;
 } {
   const { frames, rest, discarded } = extractFrames(buffer);
-  return { responses: frames.map(parseDccResponse), rest, discarded };
+  return { responses: frames.map(parseDccResponse), frames, rest, discarded };
+}
+
+/**
+ * Flattens a response into log fields.
+ *
+ * Exists because an `<l 3 0 8 0>` acknowledgement logged as `{"response":"cab"}`
+ * says that *something* was acknowledged and nothing about what — which cab,
+ * which speed, which direction — and reading the link back (#148) is only worth
+ * doing if an operator can see the station disagreeing with us.
+ *
+ * Pure, total, and nameless: the adapter holds no `NameBook`, and `cab` stays
+ * the station's word for the address it decoded rather than ours for the loco we
+ * meant. Pairing an address with a name is the service layer's job, and the
+ * point of this line is what came off the wire.
+ */
+export function describeDccResponse(response: DccResponse): Record<string, unknown> {
+  switch (response.kind) {
+    case 'identity':
+      return {
+        kind: response.kind,
+        version: response.version,
+        product: response.product,
+        commit: response.commit,
+      };
+    case 'power':
+      return { kind: response.kind, track: response.track, on: response.on };
+    case 'cab':
+      return {
+        kind: response.kind,
+        cab: response.cab,
+        register: response.register,
+        speedByte: response.speedByte,
+        decodedSpeed: 'estop' in response.speed ? 'estop' : response.speed.step,
+        direction: response.direction,
+        functionMap: response.functionMap,
+      };
+    case 'loco-count':
+      return { kind: response.kind, count: response.count };
+    case 'accessory-ok':
+    case 'rejected':
+      return { kind: response.kind };
+    case 'unrecognised':
+      return { kind: response.kind };
+  }
 }
