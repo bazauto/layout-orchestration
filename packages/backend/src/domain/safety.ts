@@ -8,6 +8,7 @@
 
 import {
   BrakingFault,
+  DccLinkHealth,
   LocoAddress,
   Occupancy,
   PointFault,
@@ -92,6 +93,20 @@ export interface SystemHealth extends ConnectionHealth {
    * `LayoutService.acknowledgeBrakingFault` clears an entry.
    */
   brakingFaults: Record<LocoAddress, BrakingFault>;
+  /**
+   * The command station link (#148, `docs/dcc-link.md`).
+   *
+   * A single sub-object rather than a keyed collection, because there is one
+   * command station: `sensorFaults` is keyed because acknowledging one sensor
+   * must not clear another, and that argument has nothing to bite on here.
+   *
+   * It carries two Safe-Stop-bearing facts — `responsive` and a latched
+   * `fault` — plus observation (`mainPowerOn`, `identity`, `restartCount`) that
+   * nothing gates on yet. `dccConnected` above stays exactly what it was: a
+   * statement about the serial device node. This says whether the thing on the
+   * other end of it is answering, which is the part a USB port cannot report.
+   */
+  dccLink: DccLinkHealth;
   recoveredRouteCount: number;
 }
 
@@ -149,7 +164,8 @@ export function evaluateSafeStop(health: ConnectionHealth): {
  * Determines whether a Safe-Stop should be triggered based on connection
  * health, topology health, sensor-payload health, point-confirmation health,
  * braking health, route health, and restart-recovered routes. Check order is
- * MQTT, then DCC, then topology, then the oldest latched sensor fault, then
+ * MQTT, then DCC, then the DCC link (#148 — the station not *answering*, which
+ * is a different fact from the port being shut), then topology, then the oldest latched sensor fault, then
  * the oldest latched point fault, then the oldest latched braking fault, then
  * the oldest latched route fault, then recovered
  * routes — a connection failure reason always wins over a topology reason,
@@ -187,6 +203,18 @@ export function evaluateSystemSafeStop(health: SystemHealth): {
   const connectionResult = evaluateSafeStop(health);
   if (connectionResult.shouldStop) {
     return connectionResult;
+  }
+  // The link sits with the connection checks, not with the fault latches: "the
+  // station is not answering" is the same class of fact as "the port is shut",
+  // and an operator told the layout stopped wants the cause that came first.
+  if (!health.dccLink.responsive) {
+    return {
+      shouldStop: true,
+      reason: health.dccLink.reason ?? 'DCC command station is not responding',
+    };
+  }
+  if (health.dccLink.fault) {
+    return { shouldStop: true, reason: health.dccLink.fault.reason };
   }
   if (!health.topologyValid) {
     return { shouldStop: true, reason: health.topologyReason };

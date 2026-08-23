@@ -114,6 +114,13 @@ export async function registerWebSocket(
         routeFaults: layoutService.getRouteFaults(),
         /** #6: latched braking faults, same posture again — one per loco (B10). */
         brakingFaults: layoutService.getBrakingFaults(),
+        /**
+         * #148: the command-station link. In the snapshot rather than on an
+         * event of its own because it is state, not a transition — a browser
+         * opening onto a Safe-Stopped layout needs to be told the station is
+         * silent, and the event that said so may have fired an hour ago.
+         */
+        dccLink: layoutService.getDccLink(),
         automationRuns: layoutService.getAutomationRuns(),
       },
     };

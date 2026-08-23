@@ -15,6 +15,7 @@ import {
   formatSetFunction,
   formatSetPoint,
   formatSetSpeed,
+  formatStatusRequest,
 } from '../../../src/domain/dccWireFormat';
 
 describe('formatSetSpeed', () => {
@@ -77,5 +78,11 @@ describe('formatSetPoint', () => {
 describe('formatEmergencyStop', () => {
   it('emits the broadcast stop, with no fields', () => {
     expect(formatEmergencyStop()).toBe('<!>');
+  });
+});
+
+describe('formatStatusRequest', () => {
+  it('emits the status request the link liveness probe rides on (#148)', () => {
+    expect(formatStatusRequest()).toBe('<s>');
   });
 });

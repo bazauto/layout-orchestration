@@ -23,6 +23,7 @@ import {
   BlockId,
   BlockState,
   BrakingFault,
+  DccLinkView,
   BrakingFaultView,
   BrakingRefusal,
   BrakingSchedule,
@@ -90,24 +91,32 @@ import {
   toPointFaultView,
 } from '../domain/pointConfirmation';
 import { pointReadingSchema } from '../domain/pointPayload';
+import { DccCommandContext, DCC_PROBE_INTERVAL_MS, toDccLinkView } from '../domain/dccLink';
+import { DccResponse } from '../domain/dccResponse';
+import { formatSetPoint, formatSetSpeed, formatStatusRequest } from '../domain/dccWireFormat';
 import { TrackGraph } from '../domain/graph';
 import { toRouteFaultView } from '../domain/routeLocking';
-import { blockLabel, layoutLabel, locoLabel, pluralise, pointLabel, sensorLabel } from '../domain/naming';
+import {
+  blockLabel,
+  layoutLabel,
+  locoLabel,
+  pluralise,
+  pointLabel,
+  sensorLabel,
+} from '../domain/naming';
 import { IDccController } from '../ports/IDccController';
 import { IMqttAdapter } from '../ports/IMqttAdapter';
 import { ILayoutRepository, PointRecord, SensorRecord } from '../ports/ILayoutRepository';
 import { INameBook } from '../ports/INameBook';
 import { ClockTimer, IClock } from '../ports/IClock';
-import {
-  IGraphCompletenessView,
-  INERT_GRAPH_COMPLETENESS,
-} from '../ports/IGraphCompletenessView';
+import { IGraphCompletenessView, INERT_GRAPH_COMPLETENESS } from '../ports/IGraphCompletenessView';
 import { SensorCreateInput, sensorReadingSchema, SensorUpdateInput } from './validation';
 import { INERT_NAME_BOOK } from './nameBook';
 import { loadTopology, TopologyLoadResult } from './topologyLoader';
 import { PointConfirmationService } from './PointConfirmationService';
 import { BrakingService } from './BrakingService';
 import { AutomationAction, AutomationService } from './AutomationService';
+import { DccLinkEffects, DccLinkService } from './DccLinkService';
 import { AUTOMATION_TICK_MS } from '../domain/automation';
 import { SystemClock } from '../adapters/clock/SystemClock';
 import {
@@ -158,7 +167,9 @@ export class PointLockedError extends Error {
     readonly routeId: RouteId,
     pointLabelText?: string,
   ) {
-    super(`Point ${pointLabelText ?? pointId} is locked by route ${routeId}. Use force=true to override.`);
+    super(
+      `Point ${pointLabelText ?? pointId} is locked by route ${routeId}. Use force=true to override.`,
+    );
     this.name = 'PointLockedError';
   }
 }
@@ -282,6 +293,18 @@ export class RouteNotFaultedError extends Error {
   }
 }
 
+/**
+ * Thrown by `acknowledgeDccLinkFault` when the link carries no latched fault
+ * (#148). Takes no id, because there is one command station — the whole reason
+ * `SystemHealth.dccLink` is a sub-object rather than a keyed collection.
+ */
+export class DccLinkNotFaultedError extends Error {
+  constructor() {
+    super('The DCC command station link has no latched fault');
+    this.name = 'DccLinkNotFaultedError';
+  }
+}
+
 /** Thrown by `acknowledgeBrakingFault` when the named loco has no fault latched (#6, B10). */
 export class LocoNotFaultedError extends Error {
   constructor(readonly locoAddress: LocoAddress) {
@@ -323,6 +346,16 @@ export class LayoutService extends EventEmitter {
     pointFaults: {},
     routeFaults: {},
     brakingFaults: {},
+    dccLink: {
+      responsive: true,
+      reason: null,
+      fault: null,
+      mainPowerOn: null,
+      progPowerOn: null,
+      identity: null,
+      restartCount: 0,
+      lastResponseAt: null,
+    },
     recoveredRouteCount: 0,
   };
   private graph: TrackGraph | null = null;
@@ -356,6 +389,8 @@ export class LayoutService extends EventEmitter {
   private sensorTrustSweepTimer: ClockTimer | null = null;
   /** The last `AUTOMATION_STATE` payload put on the bus, so a sweep that changed nothing says nothing. `null` until the first emit. */
   private lastAutomationState: string | null = null;
+  /** #148: the DCC status-probe sweep's handle. Fourth of the four, same lifecycle as the three above. */
+  private dccProbeTimer: ClockTimer | null = null;
 
   constructor(
     private readonly dcc: IDccController,
@@ -387,9 +422,12 @@ export class LayoutService extends EventEmitter {
      * `config.points.confirmTimeoutMs`, so this fallback only matters to a
      * call site that does not care.
      */
-    private readonly pointConfirmations: PointConfirmationService = new PointConfirmationService(stateManager, {
-      timeoutMs: 8000,
-    }),
+    private readonly pointConfirmations: PointConfirmationService = new PointConfirmationService(
+      stateManager,
+      {
+        timeoutMs: 8000,
+      },
+    ),
     /**
      * D9: the in-process hook `SimulatedPointController` (and, one day, a
      * real command-observing controller) learns of a point command through.
@@ -438,6 +476,13 @@ export class LayoutService extends EventEmitter {
       (layoutId, routeId) => reservations.getRoute(layoutId, routeId),
       log,
     ),
+    /**
+     * #148: owns the command-station link (docs/dcc-link.md). Same posture as
+     * the three above — it judges, this service commands and latches. Defaults
+     * to one on the standard timeouts; a caller that wants to compress them
+     * (tests driving a ManualClock) constructs its own and passes it here.
+     */
+    private readonly dccLink: DccLinkService = new DccLinkService(),
   ) {
     super();
     this.options = { ...DEFAULT_LAYOUT_SERVICE_OPTIONS, ...options };
@@ -499,6 +544,10 @@ export class LayoutService extends EventEmitter {
     // Wire up connection health monitors before connecting
     this.mqtt.onConnectionChange((connected) => this.handleMqttConnectionChange(connected));
     this.dcc.onConnectionChange((connected) => this.handleDccConnectionChange(connected));
+    // #148: the station's own voice, which is the channel a USB device node
+    // cannot be. Parse and delegate only — what a response *means* is
+    // DccLinkService's decision, never this handler's.
+    this.dcc.onResponse((response) => this.handleDccResponse(response));
 
     // Connect adapters
     await this.mqtt.connect();
@@ -528,6 +577,12 @@ export class LayoutService extends EventEmitter {
     this.startConfirmationSweep();
     this.startAutomationSweep();
     this.startSensorTrustSweep();
+    this.startDccProbeSweep();
+
+    // #148: one probe straight away, so the station's identity and both track
+    // power states are known before the first route can be granted, rather than
+    // up to one sweep interval later.
+    await this.probeDccStation();
 
     // #25 D2: recovers position live from every 'required' point — the only
     // recovery consistent with D1's retention argument, since nothing about
@@ -542,6 +597,7 @@ export class LayoutService extends EventEmitter {
     this.stopConfirmationSweep();
     this.stopAutomationSweep();
     this.stopSensorTrustSweep();
+    this.stopDccProbeSweep();
     // Timers outlive a `stop()` that does not cancel them, and a ramp step
     // firing against a disconnected adapter is noise at best.
     this.abortAllBrakingRuns('service stopped');
@@ -602,6 +658,15 @@ export class LayoutService extends EventEmitter {
       }
     }
 
+    this.recordDccCommand({
+      kind: 'throttle',
+      command: formatSetSpeed(cmd.locoAddress, cmd.speed, cmd.direction),
+      locoAddress: cmd.locoAddress,
+      speedStep: cmd.speed,
+      direction: cmd.direction,
+      pointId: null,
+      routeId: null,
+    });
     await this.dcc.setSpeed(cmd.locoAddress, cmd.speed, cmd.direction);
 
     const locoState = this.stateManager.updateLoco(cmd.locoAddress, {
@@ -648,7 +713,11 @@ export class LayoutService extends EventEmitter {
     const pointState = state.points.get(cmd.pointId);
     if (pointState?.locked) {
       if (!cmd.force) {
-        throw new PointLockedError(cmd.pointId, pointState.lockedByRoute!, pointLabel(cmd.pointId, this.names.get()));
+        throw new PointLockedError(
+          cmd.pointId,
+          pointState.lockedByRoute!,
+          pointLabel(cmd.pointId, this.names.get()),
+        );
       }
       // D6: force is refused outright in auto mode (no manual authority in
       // auto). Otherwise permitted, and it CANCELS the route holding the
@@ -689,13 +758,26 @@ export class LayoutService extends EventEmitter {
       );
     }
 
+    this.recordDccCommand({
+      kind: 'accessory',
+      command: formatSetPoint(pointRecord.dccAddress, cmd.position),
+      locoAddress: null,
+      speedStep: null,
+      direction: null,
+      pointId: cmd.pointId,
+      routeId: null,
+    });
     await this.dcc.setPoint(pointRecord.dccAddress, cmd.position);
 
     // #25: arms a confirmation deadline on a 'required' point (D5); a no-op
     // on `confirmation` for 'none' (D7). `onPointCommanded` — D9's in-process
     // hook, wired to the simulated point controller from index.ts — fires
     // regardless of feedback mode, same as the real command itself.
-    const updated = this.pointConfirmations.noteCommanded(cmd.pointId, cmd.position, this.clock.now());
+    const updated = this.pointConfirmations.noteCommanded(
+      cmd.pointId,
+      cmd.position,
+      this.clock.now(),
+    );
     if (updated) {
       this.publishPointState(updated);
       this.emit('event', { type: 'POINT_STATE', payload: updated } satisfies LayoutEvent);
@@ -718,6 +800,10 @@ export class LayoutService extends EventEmitter {
     // everything, including a train mid-crawl. Abandoning the runs is what
     // stops the next sweep from deciding anything about them.
     this.automation.abandonAll('emergency stop');
+    // #148: the station empties both its queues and forgets every loco on
+    // `<!>`, so anything still outstanding will never be answered. Leaving it
+    // queued would hand its identity to the next rejection that arrives.
+    this.dccLink.noteEmergencyStop(this.clock.now());
     await this.dcc.emergencyStop();
 
     const stopped = this.stateManager.stopAllLocos();
@@ -771,7 +857,10 @@ export class LayoutService extends EventEmitter {
     // route — suspends, not cancels, so the locks stay held and the
     // operator decides.
     if (cmd.mode === 'manual' && this.layoutId) {
-      const outcomes = await this.reservations.suspendAuto(this.layoutId, 'system mode set to manual');
+      const outcomes = await this.reservations.suspendAuto(
+        this.layoutId,
+        'system mode set to manual',
+      );
       for (const outcome of outcomes) {
         this.publishReservationOutcome(outcome);
       }
@@ -834,7 +923,10 @@ export class LayoutService extends EventEmitter {
 
     // `commandPointHolds` selects the point holds itself, so this passes the
     // whole set rather than pre-filtering it in two places.
-    const failures = await this.commandPointHolds(reservation.holds.filter((h) => !h.released));
+    const failures = await this.commandPointHolds(
+      reservation.holds.filter((h) => !h.released),
+      { routeId: reservation.id, locoAddress: reservation.locoAddress },
+    );
     if (failures.length > 0) {
       return this.abandonRouteOnPointFailure(reservation, failures);
     }
@@ -959,7 +1051,12 @@ export class LayoutService extends EventEmitter {
     // cleared. A route must never sit `active` while a point it holds is
     // known not to have accepted its command, and a restart Safe-Stop must
     // never be cleared by a resume that then failed.
-    const failures = (await this.commandPointHolds(result.pointsToRecommand)).map((f) => f.message);
+    const failures = (
+      await this.commandPointHolds(result.pointsToRecommand, {
+        routeId,
+        locoAddress: result.reservation.locoAddress,
+      })
+    ).map((f) => f.message);
 
     if (failures.length > 0) {
       const reason = `resume refused — ${pluralise(failures.length, 'point command')} failed: ${failures.join('; ')}`;
@@ -970,7 +1067,10 @@ export class LayoutService extends EventEmitter {
       });
       const outcome = await this.reservations.suspendOne(this.layoutId, routeId, reason);
       if (outcome?.reservation) {
-        this.emit('event', { type: 'ROUTE_STATE', payload: outcome.reservation } satisfies LayoutEvent);
+        this.emit('event', {
+          type: 'ROUTE_STATE',
+          payload: outcome.reservation,
+        } satisfies LayoutEvent);
       }
       // The D9 latch is deliberately left intact: this route is not resolved,
       // so `recoveredRouteCount` must not drop and Safe-Stop must not clear.
@@ -1091,10 +1191,7 @@ export class LayoutService extends EventEmitter {
     // The same D7 consequence a manual mode change has: an auto-authority route
     // is suspended, not cancelled, so its locks stay held and the operator
     // decides what happens to the train.
-    const outcomes = await this.reservations.suspendAuto(
-      layoutId,
-      'compiled track graph has gaps',
-    );
+    const outcomes = await this.reservations.suspendAuto(layoutId, 'compiled track graph has gaps');
     for (const outcome of outcomes) {
       this.publishReservationOutcome(outcome);
     }
@@ -1125,7 +1222,11 @@ export class LayoutService extends EventEmitter {
     // state here overwrites any stale old-shape retained `point/*/state`
     // message the pre-#25 backend left on the broker.
     for (const point of dbPoints) {
-      const registered = this.stateManager.registerPoint(point.id, point.positionFeedback, this.clock.now());
+      const registered = this.stateManager.registerPoint(
+        point.id,
+        point.positionFeedback,
+        this.clock.now(),
+      );
       this.publishPointState(registered);
     }
 
@@ -1242,7 +1343,12 @@ export class LayoutService extends EventEmitter {
     if (!obs.inService) {
       this.log.warn(
         '[LayoutService] Sensor reading from an out-of-service sensor — dropping before validation',
-        { layoutId: this.layoutId, sensorId, sensorName: this.names.get().sensors.get(sensorId), topic },
+        {
+          layoutId: this.layoutId,
+          sensorId,
+          sensorName: this.names.get().sensors.get(sensorId),
+          topic,
+        },
       );
       return;
     }
@@ -1252,14 +1358,17 @@ export class LayoutService extends EventEmitter {
       // retained-clear, not a malformed reading — it asserts nothing about
       // occupancy, so derived state stays exactly where the last real
       // reading left it.
-      this.log.info('[LayoutService] Empty (retained-clear) sensor payload — ignored, not a fault', {
-        layoutId: this.layoutId,
-        sensorId,
-        sensorName: this.names.get().sensors.get(sensorId),
-        blockId: obs.blockId,
-        blockName: obs.blockId ? this.names.get().blocks.get(obs.blockId) : undefined,
-        topic,
-      });
+      this.log.info(
+        '[LayoutService] Empty (retained-clear) sensor payload — ignored, not a fault',
+        {
+          layoutId: this.layoutId,
+          sensorId,
+          sensorName: this.names.get().sensors.get(sensorId),
+          blockId: obs.blockId,
+          blockName: obs.blockId ? this.names.get().blocks.get(obs.blockId) : undefined,
+          topic,
+        },
+      );
       return;
     }
 
@@ -1275,11 +1384,14 @@ export class LayoutService extends EventEmitter {
         // D1/D8: a retained replay is not evidence the sensor is healthy
         // NOW — it may be the very last (possibly stale) reading from
         // before it started publishing garbage.
-        this.log.info('[LayoutService] Valid RETAINED reading while faulted — does not count toward arming', {
-          layoutId: this.layoutId,
-          sensorId,
-          sensorName: this.names.get().sensors.get(sensorId),
-        });
+        this.log.info(
+          '[LayoutService] Valid RETAINED reading while faulted — does not count toward arming',
+          {
+            layoutId: this.layoutId,
+            sensorId,
+            sensorName: this.names.get().sensors.get(sensorId),
+          },
+        );
         return;
       }
       const updatedFault: SensorFault = {
@@ -1290,13 +1402,16 @@ export class LayoutService extends EventEmitter {
         ...this.health,
         sensorFaults: { ...this.health.sensorFaults, [sensorId]: updatedFault },
       };
-      this.log.info('[LayoutService] Valid reading while faulted — counted toward recovery arming', {
-        layoutId: this.layoutId,
-        sensorId,
-        sensorName: this.names.get().sensors.get(sensorId),
-        consecutiveValidReadings: updatedFault.consecutiveValidReadings,
-        requiredValidReadings: this.options.clearAfterValidReadings,
-      });
+      this.log.info(
+        '[LayoutService] Valid reading while faulted — counted toward recovery arming',
+        {
+          layoutId: this.layoutId,
+          sensorId,
+          sensorName: this.names.get().sensors.get(sensorId),
+          consecutiveValidReadings: updatedFault.consecutiveValidReadings,
+          requiredValidReadings: this.options.clearAfterValidReadings,
+        },
+      );
       this.emitSensorFaults();
       return;
     }
@@ -1328,13 +1443,16 @@ export class LayoutService extends EventEmitter {
     );
     if (!retained && !obs.trusted) {
       this.stateManager.setSensorTrusted(sensorId, true);
-      this.log.info('[LayoutService] Sensor trusted — first live reading inside the freshness window', {
-        layoutId: this.layoutId,
-        sensorId,
-        sensorName: this.names.get().sensors.get(sensorId),
-        blockId: obs.blockId,
-        blockName: obs.blockId ? this.names.get().blocks.get(obs.blockId) : undefined,
-      });
+      this.log.info(
+        '[LayoutService] Sensor trusted — first live reading inside the freshness window',
+        {
+          layoutId: this.layoutId,
+          sensorId,
+          sensorName: this.names.get().sensors.get(sensorId),
+          blockId: obs.blockId,
+          blockName: obs.blockId ? this.names.get().blocks.get(obs.blockId) : undefined,
+        },
+      );
     } else if (retained) {
       this.log.info(
         '[LayoutService] Retained sensor reading — recorded, not trusted (docs/sensor-trust.md D7)',
@@ -1431,7 +1549,11 @@ export class LayoutService extends EventEmitter {
    * re-fault (DD5) keeps the ORIGINAL `faultedAt`/`reason` — the first
    * cause — and resets `consecutiveValidReadings` to 0.
    */
-  private async tripSensorFault(sensorId: SensorId, topic: string, parseErrorMessage: string): Promise<void> {
+  private async tripSensorFault(
+    sensorId: SensorId,
+    topic: string,
+    parseErrorMessage: string,
+  ): Promise<void> {
     const obs = this.stateManager.getSensorObservation(sensorId);
     const existing = this.health.sensorFaults[sensorId];
     // sensorLabel already quotes the name when one is known (or renders the
@@ -1453,7 +1575,10 @@ export class LayoutService extends EventEmitter {
       error: parseErrorMessage,
     });
 
-    this.health = { ...this.health, sensorFaults: { ...this.health.sensorFaults, [sensorId]: fault } };
+    this.health = {
+      ...this.health,
+      sensorFaults: { ...this.health.sensorFaults, [sensorId]: fault },
+    };
     this.stateManager.setSensorFaulted(sensorId, true);
     this.stateManager.clearSensorReading(sensorId);
 
@@ -1491,7 +1616,7 @@ export class LayoutService extends EventEmitter {
     const previousOccupancy = previous?.occupancy ?? 'unknown';
     // D4: occupancy no longer determinable -> loco identity is nulled, not
     // carried forward as a going belief.
-    const locoAddress = derived === 'unknown' ? null : previous?.locoAddress ?? null;
+    const locoAddress = derived === 'unknown' ? null : (previous?.locoAddress ?? null);
 
     if (previous && previous.occupancy === derived && previous.locoAddress === locoAddress) {
       return;
@@ -1502,7 +1627,10 @@ export class LayoutService extends EventEmitter {
     this.emit('event', { type: 'BLOCK_STATE', payload: updated } satisfies LayoutEvent);
 
     if (isBlockEffectivelyOccupied(updated.occupancy)) {
-      this.log.info('[LayoutService] Block occupied', { blockId, blockName: this.names.get().blocks.get(blockId) });
+      this.log.info('[LayoutService] Block occupied', {
+        blockId,
+        blockName: this.names.get().blocks.get(blockId),
+      });
     }
 
     // B5, checked BEFORE `onOccupancyChange` below: a train reaching its
@@ -1534,7 +1662,10 @@ export class LayoutService extends EventEmitter {
       // the violation above, the route keeps its locks — Safe-Stop suspends
       // it rather than cancelling it (D8).
       if (outcome.occupancyUnknownBlockId && outcome.reservation) {
-        await this.handleRouteOccupancyUnknown(outcome.occupancyUnknownBlockId, outcome.reservation);
+        await this.handleRouteOccupancyUnknown(
+          outcome.occupancyUnknownBlockId,
+          outcome.reservation,
+        );
       }
     }
   }
@@ -1573,7 +1704,8 @@ export class LayoutService extends EventEmitter {
     safeStopReason: string | null;
     faults: SensorFaultView[];
   }> {
-    if (this.layoutId !== layoutId) throw new SensorNotFoundError(sensorId, sensorLabel(sensorId, this.names.get()));
+    if (this.layoutId !== layoutId)
+      throw new SensorNotFoundError(sensorId, sensorLabel(sensorId, this.names.get()));
     const obs = this.stateManager.getSensorObservation(sensorId);
     if (!obs) throw new SensorNotFoundError(sensorId, sensorLabel(sensorId, this.names.get()));
 
@@ -1659,7 +1791,11 @@ export class LayoutService extends EventEmitter {
    *     payload-named point's own state left untouched), or retained (D1 —
    *     drop, arms nothing, faults nothing on its own).
    */
-  private async handlePointReading(topicPointId: PointId, rawPayload: unknown, retained: boolean): Promise<void> {
+  private async handlePointReading(
+    topicPointId: PointId,
+    rawPayload: unknown,
+    retained: boolean,
+  ): Promise<void> {
     if (!this.stateManager.getPoint(topicPointId)) {
       this.log.warn('[LayoutService] Point reading for a point not in this layout — dropping', {
         layoutId: this.layoutId,
@@ -1685,7 +1821,12 @@ export class LayoutService extends EventEmitter {
       reportedAt: parsed.data.updatedAt ? new Date(parsed.data.updatedAt) : null,
     };
 
-    const outcome = this.pointConfirmations.applyReading(topicPointId, reading, this.clock.now(), retained);
+    const outcome = this.pointConfirmations.applyReading(
+      topicPointId,
+      reading,
+      this.clock.now(),
+      retained,
+    );
 
     if (outcome.rejection?.kind === 'unknown-point') {
       // Defence in depth: step 1 above already dropped this case, and the
@@ -1720,7 +1861,10 @@ export class LayoutService extends EventEmitter {
     this.publishPointState(outcome.point);
     this.emit('event', { type: 'POINT_STATE', payload: outcome.point } satisfies LayoutEvent);
 
-    if (outcome.point.confirmation === 'mismatch' || outcome.point.confirmation === 'indeterminate') {
+    if (
+      outcome.point.confirmation === 'mismatch' ||
+      outcome.point.confirmation === 'indeterminate'
+    ) {
       await this.handlePointNotConfirmed(
         topicPointId,
         outcome.point.confirmation,
@@ -1740,7 +1884,10 @@ export class LayoutService extends EventEmitter {
         ...fault,
         consecutiveConfirmations: outcome.arms ? fault.consecutiveConfirmations + 1 : 0,
       };
-      this.health = { ...this.health, pointFaults: { ...this.health.pointFaults, [topicPointId]: updatedFault } };
+      this.health = {
+        ...this.health,
+        pointFaults: { ...this.health.pointFaults, [topicPointId]: updatedFault },
+      };
       this.log.info('[LayoutService] Reading applied while point faulted', {
         layoutId: this.layoutId,
         pointId: topicPointId,
@@ -1759,7 +1906,11 @@ export class LayoutService extends EventEmitter {
    * enters Safe-Stop through — never `stateManager.enterSafeStop` directly
    * (CLAUDE.md Traps). Mirrors `raiseRouteFault`/`tripSensorFault`.
    */
-  private async raisePointFault(pointId: PointId, kind: PointFault['kind'], reason: string): Promise<void> {
+  private async raisePointFault(
+    pointId: PointId,
+    kind: PointFault['kind'],
+    reason: string,
+  ): Promise<void> {
     const existing = this.health.pointFaults[pointId];
     const fault: PointFault = existing
       ? { ...existing, consecutiveConfirmations: 0 }
@@ -1845,7 +1996,10 @@ export class LayoutService extends EventEmitter {
     }
 
     if (pointIds.length > 0) {
-      this.log.info('[LayoutService] Point positions queried', { layoutId: this.layoutId, count: pointIds.length });
+      this.log.info('[LayoutService] Point positions queried', {
+        layoutId: this.layoutId,
+        count: pointIds.length,
+      });
     }
   }
 
@@ -1874,7 +2028,8 @@ export class LayoutService extends EventEmitter {
     safeStopReason: string | null;
     faults: PointFaultView[];
   }> {
-    if (this.layoutId !== layoutId) throw new PointNotFoundError(pointId, pointLabel(pointId, this.names.get()));
+    if (this.layoutId !== layoutId)
+      throw new PointNotFoundError(pointId, pointLabel(pointId, this.names.get()));
     const point = this.stateManager.getPoint(pointId);
     if (!point) throw new PointNotFoundError(pointId, pointLabel(pointId, this.names.get()));
 
@@ -1945,8 +2100,10 @@ export class LayoutService extends EventEmitter {
     });
 
     if (created.inService) {
-      await this.mqtt.subscribe(created.mqttTopic, (payload, topic, retained) =>
-        void this.handleSensorReading(created.id, topic, payload, retained),
+      await this.mqtt.subscribe(
+        created.mqttTopic,
+        (payload, topic, retained) =>
+          void this.handleSensorReading(created.id, topic, payload, retained),
       );
     }
 
@@ -2176,7 +2333,10 @@ export class LayoutService extends EventEmitter {
    * directly the way this used to. The direct call left no latch, so the
    * next unrelated health evaluation cleared it (#4).
    */
-  private async handleRouteViolation(blockId: BlockId, reservation: RouteReservation): Promise<void> {
+  private async handleRouteViolation(
+    blockId: BlockId,
+    reservation: RouteReservation,
+  ): Promise<void> {
     await this.stopLoco(reservation.locoAddress);
     await this.raiseRouteFault({
       routeId: reservation.id,
@@ -2287,7 +2447,16 @@ export class LayoutService extends EventEmitter {
    * skip: it means the reservation and the config have drifted apart, which
    * is exactly the kind of uncertainty that must not be driven through.
    */
-  private async commandPointHolds(holds: readonly RouteHold[]): Promise<PointCommandFailure[]> {
+  private async commandPointHolds(
+    holds: readonly RouteHold[],
+    /**
+     * Which route these commands belong to (#148). Carried so an `<X>` from the
+     * command station faults *that route* rather than latching on the link —
+     * a rejected point command is a route whose road is not set, which is what
+     * `point-command-rejected` already means.
+     */
+    owner: { routeId: RouteId; locoAddress: LocoAddress } | null = null,
+  ): Promise<PointCommandFailure[]> {
     const pointHolds = holds.filter(
       (hold): hold is RouteHold & { requiredPosition: 'normal' | 'reverse' } =>
         hold.kind === 'point' && hold.requiredPosition !== null,
@@ -2309,11 +2478,24 @@ export class LayoutService extends EventEmitter {
       }
 
       try {
+        this.recordDccCommand({
+          kind: 'accessory',
+          command: formatSetPoint(pointRecord.dccAddress, hold.requiredPosition),
+          locoAddress: owner?.locoAddress ?? null,
+          speedStep: null,
+          direction: null,
+          pointId: hold.targetId,
+          routeId: owner?.routeId ?? null,
+        });
         await this.dcc.setPoint(pointRecord.dccAddress, hold.requiredPosition);
         // #25: same noteCommanded/onPointCommanded pair as handlePointCommand
         // — a route's own point commands arm/skip a confirmation deadline
         // exactly the same way a manual command does (D5/D7).
-        const updated = this.pointConfirmations.noteCommanded(hold.targetId, hold.requiredPosition, this.clock.now());
+        const updated = this.pointConfirmations.noteCommanded(
+          hold.targetId,
+          hold.requiredPosition,
+          this.clock.now(),
+        );
         if (updated) {
           this.publishPointState(updated);
           this.emit('event', { type: 'POINT_STATE', payload: updated } satisfies LayoutEvent);
@@ -2633,7 +2815,9 @@ export class LayoutService extends EventEmitter {
       return this.refuseBrakingRun(plan.reason);
     }
 
-    this.abortBrakingRun(locoAddress, 'superseded by a new braking run', { clearExpectation: true });
+    this.abortBrakingRun(locoAddress, 'superseded by a new braking run', {
+      clearExpectation: true,
+    });
 
     const run: BrakingRun = {
       locoAddress,
@@ -2647,7 +2831,7 @@ export class LayoutService extends EventEmitter {
     const firstStep = plan.schedule.steps[0];
     run.nextStepIndex = 1;
     try {
-      await this.issueBrakingStep(locoAddress, firstStep);
+      await this.issueBrakingStep(locoAddress, firstStep, run.routeId);
     } catch (err) {
       this.brakingRuns.delete(locoAddress);
       const message = err instanceof Error ? err.message : String(err);
@@ -2721,7 +2905,7 @@ export class LayoutService extends EventEmitter {
 
     run.nextStepIndex += 1;
     try {
-      await this.issueBrakingStep(run.locoAddress, step);
+      await this.issueBrakingStep(run.locoAddress, step, run.routeId);
     } catch (err) {
       // B6: abort the run, latch a fault, Safe-Stop — deliberately NOT the
       // cancel-and-release posture of `point-command-rejected`. A moving
@@ -2759,7 +2943,20 @@ export class LayoutService extends EventEmitter {
    * failed command means, and neither can decide it if this swallows the
    * error the way `stopLoco` deliberately does.
    */
-  private async issueBrakingStep(locoAddress: LocoAddress, step: BrakingStep): Promise<void> {
+  private async issueBrakingStep(
+    locoAddress: LocoAddress,
+    step: BrakingStep,
+    routeId: RouteId | null = null,
+  ): Promise<void> {
+    this.recordDccCommand({
+      kind: 'throttle',
+      command: formatSetSpeed(locoAddress, step.speedStep, step.direction),
+      locoAddress,
+      speedStep: step.speedStep,
+      direction: step.direction,
+      pointId: null,
+      routeId,
+    });
     await this.dcc.setSpeed(locoAddress, step.speedStep, step.direction);
     const locoState = this.stateManager.updateLoco(locoAddress, {
       speed: step.speedStep,
@@ -2985,7 +3182,12 @@ export class LayoutService extends EventEmitter {
   private async executeAutomationAction({ run, decision }: AutomationAction): Promise<void> {
     switch (decision.kind) {
       case 'depart':
-        await this.departAutomatedTrain(run.locoAddress, run.routeId, decision.speedStep, decision.direction);
+        await this.departAutomatedTrain(
+          run.locoAddress,
+          run.routeId,
+          decision.speedStep,
+          decision.direction,
+        );
         return;
 
       case 'brake':
@@ -3003,7 +3205,9 @@ export class LayoutService extends EventEmitter {
           locoName: this.names.get().locos.get(run.locoAddress),
           routeId: run.routeId,
           sensorId: run.berthSensorId,
-          sensorName: run.berthSensorId ? this.names.get().sensors.get(run.berthSensorId) : undefined,
+          sensorName: run.berthSensorId
+            ? this.names.get().sensors.get(run.berthSensorId)
+            : undefined,
         });
         return;
 
@@ -3048,6 +3252,15 @@ export class LayoutService extends EventEmitter {
     direction: 'fwd' | 'rev',
   ): Promise<void> {
     try {
+      this.recordDccCommand({
+        kind: 'throttle',
+        command: formatSetSpeed(locoAddress, speedStep, direction),
+        locoAddress,
+        speedStep,
+        direction,
+        pointId: null,
+        routeId,
+      });
       await this.dcc.setSpeed(locoAddress, speedStep, direction);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -3138,15 +3351,13 @@ export class LayoutService extends EventEmitter {
   }
 
   private async stopLoco(locoAddress: number): Promise<void> {
-    await this.dcc
-      .setSpeed(locoAddress, 0, 'stop')
-      .catch((err: Error) =>
-        this.log.error('[LayoutService] Failed to stop loco', {
-          locoAddress,
-          locoName: this.names.get().locos.get(locoAddress),
-          error: err.message,
-        }),
-      );
+    await this.dcc.setSpeed(locoAddress, 0, 'stop').catch((err: Error) =>
+      this.log.error('[LayoutService] Failed to stop loco', {
+        locoAddress,
+        locoName: this.names.get().locos.get(locoAddress),
+        error: err.message,
+      }),
+    );
     const locoState = this.stateManager.updateLoco(locoAddress, { speed: 0, direction: 'stop' });
     this.publishLocoState(locoState);
     this.emit('event', { type: 'LOCO_STATE', payload: locoState } satisfies LayoutEvent);
@@ -3173,7 +3384,10 @@ export class LayoutService extends EventEmitter {
           { clearExpectation: true },
         );
       }
-      this.emit('event', { type: 'ROUTE_STATE', payload: outcome.reservation } satisfies LayoutEvent);
+      this.emit('event', {
+        type: 'ROUTE_STATE',
+        payload: outcome.reservation,
+      } satisfies LayoutEvent);
     }
     for (const block of outcome.changedBlocks) {
       this.publishBlockState(block);
@@ -3192,6 +3406,159 @@ export class LayoutService extends EventEmitter {
       this.health = { ...this.health, recoveredRouteCount: this.recoveredRouteIds.size };
       await this.evaluateAndApplySafeStop();
     }
+  }
+
+  // ─── Private: the DCC link (#148, docs/dcc-link.md) ───────────────────────────
+
+  private startDccProbeSweep(): void {
+    this.dccProbeTimer = this.clock.setInterval(() => {
+      void this.runDccProbeSweep();
+    }, DCC_PROBE_INTERVAL_MS);
+  }
+
+  private stopDccProbeSweep(): void {
+    this.dccProbeTimer?.cancel();
+    this.dccProbeTimer = null;
+  }
+
+  /**
+   * One tick: ask, then judge.
+   *
+   * The order matters. Judging first would evaluate liveness against a probe
+   * sent an interval ago and declare the link lost one tick early on a station
+   * that is merely slow; asking first means the verdict is always about
+   * silence that has already been given a full timeout to end.
+   */
+  private async runDccProbeSweep(): Promise<void> {
+    await this.probeDccStation();
+    this.applyDccLinkEffects(this.dccLink.sweep(this.clock.now()));
+  }
+
+  /**
+   * Sends `<s>`, recording it first so the reply has something to settle.
+   *
+   * A write failure is logged and nothing else: the port being shut is
+   * `dccConnected`'s business and already Safe-Stops on its own, and raising a
+   * second, competing reason for the same fact would only confuse the operator
+   * reading it.
+   */
+  private async probeDccStation(): Promise<void> {
+    this.dccLink.recordCommand(
+      {
+        kind: 'probe',
+        command: formatStatusRequest(),
+        locoAddress: null,
+        speedStep: null,
+        direction: null,
+        pointId: null,
+        routeId: null,
+      },
+      this.clock.now(),
+    );
+    try {
+      await this.dcc.probeStatus();
+    } catch (err) {
+      this.log.warn('[LayoutService] DCC status probe could not be sent', {
+        layoutId: this.layoutId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Records a command as being on the wire. Called immediately BEFORE the
+   * write, because the queue is in wire order and a command recorded after its
+   * own reply would be attributed the next command's verdict.
+   */
+  private recordDccCommand(context: DccCommandContext): void {
+    this.dccLink.recordCommand(context, this.clock.now());
+  }
+
+  /**
+   * The station said something. Parse-and-delegate, exactly like an MQTT
+   * handler: `DccLinkService` decides, this method applies.
+   */
+  private handleDccResponse(response: DccResponse): void {
+    const effects = this.dccLink.handleResponse(response, this.clock.now());
+    this.applyDccLinkEffects(effects);
+  }
+
+  /**
+   * Applies what a response or sweep produced: log the advisories, latch any
+   * route faults, and re-evaluate Safe-Stop if the link's health moved.
+   *
+   * Fire-and-forget rather than awaited, mirroring `handleDccConnectionChange`
+   * — this runs on a serial `data` callback and on a timer, neither of which
+   * has anywhere to return a promise to.
+   */
+  private applyDccLinkEffects(effects: DccLinkEffects): void {
+    for (const warning of effects.warnings) {
+      this.log.warn(warning.message, { layoutId: this.layoutId, ...warning.data });
+    }
+
+    for (const fault of effects.routeFaults) {
+      void this.raiseRouteFault({
+        routeId: fault.routeId,
+        kind: fault.kind,
+        reason: fault.reason,
+        blockId: null,
+        pointId: fault.pointId,
+        locoAddress: fault.locoAddress ?? 0,
+      }).catch((err: Error) =>
+        this.log.error('[LayoutService] raiseRouteFault failed', { error: err.message }),
+      );
+    }
+
+    if (!effects.healthChanged) return;
+
+    const link = this.dccLink.getHealth();
+    this.health = { ...this.health, dccLink: link };
+    if (link.fault) {
+      this.log.error('[LayoutService] DCC link fault latched', {
+        layoutId: this.layoutId,
+        kind: link.fault.kind,
+        reason: link.fault.reason,
+        locoAddress: link.fault.locoAddress,
+        locoName:
+          link.fault.locoAddress === null
+            ? null
+            : this.names.get().locos.get(link.fault.locoAddress),
+        pointId: link.fault.pointId,
+        pointName:
+          link.fault.pointId === null ? null : this.names.get().points.get(link.fault.pointId),
+      });
+    }
+    this.evaluateAndApplySafeStop().catch((err: Error) =>
+      this.log.error('[LayoutService] evaluateAndApplySafeStop failed', { error: err.message }),
+    );
+  }
+
+  /** The DCC link as the wire sees it (#148). */
+  getDccLink(): DccLinkView {
+    return toDccLinkView(this.dccLink.getHealth());
+  }
+
+  /**
+   * Clears the latched DCC-link fault. Any authenticated role, like the
+   * route-fault acknowledge it mirrors.
+   *
+   * No arming threshold, and for a sharper reason than a route's: `responsive`
+   * is evaluated live on every sweep, so acknowledging a `link-lost` fault
+   * while the station is still silent clears the latch and the very next sweep
+   * latches it again. The acknowledgement cannot outrun the evidence.
+   */
+  async acknowledgeDccLinkFault(): Promise<DccLinkView> {
+    const cleared = this.dccLink.acknowledgeFault();
+    if (!cleared) throw new DccLinkNotFaultedError();
+
+    this.log.info('[LayoutService] DCC link fault acknowledged', {
+      layoutId: this.layoutId,
+      kind: cleared.kind,
+      reason: cleared.reason,
+    });
+    this.health = { ...this.health, dccLink: this.dccLink.getHealth() };
+    await this.evaluateAndApplySafeStop();
+    return this.getDccLink();
   }
 
   // ─── Private: Connection Health ───────────────────────────────────────────────
@@ -3256,7 +3623,11 @@ export class LayoutService extends EventEmitter {
           reason,
         },
       } satisfies LayoutEvent);
-    } else if (shouldStop && state.systemStatus === 'safe-stop' && reason !== state.safeStopReason) {
+    } else if (
+      shouldStop &&
+      state.systemStatus === 'safe-stop' &&
+      reason !== state.safeStopReason
+    ) {
       // Still stopped, but the underlying cause has changed — e.g. two
       // sensor faults were latched (D2, docs/sensor-fault-recovery.md) and
       // the oldest was just acknowledged, so a different one is now
@@ -3305,7 +3676,9 @@ export class LayoutService extends EventEmitter {
     };
     this.mqtt
       .publish(`${this.topicBase()}/system/status`, payload, { qos: 1, retain: true })
-      .catch((err: Error) => this.log.error('[LayoutService] Failed to publish system status', { error: err.message }));
+      .catch((err: Error) =>
+        this.log.error('[LayoutService] Failed to publish system status', { error: err.message }),
+      );
 
     this.emit('event', {
       type: 'SYSTEM_STATUS',
@@ -3317,7 +3690,9 @@ export class LayoutService extends EventEmitter {
     const payload = { ...loco, updatedAt: loco.lastUpdated.toISOString() };
     this.mqtt
       .publish(`${this.topicBase()}/loco/${loco.address}/state`, payload, { qos: 1, retain: true })
-      .catch((err: Error) => this.log.error('[LayoutService] Failed to publish loco state', { error: err.message }));
+      .catch((err: Error) =>
+        this.log.error('[LayoutService] Failed to publish loco state', { error: err.message }),
+      );
   }
 
   /** Publishes exactly the contract's field set (docs/mqtt-contract.md `point/{pointId}/state`) — `awaitingSince` and `lastReadingAt` stay off MQTT, internal-only bookkeeping. */
@@ -3337,7 +3712,9 @@ export class LayoutService extends EventEmitter {
         qos: 1,
         retain: true,
       })
-      .catch((err: Error) => this.log.error('[LayoutService] Failed to publish point state', { error: err.message }));
+      .catch((err: Error) =>
+        this.log.error('[LayoutService] Failed to publish point state', { error: err.message }),
+      );
   }
 
   private publishBlockState(block: BlockState): void {
@@ -3347,7 +3724,9 @@ export class LayoutService extends EventEmitter {
         qos: 1,
         retain: true,
       })
-      .catch((err: Error) => this.log.error('[LayoutService] Failed to publish block state', { error: err.message }));
+      .catch((err: Error) =>
+        this.log.error('[LayoutService] Failed to publish block state', { error: err.message }),
+      );
   }
 
   // ─── Private: Heartbeat ───────────────────────────────────────────────────────
@@ -3355,7 +3734,11 @@ export class LayoutService extends EventEmitter {
   private startHeartbeat(): void {
     this.heartbeatTimer = setInterval(() => {
       this.mqtt
-        .publish(`${this.topicBase()}/system/heartbeat`, { ts: Date.now() }, { qos: 0, retain: false })
+        .publish(
+          `${this.topicBase()}/system/heartbeat`,
+          { ts: Date.now() },
+          { qos: 0, retain: false },
+        )
         .catch(() => {});
     }, 5000);
   }

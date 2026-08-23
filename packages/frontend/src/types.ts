@@ -180,7 +180,13 @@ export interface RouteRejection {
 /** Wire projection of the backend's `RouteFault` (#4, extended #25 D8). `faultedAt` is ISO 8601. */
 export interface RouteFaultView {
   routeId: string;
-  kind: 'unexpected-occupancy' | 'occupancy-unknown' | 'point-command-rejected' | 'point-not-confirmed';
+  kind:
+    | 'unexpected-occupancy'
+    | 'occupancy-unknown'
+    | 'point-command-rejected'
+    | 'point-not-confirmed'
+    /** #148: the command station answered `<X>` to a throttle command this route issued. */
+    | 'dcc-command-rejected';
   reason: string;
   blockId: string | null;
   /** The point that failed to confirm, for 'point-not-confirmed' only — every other kind carries `null` (#25). */
@@ -320,20 +326,20 @@ export interface CompiledGraphStatus {
  * because they are in already-authored grids and must keep round-tripping.
  */
 export type TileType =
-  | 'straight-h'    // ─ (also covers legacy straight-v via rotation)
-  | 'straight-v'    // │ (legacy – still renderable)
-  | 'straight-45'   // ╱ (diagonal / "Corner")
-  | 'curve'         // ╭ (quarter-circle, rotatable)
+  | 'straight-h' // ─ (also covers legacy straight-v via rotation)
+  | 'straight-v' // │ (legacy – still renderable)
+  | 'straight-45' // ╱ (diagonal / "Corner")
+  | 'curve' // ╭ (quarter-circle, rotatable)
   // Legacy named curves – kept for backward compat with saved grids
-  | 'curve-ne'      // ╭
-  | 'curve-nw'      // ╮
-  | 'curve-se'      // ╰
-  | 'curve-sw'      // ╯
-  | 'point-left'    // ╠
-  | 'point-right'   // ╣
-  | 'buffer'        // ■
-  | 'platform'      // ▬
-  | 'crossing';     // ╋
+  | 'curve-ne' // ╭
+  | 'curve-nw' // ╮
+  | 'curve-se' // ╰
+  | 'curve-sw' // ╯
+  | 'point-left' // ╠
+  | 'point-right' // ╣
+  | 'buffer' // ■
+  | 'platform' // ▬
+  | 'crossing'; // ╋
 
 /** Mirrors `TILE_ROTATIONS` — the eight 45° steps the editor authors. */
 export type TileRotation = 0 | 45 | 90 | 135 | 180 | 225 | 270 | 315;
@@ -606,7 +612,13 @@ export interface BlockState {
  * `'required'` point; `'timed-out'` — the confirmation deadline elapsed with
  * no reading.
  */
-export type PointConfirmation = 'unreported' | 'pending' | 'confirmed' | 'mismatch' | 'indeterminate' | 'timed-out';
+export type PointConfirmation =
+  | 'unreported'
+  | 'pending'
+  | 'confirmed'
+  | 'mismatch'
+  | 'indeterminate'
+  | 'timed-out';
 
 /**
  * Mirrors `PointFeedbackMode` — whether a point is configured to require a
@@ -663,6 +675,48 @@ export interface LocoState {
   lastUpdated: string;
 }
 
+/**
+ * Wire projection of the backend's `DccLinkFault` (#148, `docs/dcc-link.md`).
+ * `faultedAt` is ISO 8601.
+ */
+export interface DccLinkFaultView {
+  kind:
+    | 'link-lost'
+    | 'cab-mismatch'
+    | 'command-rejected'
+    | 'unattributed-rejection'
+    | 'station-restarted';
+  reason: string;
+  locoAddress: number | null;
+  pointId: string | null;
+  faultedAt: string;
+}
+
+/**
+ * Wire projection of the backend's `DccLinkHealth` (#148).
+ *
+ * `responsive` is the Safe-Stop-bearing field: it says whether the command
+ * station is *answering*, which the serial port being open cannot. The two power
+ * flags are observation only in #148 — nothing gates on them yet (#149) — and
+ * `null` means never observed, which is not the same as off.
+ */
+export interface DccLinkView {
+  responsive: boolean;
+  reason: string | null;
+  fault: DccLinkFaultView | null;
+  mainPowerOn: boolean | null;
+  progPowerOn: boolean | null;
+  identity: {
+    version: string | null;
+    product: string | null;
+    commit: string | null;
+    raw: string;
+    observedAt: string;
+  } | null;
+  restartCount: number;
+  lastResponseAt: string | null;
+}
+
 export interface StateSnapshot {
   systemStatus: SystemStatus;
   systemMode: SystemMode;
@@ -679,6 +733,8 @@ export interface StateSnapshot {
   routeFaults: RouteFaultView[];
   /** #6: current latched braking faults, one per loco, likewise the complete set. */
   brakingFaults: BrakingFaultView[];
+  /** #148: the command-station link. One object, not a collection — there is one station. */
+  dccLink: DccLinkView;
   /**
    * #7: every train currently under automation, likewise the complete set. In
    * the snapshot as well as on its own event because `AUTOMATION_STATE` is only
@@ -695,7 +751,10 @@ export type ServerMessage =
   | { type: 'BLOCK_STATE'; payload: BlockState }
   | { type: 'POINT_STATE'; payload: PointState }
   | { type: 'LOCO_STATE'; payload: LocoState }
-  | { type: 'SYSTEM_STATUS'; payload: { status: SystemStatus; mode: SystemMode; reason: string | null } }
+  | {
+      type: 'SYSTEM_STATUS';
+      payload: { status: SystemStatus; mode: SystemMode; reason: string | null };
+    }
   | { type: 'SENSOR_FAULTS'; payload: { faults: SensorFaultView[] } }
   | { type: 'POINT_FAULTS'; payload: { faults: PointFaultView[] } }
   | { type: 'ROUTE_STATE'; payload: RouteReservation }
@@ -732,8 +791,14 @@ export const STALE_AFTER_MS = HEARTBEAT_INTERVAL_MS * STALE_AFTER_MISSED_HEARTBE
 // ─── Client → Server messages ─────────────────────────────────────────────────
 
 export type ClientMessage =
-  | { type: 'THROTTLE_COMMAND'; payload: { locoAddress: number; speed: number; direction: Direction } }
-  | { type: 'POINT_COMMAND'; payload: { pointId: string; position: 'normal' | 'reverse'; force?: boolean } }
+  | {
+      type: 'THROTTLE_COMMAND';
+      payload: { locoAddress: number; speed: number; direction: Direction };
+    }
+  | {
+      type: 'POINT_COMMAND';
+      payload: { pointId: string; position: 'normal' | 'reverse'; force?: boolean };
+    }
   | { type: 'FUNCTION_COMMAND'; payload: { locoAddress: number; fn: number; state: boolean } }
   | { type: 'SET_MODE'; payload: { mode: SystemMode } }
   | { type: 'EMERGENCY_STOP' };
