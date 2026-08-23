@@ -149,6 +149,16 @@ The backend writes structured JSON straight to stdout through the hand-rolled
 the journal — so there is no log file, and nothing for logrotate to rotate. Retention is
 `SystemMaxUse` and `MaxRetentionSec` in a `journald.conf.d` drop-in.
 
+**Severity does not survive the trip into the journal**, and this is worth knowing before
+you go looking for an error that is there. Everything the logger writes goes to
+`process.stdout`, which journald records at `info` priority for the whole unit — the
+severity lives in a `level` field *inside* the JSON, which journald does not parse. So
+`journalctl -p err -u layout-orchestrator` returns nothing at all, cheerfully, whatever
+has happened; filter on the payload (`grep '"level":"error"'`) instead. Making `-p` work
+would mean emitting systemd's `<N>` prefixes and setting `SyslogLevelPrefix`, which is a
+change to the logging interface rather than to this deployment, and is not worth making
+until something wants it.
+
 journald has no per-unit retention, so both settings are host-wide. Acceptable on a
 dedicated bench box, and the reason the numbers are modest (500 MB, 30 days) rather than
 generous.
@@ -243,7 +253,7 @@ bash deploy/deploy.sh <tag|sha>      # anything else
 | Task | Command |
 |---|---|
 | Follow the logs | `journalctl -u layout-orchestrator -f` |
-| Errors only, since boot | `journalctl -u layout-orchestrator -p err -b` |
+| Errors since boot | `journalctl -u layout-orchestrator -b \| grep '"level":"error"'` |
 | Service state | `systemctl status layout-orchestrator` |
 | Back up now | `sudo systemctl start layout-orchestrator-backup` |
 | Backup history | `journalctl -u layout-orchestrator-backup` |
