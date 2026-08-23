@@ -29,6 +29,7 @@ import { routeRoutes } from './routes/routes';
 import { authRoutes } from './routes/auth';
 import { userRoutes } from './routes/users';
 import { emergencyStopRoutes } from './routes/emergencyStop';
+import { dccLinkRoutes } from './routes/dccLink';
 import { capabilityRoutes } from './routes/capabilities';
 import { sensorSimulationRoutes } from './routes/sensorSimulation';
 import { registerAuthHook } from './auth/hook';
@@ -97,6 +98,7 @@ export async function buildServer(
   await blockRoutes(fastify, repo, topologyService, nameBook);
   await pointRoutes(fastify, repo, topologyService, nameBook, layoutService);
   await sensorRoutes(fastify, repo, layoutService);
+  await dccLinkRoutes(fastify, layoutService);
   // #70: constructed here rather than plumbed in from `index.ts` because it
   // holds no state and depends on nothing but the repository — the same
   // reason `layoutRoutes` still takes `repo` directly. It exists so the

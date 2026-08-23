@@ -33,6 +33,20 @@ const INITIAL_SNAPSHOT: StateSnapshot = {
   pointFaults: [],
   routeFaults: [],
   brakingFaults: [],
+  // #148: `responsive: true` before the first snapshot arrives, deliberately —
+  // this is the pre-connection placeholder, and the browser already shows
+  // `systemStatus: 'offline'` for that. A `false` here would render "the command
+  // station is not answering" on every page load, before anything has asked it.
+  dccLink: {
+    responsive: true,
+    reason: null,
+    fault: null,
+    mainPowerOn: null,
+    progPowerOn: null,
+    identity: null,
+    restartCount: 0,
+    lastResponseAt: null,
+  },
   automationRuns: [],
 };
 
@@ -215,7 +229,11 @@ function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
       // properly (a toast on the affected control) is still open; until then
       // this at least puts it where someone with devtools open will find it.
       // eslint-disable-next-line no-console -- deliberate; the frontend has no logger, and silence here is what hid the bug
-      console.warn('[ws] command rejected by backend:', msg.payload.message, msg.payload.details ?? '');
+      console.warn(
+        '[ws] command rejected by backend:',
+        msg.payload.message,
+        msg.payload.details ?? '',
+      );
       return prev;
 
     default:

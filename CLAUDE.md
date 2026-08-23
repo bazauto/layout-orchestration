@@ -49,6 +49,7 @@ the entry rather than appending the new story beneath the old one.
 | `docs/sensor-fault-recovery.md` | Sensor-fault latch recovery and the per-sensor occupancy model |
 | `docs/sensor-trust.md` | Why a retained reading is never trusted alone, the 30 s re-assert, degrade-vs-Safe-Stop (D1–D14) |
 | `docs/braking.md` | Per-loco braking model, deceleration profile, calibration (B1–B12) |
+| `docs/dcc-link.md` | The command-station link: the read path, liveness, what `<X>` and a wrong-cab `<l>` mean (D1–D12) |
 | `docs/automation.md` | Automation engine (#7): what drives a train, the berthing beam, the brake trigger, the one invariant (A1–A14) |
 | `docs/sensor-position.md` | Sub-block sensor position: the anchor, the rising-edge fix, its decay (D1–D12) |
 | `docs/point-feedback.md` | Point position confirmation channel and fault model (D1–D10) |
@@ -211,6 +212,7 @@ One line per area: enough to know whether it is what you are touching. The long 
 | **Automation engine** (#7) | Drives an `auto`-authority route: departs, runs, brakes, crawls, berths. The invariant is that **a train under automation never passes the end of its authority**. A 250 ms sweep, not an occupancy hook; the stop target is a **berthing beam**. | `automation.md` |
 | **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) — publishes to the sensor's own `mqttTopic` so the broker echoes it back through ordinary ingestion, byte-identical to hardware. | `sensor-simulation.md` |
 | **DCC wire format** (#147) | `domain/dccWireFormat.ts` builds every DCC-EX command string; `SerialDccAdapter` only writes them. Throttle is the current **three-field** `<t CAB SPEED DIR>` — the legacy leading register shifts every field and moved the wrong train. Formats, never validates. | issue #153 (index) |
+| **DCC link** (#148, #150) | The station **answers**: `domain/dccResponse.ts` frames and parses, `domain/dccLink.ts` correlates replies to commands positionally, `DccLinkService` holds `SystemHealth.dccLink`. Silence Safe-Stops; `<X>` faults the route that issued the command; a wrong-cab `<l>` Safe-Stops. Power is observed, **not** gated — that is #149. `setFunction` throws. | `dcc-link.md` |
 
 ### Traps
 
@@ -218,6 +220,18 @@ Things that look like bugs or oversights and are not — each was a deliberate d
 **One line each; the reasoning is in the record named at the end of the line.** Grep it for
 the id (`grep -n "^### D9" docs/sensor-trust.md`) before concluding any of these is wrong.
 
+- **A frame the DCC parser does not recognise is logged, not faulted** — the opposite of a malformed
+  sensor payload. A sensor speaks one schema; the command station speaks a protocol we implement a
+  subset of, so an unknown frame is the ordinary case (`dcc-link.md` D9).
+- **A `<l>` reply is matched to a command by POSITION, never by the cab it names** — matching on cab
+  would file a wrong-loco acknowledgement as unsolicited chatter, which is exactly how #147 survived
+  (`dcc-link.md` D8).
+- **A speed mismatch in an `<l>` reply warns; only a cab mismatch Safe-Stops** — dated, not permanent:
+  the speed encoding changed in PicoDCC#49, #48 is open and #151 will change it again
+  (`dcc-link.md` D6).
+- **`SerialDccAdapter.setFunction` throws instead of writing** (#150) — PicoDCC validates `<F>`,
+  accepts it, and does nothing with it. Refusing is also what makes `<X>` attributable at all
+  (`dcc-link.md` D8).
 - A point `command` arms the confirmation deadline; a **`query` deliberately does not** —
   arming on query would halt the layout at boot for any instrumented point whose controller
   was powered off (`point-feedback.md` D6).
@@ -277,6 +291,10 @@ Recorded rather than closed — **none of these is a bug to fix in passing.** On
 - **Automation's coverage tracks where the beams are.** No trusted, measured `ir_position`
   beam at the destination — or no `crawl_speed_step` on the loco — means no berth: the run
   stops at the destination block's entry boundary and an operator finishes the move.
+- **A power cutoff is still silent on the wire** (`bazauto/PicoDCC#4`, half done). #148 sees it only at
+  the next `<s>` probe, and #148 deliberately does **not** gate on track power at all — observing it is
+  this issue, acting on it is #149. A station that cut power and still answers probes reads
+  *responsive and dark* (`dcc-link.md` D10, D12).
 - **#7 deliberately does not schedule.** One route, one train, one destination, granted by an
   operator. Nothing sequences two trains or plans a timetable. That is the next feature.
 - **Driving a granted route is manual** unless it is an `auto`-authority route on a layout
@@ -291,8 +309,8 @@ Recorded rather than closed — **none of these is a bug to fix in passing.** On
 - **Duplicates hand-maintained across the backend↔frontend wire** — a change to one wants the
   other: `findBlockRuns`, `TILE_LEGS`/`EDGE_OFFSET` (frontend `diagram/trackGeometry.ts`, with
   `trackGeometry.test.ts` asserting the table literally), `HEARTBEAT_INTERVAL_MS`, and
-  `effectivePosition`. Closing them needs a shared package spanning a CommonJS backend and an
-  ESM frontend; nobody has scoped it. **#75 did not close these** — it closed the
+  `effectivePosition`, and `DccLinkView`/`DccLinkFaultView` (#148). Closing them needs a shared
+  package spanning a CommonJS backend and an ESM frontend; nobody has scoped it. **#75 did not close these** — it closed the
   editor↔monitor seam *inside* the frontend.
 - **Westgate Hollow's authoring passes are done and the compiled graph is applied**
   (2026-08-14): one connected component, no gaps, matching fingerprint in `compiled_graphs`.

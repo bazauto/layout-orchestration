@@ -520,6 +520,39 @@ automation over unobserved track are refused. The firmware side is #9 and #50.
 Safe-Stop. The fail-safe rule in `docs/mqtt-contract.md` is scoped to sensor and control
 topics; turning a bad UI request into a layout halt would itself be a bug.
 
+### The command station
+
+**The DCC leg is inside the safety model now, and what closed it was learning to listen.**
+Until #148 `SerialDccAdapter` was write-only, so `isConnected()` reported on a USB device
+node: a station that had cut track power, entered maintenance mode, rebooted or simply
+stopped listening looked exactly like a healthy one. The orchestrator now sends `<s>` every
+five seconds and reads the stream. Silence for three probes Safe-Stops the layout; a
+rejected command (`<X>`) faults the route that issued it; an acknowledgement naming a
+different loco than the one addressed Safe-Stops outright. See `docs/dcc-link.md`.
+
+**Silence halts everything, because there is no partial degrade for this leg.** A stale
+sensor poisons only its own blocks — the command station is the sole path to every train.
+Note what the halt is about: sensors run over MQTT, so a dead DCC link does not make train
+positions unknown. What it costs is the ability to *act*, and a system that can watch a
+train it cannot stop must not be granting it new track.
+
+**A wrong *speed* in an acknowledgement warns; only a wrong *cab* halts.** Dated, not
+permanent: the speed byte's encoding changed in `bazauto/PicoDCC#49`, `#48` (speed 0
+encoding as an emergency stop) is open, and #151 will introduce a per-loco step mode. A
+strict check today would halt a live layout over a firmware version skew. `docs/dcc-link.md`
+D6 carries the revisit condition.
+
+**Track power is observed, not acted on.** `<p0 MAIN>` is parsed and reported; nothing
+refuses a route over a dark layout yet, and nothing can turn power back on from the UI. That
+is #149. A station that cut power and still answers probes therefore reads *responsive and
+dark* — and because the firmware's cutoff paths are still silent on the wire
+(`bazauto/PicoDCC#4`, half done), it is seen at the next probe rather than pushed.
+
+**Decoder functions are refused against real hardware** (#150). PicoDCC validates `<F>`,
+accepts it, and does nothing with it — `updateFunct()` is an empty body — so
+`SerialDccAdapter.setFunction` throws rather than reporting a headlight that never came on.
+The simulator is unaffected; this is a hardware limit, not a model limit.
+
 ### Authentication
 
 **Local-only, and until TLS lands it defends against a stray device, a curious guest, or a
@@ -557,12 +590,20 @@ preamble in `docs/sensor-simulation.md`.
    point has a feedback switch wired); and #28's **30 s re-assert** on
    `sensor/*/reading`, which is roughly ten lines and without which every sensor-backed
    block reads `unknown`
-3. Order and scheduling systems — #7's automation engine has landed; what it deliberately
+3. **The rest of the command-station work** (#153 is the index). #147 and #148 have landed,
+   and #150's guard with them. Next is #149 — track power: `<1>` on connect, refusing routes
+   over a dark layout, and an operator control to turn power back on after a cutoff, which
+   today needs a power cycle of the station. Behind it sit #152 (validate `points.dcc_address`,
+   and act on the `<X>` a bad one now draws) and #151 (per-loco 128/28-step mode, which needs
+   #148's read path to survive a station restart). **Do not calibrate braking until
+   `bazauto/PicoDCC#48` lands** — speed 0 currently encodes as an emergency stop, so every
+   stopping-distance sample would be measuring the wrong curve
+4. Order and scheduling systems — #7's automation engine has landed; what it deliberately
    does not do is decide *where* a train should go, sequence two trains through a
    junction, or plan a timetable
-4. A shared workspace package for the remaining backend↔frontend duplicates
+5. A shared workspace package for the remaining backend↔frontend duplicates
    (`findBlockRuns`, `TILE_LEGS` vs `diagram/trackGeometry.ts`, and the heartbeat
    constants). #75 unified the editor↔monitor seam *inside* the frontend and deliberately
    left these alone — they span a CommonJS backend and an ESM frontend, which is a different
    problem. `EDGE_OFFSET`'s mirror is closed, having gone with the opening marks
-5. Hardware validation and operator workflows
+6. Hardware validation and operator workflows

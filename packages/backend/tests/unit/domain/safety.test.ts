@@ -14,7 +14,33 @@ import {
   isValidSpeed,
   isValidLocoAddress,
 } from '../../../src/domain/safety';
-import { BrakingFault, PointFault, RouteFault, SensorFault } from '../../../src/domain/types';
+import {
+  BrakingFault,
+  DccLinkHealth,
+  PointFault,
+  RouteFault,
+  SensorFault,
+} from '../../../src/domain/types';
+
+/**
+ * A command station that is answering and has never faulted (#148).
+ *
+ * Spelled out rather than defaulted in `SystemHealth`, because the field is
+ * required for the same reason `topologyValid` is: an unset field must never be
+ * read as safe. What makes `responsive: true` a safe *starting* value rather
+ * than an optimistic one is that `dccConnected` is checked first and is false
+ * until a port is actually open.
+ */
+const HEALTHY_DCC_LINK: DccLinkHealth = {
+  responsive: true,
+  reason: null,
+  fault: null,
+  mainPowerOn: true,
+  progPowerOn: true,
+  identity: null,
+  restartCount: 0,
+  lastResponseAt: null,
+};
 
 describe('evaluateSafeStop', () => {
   it('returns no safe-stop when both connections are healthy', () => {
@@ -44,7 +70,8 @@ describe('evaluateSafeStop', () => {
 function fault(overrides: Partial<SensorFault> = {}): SensorFault {
   return {
     sensorId: 's1',
-    reason: 'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
+    reason:
+      'Malformed sensor payload from sensor "s1" on topic "layout/test/sensor/s1/reading": bad shape',
     topic: 'layout/test/sensor/s1/reading',
     faultedAt: new Date('2026-01-01T00:00:00.000Z'),
     consecutiveValidReadings: 0,
@@ -80,7 +107,8 @@ function brakingFault(overrides: Partial<BrakingFault> = {}): BrakingFault {
   return {
     locoAddress: 3,
     kind: 'overrun',
-    reason: 'Loco 3 overran its braking target: block b4 is occupied at or beyond the stopping point of route r1',
+    reason:
+      'Loco 3 overran its braking target: block b4 is occupied at or beyond the stopping point of route r1',
     routeId: 'r1',
     blockId: 'b4',
     faultedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -162,6 +190,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(false);
@@ -178,6 +207,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -196,6 +226,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -212,6 +243,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -230,6 +262,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -246,6 +279,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -272,6 +306,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -302,6 +337,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.reason).toMatch(/first/);
@@ -325,6 +361,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -343,6 +380,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: { p1: pointFault() },
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -359,6 +397,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: { p1: pointFault() },
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -375,6 +414,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: { p1: pointFault() },
       routeFaults: { r1: routeFault() },
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -391,6 +431,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: { p1: pointFault() },
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 3,
     });
     expect(result.shouldStop).toBe(true);
@@ -417,6 +458,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: { p2: newer, p1: older },
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.reason).toBe('older point fault');
@@ -434,6 +476,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: { r1: routeFault() },
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -450,6 +493,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: { r1: routeFault() },
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -466,6 +510,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: { r1: routeFault() },
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 3,
     });
     expect(result.shouldStop).toBe(true);
@@ -492,6 +537,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: { r2: newer, r1: older },
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.reason).toBe('older route fault');
@@ -509,6 +555,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: { 3: brakingFault() },
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.shouldStop).toBe(true);
@@ -526,6 +573,7 @@ describe('evaluateSystemSafeStop', () => {
       // The route fault is OLDER, so this cannot pass by accident on timestamps.
       routeFaults: { r1: routeFault({ faultedAt: new Date('2025-01-01T00:00:00.000Z') }) },
       brakingFaults: { 3: brakingFault() },
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.reason).toMatch(/overran its braking target/);
@@ -541,6 +589,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: { 3: brakingFault() },
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(withSensor.reason).toMatch(/malformed/i);
@@ -554,6 +603,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: { p1: pointFault({ faultedAt: new Date('2027-01-01T00:00:00.000Z') }) },
       routeFaults: {},
       brakingFaults: { 3: brakingFault() },
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(withPoint.reason).toMatch(/failed to confirm/i);
@@ -579,6 +629,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: { 8: newer, 3: older },
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 0,
     });
     expect(result.reason).toBe('older braking fault');
@@ -594,6 +645,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 2,
     });
     expect(result.shouldStop).toBe(true);
@@ -610,6 +662,7 @@ describe('evaluateSystemSafeStop', () => {
       pointFaults: {},
       routeFaults: {},
       brakingFaults: {},
+      dccLink: HEALTHY_DCC_LINK,
       recoveredRouteCount: 1,
     });
     expect(result.shouldStop).toBe(true);

@@ -100,3 +100,16 @@ export function formatSetPoint(dccAddress: number, position: 'normal' | 'reverse
 export function formatEmergencyStop(): string {
   return frame('!');
 }
+
+/**
+ * `<s>` — ask the station what it is and how it stands (#148).
+ *
+ * One round trip, three facts: the identity banner (carrying the git hash of the
+ * running image), `<p? MAIN>`, and `<p? PROG>`. That is why it is the liveness
+ * probe rather than something cheaper — a reply proves the station is listening
+ * *and* refreshes the two power states, and a station that has restarted
+ * announces a different commit.
+ */
+export function formatStatusRequest(): string {
+  return frame('s');
+}

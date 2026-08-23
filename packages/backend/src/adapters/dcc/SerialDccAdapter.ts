@@ -17,10 +17,31 @@ import { EventEmitter } from 'events';
 import { IDccController } from '../../ports/IDccController';
 import {
   formatEmergencyStop,
-  formatSetFunction,
   formatSetPoint,
   formatSetSpeed,
+  formatStatusRequest,
 } from '../../domain/dccWireFormat';
+import { DccResponse, readResponses } from '../../domain/dccResponse';
+
+/**
+ * Thrown by `SerialDccAdapter.setFunction` (#150). PicoDCC validates the cab,
+ * accepts the command and then discards it — `updateFunct()` is empty — so a
+ * write here would report success for a function that never happens. Throwing
+ * is the lesser of the two silences: a caller that wanted a headlight finds out
+ * immediately rather than from the layout.
+ *
+ * Delete this, and the guard, when `bazauto/PicoDCC#1` lands **both** halves:
+ * the split from the throttle path (done, `PicoDCC#43`) and an actual function
+ * implementation (not done).
+ */
+export class DccFunctionUnsupportedError extends Error {
+  constructor(address: number, fn: number) {
+    super(
+      `Decoder functions are not implemented by the PicoDCC command station (bazauto/PicoDCC#1); refused F${fn} for loco ${address}`,
+    );
+    this.name = 'DccFunctionUnsupportedError';
+  }
+}
 
 export interface SerialDccLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -51,6 +72,8 @@ export class SerialDccAdapter implements IDccController {
   private port: import('serialport').SerialPort | null = null;
   private connected = false;
   private readonly emitter = new EventEmitter();
+  /** Bytes received but not yet a complete `<…>` frame. */
+  private rxBuffer = '';
 
   constructor(
     private readonly config: SerialDccConfig,
@@ -61,8 +84,13 @@ export class SerialDccAdapter implements IDccController {
     try {
       this.port = await openPort(this.config.path, this.config.baudRate);
       this.connected = true;
+      // A fresh port starts a fresh stream: whatever half-frame was in flight
+      // when the last one closed describes a session that no longer exists.
+      this.rxBuffer = '';
       this.log.info('[SerialDCC] Connected', { path: this.config.path });
       this.emitter.emit('connectionChange', true);
+
+      this.port.on('data', (chunk: Buffer) => this.handleData(chunk));
 
       this.port.on('close', () => {
         this.connected = false;
@@ -102,12 +130,60 @@ export class SerialDccAdapter implements IDccController {
     this.emitter.on('connectionChange', handler);
   }
 
+  onResponse(handler: (response: DccResponse) => void): void {
+    this.emitter.on('response', handler);
+  }
+
+  async probeStatus(): Promise<void> {
+    await this.write(formatStatusRequest());
+  }
+
+  /**
+   * Frames and parses whatever arrived, then emits it. Parse and delegate,
+   * nothing else — the safety rule about transport callbacks applies to serial
+   * exactly as it does to MQTT, and everything that decides anything about
+   * these responses lives in `domain/dccLink.ts` and `DccLinkService`.
+   *
+   * The buffer is a plain string carried between chunks because a frame can
+   * split across reads; `extractFrames` bounds its growth, so a station that
+   * emits a `<` and then dies cannot leak.
+   */
+  private handleData(chunk: Buffer): void {
+    this.rxBuffer += chunk.toString('utf8');
+    const { responses, rest, discarded } = readResponses(this.rxBuffer);
+    this.rxBuffer = rest;
+
+    if (discarded > 0) {
+      // Not a fault: the station's UART carries a boot message or two, and a
+      // stray newline is ordinary. Worth a line, because a *growing* count is
+      // the signature of a garbled link.
+      this.log.warn('[SerialDCC] Discarded unframed bytes', { discarded });
+    }
+
+    for (const response of responses) {
+      this.log.info('[SerialDCC] RX', { response: response.kind });
+      this.emitter.emit('response', response);
+    }
+  }
+
   async setSpeed(address: number, speed: number, direction: 'fwd' | 'rev' | 'stop'): Promise<void> {
     await this.write(formatSetSpeed(address, speed, direction));
   }
 
+  /**
+   * Refuses (#150). See `DccFunctionUnsupportedError` above for why a throw
+   * beats a write here, and what has to land before the guard comes off.
+   *
+   * `state` is unused and that is the point — nothing is sent.
+   */
   async setFunction(address: number, fn: number, state: boolean): Promise<void> {
-    await this.write(formatSetFunction(address, fn, state));
+    this.log.warn('[SerialDCC] Refused function command', {
+      locoAddress: address,
+      fn,
+      state,
+      reason: 'PicoDCC accepts <F> and does nothing with it (bazauto/PicoDCC#1)',
+    });
+    throw new DccFunctionUnsupportedError(address, fn);
   }
 
   async setPoint(dccAddress: number, position: 'normal' | 'reverse'): Promise<void> {

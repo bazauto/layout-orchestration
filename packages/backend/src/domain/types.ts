@@ -209,7 +209,10 @@ export type TileType = (typeof TILE_TYPES)[number];
  * point — but only the first has legs to map. Anything asking "does this tile
  * need `pointRoads`?" must ask this, not `metadata.pointId !== undefined`.
  */
-export const POINT_TILE_TYPES = ['point-left', 'point-right'] as const satisfies readonly TileType[];
+export const POINT_TILE_TYPES = [
+  'point-left',
+  'point-right',
+] as const satisfies readonly TileType[];
 
 export function depictsPoint(tileType: TileType): boolean {
   return (POINT_TILE_TYPES as readonly TileType[]).includes(tileType);
@@ -583,7 +586,13 @@ export type PointFeedbackMode = 'none' | 'required';
  *  - `'timed-out'`     — the confirmation deadline elapsed with no reading
  *    (D5).
  */
-export type PointConfirmation = 'unreported' | 'pending' | 'confirmed' | 'mismatch' | 'indeterminate' | 'timed-out';
+export type PointConfirmation =
+  | 'unreported'
+  | 'pending'
+  | 'confirmed'
+  | 'mismatch'
+  | 'indeterminate'
+  | 'timed-out';
 
 /**
  * A point's live confirmation state (#25). Replaces the pre-#25 single
@@ -629,7 +638,12 @@ export interface PointReading {
  * kinds Safe-Stop the whole system — see D4 for the reasoning against a
  * two-tier model.
  */
-export type PointFaultKind = 'timeout' | 'mismatch' | 'indeterminate' | 'malformed-payload' | 'id-mismatch';
+export type PointFaultKind =
+  | 'timeout'
+  | 'mismatch'
+  | 'indeterminate'
+  | 'malformed-payload'
+  | 'id-mismatch';
 
 /**
  * A latched fault on one point (D4). `reason`/`faultedAt` are the FIRST
@@ -798,7 +812,12 @@ export type RouteRejection =
   // committed, and a point command was then rejected by the DCC adapter.
   // `LayoutService` cancels the route and Safe-Stops, and reports the
   // request as refused, because nothing the operator asked for took effect.
-  | { kind: 'point-command-rejected'; pointId: PointId; requiredPosition: 'normal' | 'reverse'; reason: string };
+  | {
+      kind: 'point-command-rejected';
+      pointId: PointId;
+      requiredPosition: 'normal' | 'reverse';
+      reason: string;
+    };
 
 /**
  * Why the pathfinder could not use a particular edge. Collected during the
@@ -832,11 +851,21 @@ export type PathBlocker =
  *    its locks would make the track look free while a train may still be
  *    standing on it.
  */
+/**
+ * `dcc-command-rejected` (#148) is the command station answering `<X>` to a
+ * throttle command this route issued — the station *disagreeing* with us, which
+ * is a different fact from the serial write failing (`BrakingFaultKind`'s
+ * `speed-command-rejected`, raised when the promise rejects) and a different
+ * fact again from the station going silent (`DccLinkFaultKind`'s `link-lost`).
+ * A rejected accessory command keeps the existing `point-command-rejected`,
+ * because that is precisely what it is.
+ */
 export type RouteFaultKind =
   | 'unexpected-occupancy'
   | 'occupancy-unknown'
   | 'point-command-rejected'
-  | 'point-not-confirmed';
+  | 'point-not-confirmed'
+  | 'dcc-command-rejected';
 
 /**
  * A latched fault against one route. Keyed by `routeId` in
@@ -1056,6 +1085,118 @@ export interface BrakingStopExpectation {
   forbiddenBlockIds: BlockId[];
 }
 
+// ─── DCC link (see docs/dcc-link.md, #148) ────────────────────────────────────
+
+/**
+ * Why the link to the command station is faulted. Latched in
+ * `SystemHealth.dccLink.fault` — a scalar, not a keyed collection, because
+ * unlike sensors and points there is exactly one command station and a second
+ * fault on it is not a second thing to acknowledge (D4).
+ *
+ * `link-lost` — probes went unanswered while the serial port stayed open. The
+ * station is not talking, which is a different fact from the port being closed
+ * (`dccConnected`), and the one the USB device node cannot tell us (D2).
+ *
+ * `cab-mismatch` — the station acknowledged a throttle command against a
+ * *different* loco than the one we addressed. This is #147's hazard observed on
+ * the wire rather than reasoned about: a command aimed at one train moved
+ * another. Critical by construction, never advisory (D6).
+ *
+ * `command-rejected` — an `<X>` attributed to a command that has no route to
+ * fault: a manual throttle, a probe, an emergency stop. A rejection against a
+ * route becomes a `RouteFault` instead and never reaches here (D5).
+ *
+ * `unattributed-rejection` — an `<X>` arrived with nothing outstanding to
+ * attribute it to. Someone else is talking to the station, or a frame we sent
+ * was garbled beyond recognition. Rare, and deliberately not swallowed.
+ *
+ * `station-restarted` — an identity banner arrived that we did not ask for. The
+ * station only sends one unprompted at boot, so this *is* the restart signal.
+ * It matters because a restarted station has forgotten every loco, and its
+ * tracks come up dark (D7).
+ */
+export type DccLinkFaultKind =
+  | 'link-lost'
+  | 'cab-mismatch'
+  | 'command-rejected'
+  | 'unattributed-rejection'
+  | 'station-restarted';
+
+/**
+ * The latched DCC-link fault. Cleared only by
+ * `LayoutService.acknowledgeDccLinkFault`, mirroring every other latch in
+ * `SystemHealth` — nothing clears itself, because a fault that evaporates when
+ * the next healthy message arrives is a fault an operator never saw.
+ */
+export interface DccLinkFault {
+  kind: DccLinkFaultKind;
+  reason: string;
+  /** The loco a rejected or mis-acknowledged command was addressed to, where there was one. */
+  locoAddress: LocoAddress | null;
+  /** The point a rejected accessory command was addressed to, where known. */
+  pointId: PointId | null;
+  faultedAt: Date;
+}
+
+/** Wire projection of `DccLinkFault`. Dates as ISO 8601, mirroring `SensorFaultView`. */
+export interface DccLinkFaultView {
+  kind: DccLinkFaultKind;
+  reason: string;
+  locoAddress: LocoAddress | null;
+  pointId: PointId | null;
+  faultedAt: string;
+}
+
+/** What the station said it is, from the `<iDCC-EX …>` banner (D7). */
+export interface DccStationIdentity {
+  version: string | null;
+  product: string | null;
+  /** Git hash of the running image. The field that makes a restart detectable as a *change*. */
+  commit: string | null;
+  raw: string;
+  observedAt: Date;
+}
+
+/**
+ * The DCC leg's health, as one sub-object of `SystemHealth` rather than five
+ * more top-level scalars (D4).
+ *
+ * `responsive` is the Safe-Stop-bearing field; `mainPowerOn`/`progPowerOn` are
+ * **observation only** in #148 — they are read from `<p…>` replies and reported,
+ * and nothing gates on them yet. Gating, and the `<1>` that would turn power
+ * back on, are #149. `null` means never observed, which is not the same as off.
+ */
+export interface DccLinkHealth {
+  responsive: boolean;
+  /** Why not, when `responsive` is false. Null when it is true. */
+  reason: string | null;
+  fault: DccLinkFault | null;
+  mainPowerOn: boolean | null;
+  progPowerOn: boolean | null;
+  identity: DccStationIdentity | null;
+  /** Unprompted identity banners seen since start — i.e. observed station restarts (D7). */
+  restartCount: number;
+  lastResponseAt: Date | null;
+}
+
+/** Wire projection of `DccLinkHealth`. Dates as ISO 8601. */
+export interface DccLinkView {
+  responsive: boolean;
+  reason: string | null;
+  fault: DccLinkFaultView | null;
+  mainPowerOn: boolean | null;
+  progPowerOn: boolean | null;
+  identity: {
+    version: string | null;
+    product: string | null;
+    commit: string | null;
+    raw: string;
+    observedAt: string;
+  } | null;
+  restartCount: number;
+  lastResponseAt: string | null;
+}
+
 // ─── Naming (see docs/naming.md) ───────────────────────────────────────────────
 
 /**
@@ -1140,6 +1281,8 @@ export interface StateSnapshot {
   pointFaults: PointFaultView[];
   routeFaults: RouteFaultView[];
   brakingFaults: BrakingFaultView[];
+  /** #148: the command-station link — responsiveness, the latched fault, both track power states, the station identity. */
+  dccLink: DccLinkView;
   /**
    * #7: every train currently under automation, likewise always the complete
    * set. In the snapshot as well as on its own event because
