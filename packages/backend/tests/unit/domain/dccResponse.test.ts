@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   decodeSpeedByte,
+  describeDccResponse,
   encodeSpeedByte,
   extractFrames,
   MAX_FRAME_LENGTH,
@@ -164,5 +165,58 @@ describe('readResponses', () => {
     );
     expect(responses.map((r) => r.kind)).toEqual(['identity', 'power']);
     expect(rest).toBe('<p0 PR');
+  });
+
+  it('returns the frame each response was parsed from, in order', () => {
+    const { responses, frames } = readResponses('<p1 MAIN><l 3 0 8 0><X>');
+    expect(frames).toEqual(['p1 MAIN', 'l 3 0 8 0', 'X']);
+    expect(frames).toHaveLength(responses.length);
+  });
+});
+
+describe('describeDccResponse', () => {
+  it('expands a cab acknowledgement into every field it decoded', () => {
+    // The real reply to <t 3 7 1>: step 7 forward is speed byte 0x88 = 136.
+    const response = parseDccResponse('l 3 0 136 0');
+    expect(describeDccResponse(response)).toEqual({
+      kind: 'cab',
+      cab: 3,
+      register: 0,
+      speedByte: 136,
+      decodedSpeed: 7,
+      direction: 'fwd',
+      functionMap: 0,
+    });
+  });
+
+  it('reports an emergency stop as such rather than as a step', () => {
+    expect(describeDccResponse(parseDccResponse('l 3 0 129 0'))).toMatchObject({
+      decodedSpeed: 'estop',
+      direction: 'fwd',
+    });
+  });
+
+  it('describes the identity banner by build, not by its raw text', () => {
+    const response = parseDccResponse('iDCC-EX V-5.0.0 / PICODCC / BUILD 2026-08-22 G-1e7bb6d');
+    expect(describeDccResponse(response)).toEqual({
+      kind: 'identity',
+      version: '5.0.0',
+      product: 'PICODCC',
+      commit: '1e7bb6d',
+    });
+  });
+
+  it('describes power, rejection and loco count', () => {
+    expect(describeDccResponse(parseDccResponse('p1 MAIN'))).toEqual({
+      kind: 'power',
+      track: 'main',
+      on: true,
+    });
+    expect(describeDccResponse(parseDccResponse('X'))).toEqual({ kind: 'rejected' });
+    expect(describeDccResponse(parseDccResponse('# 2'))).toEqual({ kind: 'loco-count', count: 2 });
+  });
+
+  it('says only the kind for an unrecognised frame — the adapter logs the frame itself', () => {
+    expect(describeDccResponse(parseDccResponse('e SAVED'))).toEqual({ kind: 'unrecognised' });
   });
 });

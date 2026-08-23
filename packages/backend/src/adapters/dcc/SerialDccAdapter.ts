@@ -21,7 +21,7 @@ import {
   formatSetSpeed,
   formatStatusRequest,
 } from '../../domain/dccWireFormat';
-import { DccResponse, readResponses } from '../../domain/dccResponse';
+import { DccResponse, describeDccResponse, readResponses } from '../../domain/dccResponse';
 
 /**
  * Thrown by `SerialDccAdapter.setFunction` (#150). PicoDCC validates the cab,
@@ -150,7 +150,7 @@ export class SerialDccAdapter implements IDccController {
    */
   private handleData(chunk: Buffer): void {
     this.rxBuffer += chunk.toString('utf8');
-    const { responses, rest, discarded } = readResponses(this.rxBuffer);
+    const { responses, frames, rest, discarded } = readResponses(this.rxBuffer);
     this.rxBuffer = rest;
 
     if (discarded > 0) {
@@ -160,10 +160,18 @@ export class SerialDccAdapter implements IDccController {
       this.log.warn('[SerialDCC] Discarded unframed bytes', { discarded });
     }
 
-    for (const response of responses) {
-      this.log.info('[SerialDCC] RX', { response: response.kind });
+    // The raw frame *and* the decoded fields, deliberately both: the frame is
+    // what the station said, the fields are what we made of it, and a bug in
+    // this direction looks like the two disagreeing. `<X>` and a wrong-cab
+    // `<l>` are attributed elsewhere, so this line is the only place the wire
+    // itself is visible.
+    responses.forEach((response, i) => {
+      this.log.info('[SerialDCC] RX', {
+        frame: `<${frames[i]}>`,
+        ...describeDccResponse(response),
+      });
       this.emitter.emit('response', response);
-    }
+    });
   }
 
   async setSpeed(address: number, speed: number, direction: 'fwd' | 'rev' | 'stop'): Promise<void> {

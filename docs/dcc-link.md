@@ -261,13 +261,41 @@ firing the timing-violation cutoff spuriously about once an hour and leaving bot
 off. Much of what #148 and #149 were written against as "fault handling" was that defect
 rather than a real fault rate. The design gap is unchanged; the expected frequency is not.
 
+## D13 — The RX line carries the frame *and* the decode
+
+The first bench run of #147's fixed throttle produced this, and only this:
+
+```
+{"level":"info","msg":"[SerialDCC] TX","cmd":"<t 3 7 1>"}
+{"level":"info","msg":"[SerialDCC] RX","response":"cab"}
+```
+
+`"cab"` says something was acknowledged and nothing about *what* — not the cab, not the
+speed, not the direction. That is the one thing #148 exists to make visible, so the RX line
+now logs both halves: `frame` verbatim as it came off the wire, and the decoded fields from
+`describeDccResponse`.
+
+Both, not one. The frame alone would need a human to decode `<l 3 0 136 0>`; the fields
+alone would hide a parser that read the frame wrongly, and a wrong decode looks exactly like
+a station misbehaving. Printing them side by side is what makes the two distinguishable in
+journald.
+
+`describeDccResponse` lives in `domain/dccResponse.ts` rather than in the adapter, for the
+same reason the command strings do (#147): a `switch` over the response union is the kind of
+thing that silently stops covering a new variant, and the adapter is excluded from coverage.
+
+It names no loco. The adapter holds no `NameBook`, and `cab` stays the station's word for
+the address it decoded — not ours for the loco we meant. Pairing an address with a name is
+the service layer's job, and this line is deliberately a record of the wire. Correlating the
+reply to the command that caused it is still D8's, in `domain/dccLink.ts`.
+
 ---
 
 ## What lands where
 
 | Concern | Where |
 |---|---|
-| Framing, parsing, the speed-byte decode | `domain/dccResponse.ts` (pure) |
+| Framing, parsing, the speed-byte decode, the log projection | `domain/dccResponse.ts` (pure) |
 | Correlation, `<l>` verification, liveness, the view projection | `domain/dccLink.ts` (pure) |
 | The outstanding queue, the latch, power/identity bookkeeping | `services/DccLinkService.ts` |
 | The `<s>` probe timer, route faults, Safe-Stop, the acknowledge | `services/LayoutService.ts` |
