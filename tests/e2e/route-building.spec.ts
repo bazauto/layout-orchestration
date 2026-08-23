@@ -37,25 +37,25 @@ const LOCOS = [
 ];
 
 async function stubApis(page: Page) {
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify([{ id: 'layout-1', name: 'Test Layout' }]),
     }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/blocks', (r) =>
+  await page.route('**/api/layouts/layout-1/blocks', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(BLOCKS) }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/locos', (r) =>
+  await page.route('**/api/layouts/layout-1/locos', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(LOCOS) }),
   );
   for (const path of ['points', 'sensors', 'edges']) {
-    await page.route(`**://localhost:3000/api/layouts/layout-1/${path}`, (r) =>
+    await page.route(`**/api/layouts/layout-1/${path}`, (r) =>
       r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
     );
   }
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -97,7 +97,7 @@ test('requesting a route posts a destination, not an edge list', async ({ page }
   await stubApis(page);
 
   const posted: Array<Record<string, unknown>> = [];
-  await page.route('**://localhost:3000/api/layouts/layout-1/routes', async (route) => {
+  await page.route('**/api/layouts/layout-1/routes', async (route) => {
     posted.push(route.request().postDataJSON());
     await route.fulfill({
       status: 201,
@@ -139,7 +139,7 @@ test('a refused route shows the backend reason and leaves the form populated', a
   await installMockAuth(page);
   await stubApis(page);
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/routes', (route) =>
+  await page.route('**/api/layouts/layout-1/routes', (route) =>
     route.fulfill({
       status: 422,
       contentType: 'application/json',

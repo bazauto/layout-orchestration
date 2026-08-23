@@ -40,7 +40,7 @@ async function stubApis(page: Page, seed: { x: number; y: number }[] = []) {
     ]),
   );
 
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -48,7 +48,7 @@ async function stubApis(page: Page, seed: { x: number; y: number }[] = []) {
     }),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid', async (route) => {
+  await page.route('**/api/layouts/layout-1/grid', async (route) => {
     const method = route.request().method();
     if (method === 'GET') {
       return route.fulfill({
@@ -77,7 +77,7 @@ async function stubApis(page: Page, seed: { x: number; y: number }[] = []) {
     return route.continue();
   });
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/tile**', (route) => {
+  await page.route('**/api/layouts/layout-1/grid/tile**', (route) => {
     const url = new URL(route.request().url());
     tiles.delete(`${url.searchParams.get('x')},${url.searchParams.get('y')}`);
     return route.fulfill({ status: 204, body: '' });
@@ -89,9 +89,9 @@ async function stubApis(page: Page, seed: { x: number; y: number }[] = []) {
     body: JSON.stringify(body),
   });
   for (const e of ['blocks', 'points', 'sensors', 'locos', 'edges']) {
-    await page.route(`**://localhost:3000/api/layouts/layout-1/${e}`, (r) => r.fulfill(json([])));
+    await page.route(`**/api/layouts/layout-1/${e}`, (r) => r.fulfill(json([])));
   }
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill(json({ valid: true, violations: [], edgeCount: 0 })),
   );
 

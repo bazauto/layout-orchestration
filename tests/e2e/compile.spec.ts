@@ -119,24 +119,24 @@ async function stubApis(
 
   let edges: unknown[] = [];
 
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill(json([{ id: 'layout-1', name: 'Westgate Hollow' }])),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/blocks', (r) => r.fulfill(json(BLOCKS)));
-  await page.route('**://localhost:3000/api/layouts/layout-1/points', (r) => r.fulfill(json(POINTS)));
-  await page.route('**://localhost:3000/api/layouts/layout-1/sensors', (r) => r.fulfill(json([])));
-  await page.route('**://localhost:3000/api/layouts/layout-1/locos', (r) => r.fulfill(json([])));
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/blocks', (r) => r.fulfill(json(BLOCKS)));
+  await page.route('**/api/layouts/layout-1/points', (r) => r.fulfill(json(POINTS)));
+  await page.route('**/api/layouts/layout-1/sensors', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/locos', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill(json({ valid: true, violations: [], edgeCount: edges.length })),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/edges', (r) => r.fulfill(json(edges)));
+  await page.route('**/api/layouts/layout-1/edges', (r) => r.fulfill(json(edges)));
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology/compile', (r) =>
+  await page.route('**/api/layouts/layout-1/topology/compile', (r) =>
     r.fulfill(json(REPORT)),
   );
 
   await page.route(
-    '**://localhost:3000/api/layouts/layout-1/topology/compile/apply',
+    '**/api/layouts/layout-1/topology/compile/apply',
     async (route) => {
       posted.push(route.request().postDataJSON() as ApplyBody);
 
@@ -254,7 +254,7 @@ test('the panel does not compile the drawing until it is opened', async ({ page 
   // Registered *after* `stubApis`, because Playwright matches routes in
   // reverse registration order — the later handler wins, and this one has to.
   let compiles = 0;
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology/compile', (r) => {
+  await page.route('**/api/layouts/layout-1/topology/compile', (r) => {
     compiles += 1;
     return r.fulfill({
       status: 200,

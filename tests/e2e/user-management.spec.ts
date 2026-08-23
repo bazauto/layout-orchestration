@@ -15,15 +15,15 @@ const USERS = [
 
 /** Stubs every GET useLayoutConfig.refresh() fires, mirroring config-mutation-errors.spec.ts's stubApis. */
 async function stubConfigApis(page: Page) {
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'layout-1', name: 'Test Layout' }]) }),
   );
   for (const entity of ['blocks', 'points', 'sensors', 'locos', 'edges']) {
-    await page.route(`**://localhost:3000/api/layouts/layout-1/${entity}`, (r) =>
+    await page.route(`**/api/layouts/layout-1/${entity}`, (r) =>
       r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
     );
   }
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ valid: true, violations: [], edgeCount: 0 }) }),
   );
 }
@@ -39,7 +39,7 @@ test('as admin, the Configure screen shows a Users tab, lists the mocked users, 
   await stubConfigApis(page);
 
   let createRequestBody: unknown = null;
-  await page.route('**://localhost:3000/api/users', async (route: Route) => {
+  await page.route('**/api/users', async (route: Route) => {
     const req = route.request();
     if (req.method() === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(USERS) });
@@ -74,13 +74,13 @@ test('a mocked 409 on DELETE /api/users/:id renders the backend message in the U
   await installMockWebSocket(page);
   await stubConfigApis(page);
 
-  await page.route('**://localhost:3000/api/users', (route: Route) => {
+  await page.route('**/api/users', (route: Route) => {
     if (route.request().method() === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(USERS) });
     }
     return route.continue();
   });
-  await page.route('**://localhost:3000/api/users/u-op', (route: Route) => {
+  await page.route('**/api/users/u-op', (route: Route) => {
     if (route.request().method() === 'DELETE') {
       return route.fulfill({
         status: 409,
@@ -115,7 +115,7 @@ test('a 400 with Zod field errors renders the actionable message, not the generi
   await installMockWebSocket(page);
   await stubConfigApis(page);
 
-  await page.route('**://localhost:3000/api/users', (route: Route) => {
+  await page.route('**/api/users', (route: Route) => {
     if (route.request().method() === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(USERS) });
     }
@@ -170,10 +170,10 @@ test('as operator, the change-password control is reachable and a successful cha
   await installMockWebSocket(page);
   await stubConfigApis(page);
 
-  await page.route('**://localhost:3000/api/auth/change-password', (route: Route) =>
+  await page.route('**/api/auth/change-password', (route: Route) =>
     route.fulfill({ status: 204, body: '' }),
   );
-  await page.route('**://localhost:3000/api/auth/logout', (route: Route) =>
+  await page.route('**/api/auth/logout', (route: Route) =>
     route.fulfill({ status: 204, body: '' }),
   );
 

@@ -33,7 +33,7 @@ TILES.push({ x: 11, y: 4, tileType: 'point-left', blockId: 'b1', pointId: 'p1' }
 TILES.push({ x: 11, y: 5, tileType: 'straight-45', blockId: 'b3', pointId: 'p1' });
 
 async function stubApis(page: Page) {
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -41,7 +41,7 @@ async function stubApis(page: Page) {
     }),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid', (r) =>
+  await page.route('**/api/layouts/layout-1/grid', (r) =>
     r.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -68,12 +68,12 @@ async function stubApis(page: Page) {
     body: JSON.stringify(body),
   });
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/blocks', (r) => r.fulfill(json(BLOCKS)));
-  await page.route('**://localhost:3000/api/layouts/layout-1/points', (r) => r.fulfill(json(POINTS)));
-  await page.route('**://localhost:3000/api/layouts/layout-1/sensors', (r) => r.fulfill(json([])));
-  await page.route('**://localhost:3000/api/layouts/layout-1/locos', (r) => r.fulfill(json([])));
-  await page.route('**://localhost:3000/api/layouts/layout-1/edges', (r) => r.fulfill(json([])));
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/blocks', (r) => r.fulfill(json(BLOCKS)));
+  await page.route('**/api/layouts/layout-1/points', (r) => r.fulfill(json(POINTS)));
+  await page.route('**/api/layouts/layout-1/sensors', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/locos', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/edges', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill(json({ valid: true, violations: [], edgeCount: 0 })),
   );
 }
@@ -216,14 +216,14 @@ test.describe('openings are not drawn on the canvas (D15)', () => {
     await installMockWebSocket(page);
     await installMockAuth(page);
 
-    await page.route('**://localhost:3000/api/layouts', (r) =>
+    await page.route('**/api/layouts', (r) =>
       r.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify([{ id: 'layout-1', name: 'Westgate Hollow' }]),
       }),
     );
-    await page.route('**://localhost:3000/api/layouts/layout-1/grid', (r) =>
+    await page.route('**/api/layouts/layout-1/grid', (r) =>
       r.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -244,17 +244,17 @@ test.describe('openings are not drawn on the canvas (D15)', () => {
       contentType: 'application/json',
       body: JSON.stringify(body),
     });
-    await page.route('**://localhost:3000/api/layouts/layout-1/blocks', (r) =>
+    await page.route('**/api/layouts/layout-1/blocks', (r) =>
       r.fulfill(json([{ id: 'b1', layoutId: 'layout-1', name: 'Siding 1' }])),
     );
-    await page.route('**://localhost:3000/api/layouts/layout-1/points', (r) => r.fulfill(json([])));
-    await page.route('**://localhost:3000/api/layouts/layout-1/sensors', (r) => r.fulfill(json([])));
-    await page.route('**://localhost:3000/api/layouts/layout-1/locos', (r) => r.fulfill(json([])));
-    await page.route('**://localhost:3000/api/layouts/layout-1/edges', (r) => r.fulfill(json([])));
-    await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+    await page.route('**/api/layouts/layout-1/points', (r) => r.fulfill(json([])));
+    await page.route('**/api/layouts/layout-1/sensors', (r) => r.fulfill(json([])));
+    await page.route('**/api/layouts/layout-1/locos', (r) => r.fulfill(json([])));
+    await page.route('**/api/layouts/layout-1/edges', (r) => r.fulfill(json([])));
+    await page.route('**/api/layouts/layout-1/topology', (r) =>
       r.fulfill(json({ valid: true, violations: [], edgeCount: 0 })),
     );
-    await page.route('**://localhost:3000/api/layouts/layout-1/grid/openings', (r) =>
+    await page.route('**/api/layouts/layout-1/grid/openings', (r) =>
       r.fulfill(json(OPENINGS)),
     );
 

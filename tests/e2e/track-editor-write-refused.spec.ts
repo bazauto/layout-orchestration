@@ -30,7 +30,7 @@ const EXISTING_TILE = {
  * observable: an erase that is refused must put the tile back.
  */
 async function stubRefusingApis(page: Page, status: number, body: unknown) {
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -38,7 +38,7 @@ async function stubRefusingApis(page: Page, status: number, body: unknown) {
     }),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid', async (route) => {
+  await page.route('**/api/layouts/layout-1/grid', async (route) => {
     if (route.request().method() === 'GET') {
       return route.fulfill({
         status: 200,
@@ -53,12 +53,12 @@ async function stubRefusingApis(page: Page, status: number, body: unknown) {
     });
   });
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/tile**', (route) =>
+  await page.route('**/api/layouts/layout-1/grid/tile**', (route) =>
     route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }),
   );
 
   for (const entity of ['blocks', 'points', 'sensors', 'locos']) {
-    await page.route(`**://localhost:3000/api/layouts/layout-1/${entity}`, (r) =>
+    await page.route(`**/api/layouts/layout-1/${entity}`, (r) =>
       r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
     );
   }

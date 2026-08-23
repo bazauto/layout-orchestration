@@ -3,13 +3,13 @@ import { installMockAuth, installMockWebSocket } from './helpers';
 
 /** Intercept API calls with minimal stubs to get the editor visible. */
 async function stubApis(page: import('@playwright/test').Page) {
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'layout-1', name: 'Test' }]) }),
   );
 
   const tiles: Record<string, { id: string; x: number; y: number; tileType: string; metadata: string }> = {};
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid', async (route) => {
+  await page.route('**/api/layouts/layout-1/grid', async (route) => {
     const method = route.request().method();
     if (method === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(Object.values(tiles)) });
@@ -23,7 +23,7 @@ async function stubApis(page: import('@playwright/test').Page) {
     return route.continue();
   });
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/tile**', async (route) => {
+  await page.route('**/api/layouts/layout-1/grid/tile**', async (route) => {
     const url = new URL(route.request().url());
     const key = `${url.searchParams.get('x')},${url.searchParams.get('y')}`;
     delete tiles[key];
@@ -31,7 +31,7 @@ async function stubApis(page: import('@playwright/test').Page) {
   });
 
   for (const entity of ['blocks', 'points', 'sensors', 'locos']) {
-    await page.route(`**://localhost:3000/api/layouts/layout-1/${entity}`, (r) =>
+    await page.route(`**/api/layouts/layout-1/${entity}`, (r) =>
       r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
     );
   }

@@ -257,8 +257,15 @@ async function main() {
     // The same instance the `auto` gate reads through, so there is exactly one
     // compiler in the process.
     compileService,
+    // #143: set in a deployment, unset in development (Vite serves the SPA).
+    config.frontend.distPath,
   );
   await server.listen({ port: config.http.port, host: config.http.host });
+  console.log(
+    config.frontend.distPath
+      ? `[Bootstrap] Serving the operator UI from ${config.frontend.distPath}`
+      : '[Bootstrap] FRONTEND_DIST_PATH unset — API only, no operator UI on this port',
+  );
 
   // ── Graceful Shutdown ─────────────────────────────────────────────────────────
   const shutdown = async (signal: string) => {

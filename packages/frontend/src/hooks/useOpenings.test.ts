@@ -57,7 +57,7 @@ describe('useOpenings', () => {
     await waitFor(() => expect(result.current.openings).toHaveLength(1));
     expect(result.current.openings[0]).toEqual(opening());
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:3000/api/layouts/layout-1/grid/openings',
+      '/api/layouts/layout-1/grid/openings',
       expect.anything(),
     );
   });

@@ -1,2 +1,11 @@
 # Shell scripts must keep LF endings — CRLF breaks bash with "\r: command not found".
 *.sh text eol=lf
+
+# systemd reads its units literally on the bench box. With CRLF the carriage
+# return ends up *inside* the value (ExecStart=/usr/bin/node …\r), and the unit
+# fails to start with a message that names the right file and the wrong reason.
+# The journald drop-in and the backup script node runs there are the same story.
+*.service text eol=lf
+*.timer text eol=lf
+deploy/*.conf text eol=lf
+deploy/*.cjs text eol=lf

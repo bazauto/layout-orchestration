@@ -14,7 +14,7 @@ import type { Page } from '@playwright/test';
  */
 export async function installMockAuth(page: Page, options: { role?: 'admin' | 'operator' } = {}) {
   const role = options.role ?? 'admin';
-  await page.route('**://localhost:3000/api/auth/me', (route) =>
+  await page.route('**/api/auth/me', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',

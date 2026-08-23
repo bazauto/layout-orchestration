@@ -45,6 +45,22 @@ export const config = {
      */
     cookieSecure: process.env.COOKIE_SECURE === 'true',
   },
+  frontend: {
+    /**
+     * #143: absolute or cwd-relative path to the built SPA
+     * (`packages/frontend/dist`). When set, the backend serves it from `/` on
+     * the same port as the API, which is what makes a deployment one process,
+     * one port and one systemd unit — and what makes every browser request
+     * same-origin, so the session cookie and the `/ws` upgrade need no CORS
+     * consideration at all.
+     *
+     * Unset in development and in every test: `npm run dev:frontend` serves
+     * the SPA from Vite and proxies /api and /ws here. Serving a stale `dist/`
+     * underneath a running dev server is a confusing failure, so this is
+     * opt-in rather than "serve it if the directory happens to exist".
+     */
+    distPath: process.env.FRONTEND_DIST_PATH,
+  },
   cors: {
     /**
      * Explicit allowlist, not `origin: true` — see docs/auth.md. Comma-

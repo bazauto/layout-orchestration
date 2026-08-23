@@ -195,7 +195,7 @@ describe('useLayoutConfig', () => {
       expect(outcome).toMatchObject({ ok: true, data: block({ id: 'new-block' }) });
       expect(fetchMock).toHaveBeenNthCalledWith(
         1,
-        'http://localhost:3000/api/layouts/layout-1/blocks',
+        '/api/layouts/layout-1/blocks',
         expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'Down Platform' }) }),
       );
       expect(result.current.config.blocks).toEqual([block({ id: 'new-block' })]);
@@ -230,7 +230,7 @@ describe('useLayoutConfig', () => {
 
       expect(fetchMock).toHaveBeenNthCalledWith(
         1,
-        'http://localhost:3000/api/layouts/layout-1/blocks/block-1',
+        '/api/layouts/layout-1/blocks/block-1',
         expect.objectContaining({ method: 'PUT', body: JSON.stringify({ name: 'Renamed' }) }),
       );
       expect(result.current.config.blocks).toEqual([renamed]);
@@ -250,7 +250,7 @@ describe('useLayoutConfig', () => {
       expect(outcome).toEqual({ ok: true, removedEdges: 2 });
       expect(fetchMock).toHaveBeenNthCalledWith(
         1,
-        'http://localhost:3000/api/layouts/layout-1/blocks/block-1',
+        '/api/layouts/layout-1/blocks/block-1',
         expect.objectContaining({ method: 'DELETE' }),
       );
     });
@@ -284,7 +284,7 @@ describe('useLayoutConfig', () => {
 
       expect(fetchMock).toHaveBeenNthCalledWith(
         1,
-        'http://localhost:3000/api/layouts/layout-1/locos',
+        '/api/layouts/layout-1/locos',
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ name: 'Class 37', address: 37, type: 'diesel', maxSpeed: 100, brakingFactor: 1 }),
@@ -306,7 +306,7 @@ describe('useLayoutConfig', () => {
 
       expect(fetchMock).toHaveBeenNthCalledWith(
         1,
-        'http://localhost:3000/api/layouts/layout-1/locos/loco-1',
+        '/api/layouts/layout-1/locos/loco-1',
         expect.objectContaining({ method: 'PUT', body: JSON.stringify({ maxSpeed: 80 }) }),
       );
       expect(result.current.config.locos).toEqual([updated]);

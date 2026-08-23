@@ -97,11 +97,11 @@ async function stubApis(page: Page, writes: Write[]) {
     body: JSON.stringify(body),
   });
 
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill(json([{ id: 'layout-1', name: 'Westgate Hollow' }])),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid', async (r) => {
+  await page.route('**/api/layouts/layout-1/grid', async (r) => {
     const req = r.request();
     if (req.method() === 'PUT') {
       writes.push({ method: 'PUT', url: req.url(), body: req.postDataJSON() });
@@ -121,20 +121,20 @@ async function stubApis(page: Page, writes: Write[]) {
     );
   });
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/diagnostics', (r) =>
+  await page.route('**/api/layouts/layout-1/grid/diagnostics', (r) =>
     r.fulfill(json(DIAGNOSTICS)),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/openings', (r) =>
+  await page.route('**/api/layouts/layout-1/grid/openings', (r) =>
     r.fulfill(json(OPENINGS)),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/blocks', (r) => r.fulfill(json(BLOCKS)));
-  await page.route('**://localhost:3000/api/layouts/layout-1/points', (r) => r.fulfill(json(POINTS)));
-  await page.route('**://localhost:3000/api/layouts/layout-1/sensors', (r) => r.fulfill(json(SENSORS)));
-  await page.route('**://localhost:3000/api/layouts/layout-1/locos', (r) => r.fulfill(json([])));
-  await page.route('**://localhost:3000/api/layouts/layout-1/edges', (r) => r.fulfill(json([])));
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/blocks', (r) => r.fulfill(json(BLOCKS)));
+  await page.route('**/api/layouts/layout-1/points', (r) => r.fulfill(json(POINTS)));
+  await page.route('**/api/layouts/layout-1/sensors', (r) => r.fulfill(json(SENSORS)));
+  await page.route('**/api/layouts/layout-1/locos', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/edges', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill(json({ valid: true, violations: [], edgeCount: 0 })),
   );
 }
@@ -292,7 +292,7 @@ test('the toolbar offers no block-end controls, and reads no block_ends', async 
   // through to the network rather than failing the test, so an editor that
   // still asked for `block-ends` would fail quietly and this spec would pass.
   let blockEndReads = 0;
-  await page.route('**://localhost:3000/api/layouts/layout-1/block-ends**', (r) => {
+  await page.route('**/api/layouts/layout-1/block-ends**', (r) => {
     blockEndReads += 1;
     return r.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
   });

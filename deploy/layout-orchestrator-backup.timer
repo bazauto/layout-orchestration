@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily layout database snapshot
+Documentation=https://github.com/bazauto/layout-orchestration/blob/main/docs/deployment.md
+
+[Timer]
+# 03:00 local. The bench box is not a server: Persistent=true is what makes a
+# machine that was switched off overnight take its missed snapshot on the next
+# boot rather than skipping a day silently.
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=5m
+Unit=layout-orchestrator-backup.service
+
+[Install]
+WantedBy=timers.target

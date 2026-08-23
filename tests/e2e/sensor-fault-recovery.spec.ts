@@ -32,24 +32,24 @@ const SENSORS = [
 
 /** Stubs every GET `useLayoutConfig.refresh()` fires, mirroring config-mutation-errors.spec.ts's `stubApis`. */
 async function stubApis(page: Page, options: { sensorsRoute: (route: Route) => Promise<void> }) {
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'layout-1', name: 'Test Layout' }]) }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/blocks', (r) =>
+  await page.route('**/api/layouts/layout-1/blocks', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/points', (r) =>
+  await page.route('**/api/layouts/layout-1/points', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/sensors', options.sensorsRoute);
-  await page.route('**://localhost:3000/api/layouts/layout-1/sensors/*', options.sensorsRoute);
-  await page.route('**://localhost:3000/api/layouts/layout-1/locos', (r) =>
+  await page.route('**/api/layouts/layout-1/sensors', options.sensorsRoute);
+  await page.route('**/api/layouts/layout-1/sensors/*', options.sensorsRoute);
+  await page.route('**/api/layouts/layout-1/locos', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/edges', (r) =>
+  await page.route('**/api/layouts/layout-1/edges', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ valid: true, violations: [], edgeCount: 0 }) }),
   );
 }

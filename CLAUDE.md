@@ -57,6 +57,7 @@ the entry rather than appending the new story beneath the old one.
 | `docs/sensor-simulation.md` | Flag-gated sensor simulation panel (D1–D13, R1–R6) |
 | `docs/diagram-encoding.md` | Track-diagram encoding: colour is never the sole carrier of meaning (D1–D6) |
 | `docs/track-editor.md` | Track Editor authoring: derived extent, per-stroke undo, keyboard navigation, leg-shape table (D1–D19) |
+| `docs/deployment.md` | Running this on the bench box: the systemd unit, the `VACUUM INTO` backup, journald retention, how a deploy happens (D1–D12) |
 | `docs/claude-review.md`, `docs/gpt-review.md` | Open design questions |
 
 Never invent an MQTT topic or payload field. If `docs/mqtt-contract.md` does not cover
@@ -212,6 +213,7 @@ One line per area: enough to know whether it is what you are touching. The long 
 | **Automation engine** (#7) | Drives an `auto`-authority route: departs, runs, brakes, crawls, berths. The invariant is that **a train under automation never passes the end of its authority**. A 250 ms sweep, not an occupancy hook; the stop target is a **berthing beam**. | `automation.md` |
 | **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) — publishes to the sensor's own `mqttTopic` so the broker echoes it back through ordinary ingestion, byte-identical to hardware. | `sensor-simulation.md` |
 | **DCC wire format** (#147) | `domain/dccWireFormat.ts` builds every DCC-EX command string; `SerialDccAdapter` only writes them. Throttle is the current **three-field** `<t CAB SPEED DIR>` — the legacy leading register shifts every field and moved the wrong train. Formats, never validates. | issue #153 (index) |
+| **Deployment** (#143) | Runs as a systemd unit on the bench box. `FRONTEND_DIST_PATH` makes the backend serve the built SPA on its own port, so a deployment is one process and every request is same-origin; the frontend addresses `window.location`, never a hardcoded host. Backups are `VACUUM INTO` on a timer, **never a file copy**. Everything lives in `deploy/`. | `deployment.md` |
 | **DCC link** (#148, #150) | The station **answers**: `domain/dccResponse.ts` frames and parses, `domain/dccLink.ts` correlates replies to commands positionally, `DccLinkService` holds `SystemHealth.dccLink`. Silence Safe-Stops; `<X>` faults the route that issued the command; a wrong-cab `<l>` Safe-Stops. Power is observed, **not** gated — that is #149. `setFunction` throws. | `dcc-link.md` |
 
 ### Traps
@@ -220,6 +222,13 @@ Things that look like bugs or oversights and are not — each was a deliberate d
 **One line each; the reasoning is in the record named at the end of the line.** Grep it for
 the id (`grep -n "^### D9" docs/sensor-trust.md`) before concluding any of these is wrong.
 
+- **The built SPA is exempt from the auth hook by an explicit predicate, and registering
+  `@fastify/static` before the hook is not what exempts it** — the plugin registers in its
+  own encapsulation context, which inherits root `onRequest` hooks whenever they were
+  added. The predicate is deny-by-default on purpose (`deployment.md` D3).
+- **The deployed `.env` uses absolute paths and the dev one does not** — the unit's cwd is
+  the repo root, not `packages/backend`, so a relative `MIGRATIONS_PATH` resolves to a
+  directory that does not exist (`deployment.md` D4).
 - **A frame the DCC parser does not recognise is logged, not faulted** — the opposite of a malformed
   sensor payload. A sensor speaks one schema; the command station speaks a protocol we implement a
   subset of, so an unknown frame is the ordinary case (`dcc-link.md` D9).
@@ -295,6 +304,12 @@ Recorded rather than closed — **none of these is a bug to fix in passing.** On
   the next `<s>` probe, and #148 deliberately does **not** gate on track power at all — observing it is
   this issue, acting on it is #149. A station that cut power and still answers probes reads
   *responsive and dark* (`dcc-link.md` D10, D12).
+- **Backups are on the same disk as the database** (`deployment.md` D6). A single-disk bench
+  box: the timer protects against corruption, a bad migration and an accidental delete, and
+  not against the disk failing. Pulling a snapshot off the box is manual.
+- **The broker on the bench listens on `127.0.0.1:1883` only.** Sufficient because the
+  orchestrator runs on the same box; the ESP sensor and point controllers cannot reach it
+  until a LAN listener is opened, which carries an authentication question with it.
 - **#7 deliberately does not schedule.** One route, one train, one destination, granted by an
   operator. Nothing sequences two trains or plans a timetable. That is the next feature.
 - **Driving a granted route is manual** unless it is an `auto`-authority route on a layout
