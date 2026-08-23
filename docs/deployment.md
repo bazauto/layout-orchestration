@@ -191,8 +191,24 @@ what runs on the layout is always a commit that exists in the repository and nev
 someone's uncommitted working tree.
 
 `node_modules` is installed on the box regardless of where the code came from:
-`better-sqlite3`, `serialport` and `@node-rs/argon2` are native modules, and a Windows
-build is not a Linux one.
+`serialport` and `@node-rs/argon2` are native modules, and a Windows build is not a Linux
+one. `better-sqlite3` is native too but is N-API since v13 and ships a prebuilt
+`linux-x64.node` inside the package, so it loads without compiling — see the pin note
+below for why the floor is v13.
+
+**`better-sqlite3` floor is `>=13`, and this is a hard requirement, not housekeeping.**
+Node 24.19.0 added self-removing cleanup hooks to `node::ObjectWrap`
+([nodejs/node#63642](https://github.com/nodejs/node/pull/63642)); the NAN-style
+`ObjectWrap` that better-sqlite3 v11 used calls `RemoveEnvironmentCleanupHook` from a
+statement destructor that runs under GC with no entered context, so the process aborts
+(`Assertion failed: (env) != nullptr` at `hooks.cc:142`, SIGABRT). It fires on garbage
+collection, not on any particular request, so it looks intermittent and unrelatable to
+what the operator was doing. v13's node-addon-api rewrite removes that code path
+entirely — the prebuilt binary does not import the symbol. The abort is **not**
+fail-safe: a loco under power keeps running until systemd restarts the unit ~5 s later,
+which is the one way this stack moves hardware without meaning to. Do not downgrade the
+driver below 13, and do not pin Node back below 24.19 to "fix" a build — the driver floor
+is the fix. This also raises the root `engines.node` to `>=22` (v13's floor).
 
 The remote half lives in `deploy/remote-update.sh` and is **piped over SSH stdin** rather
 than run from the target's own checkout. That keeps the whole thing free of nested shell

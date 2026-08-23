@@ -44,9 +44,10 @@ else
   sudo apt-get install -y nodejs
 fi
 
-# better-sqlite3, serialport and @node-rs/argon2 are native modules. Prebuilt
-# binaries usually cover this platform, but build-essential and python3 are
-# what make `npm ci` fall back to compiling instead of failing.
+# serialport and @node-rs/argon2 are native modules. Prebuilt binaries usually
+# cover this platform, but build-essential and python3 are what make `npm ci`
+# fall back to compiling instead of failing. (better-sqlite3 is N-API since v13
+# and ships prebuilds that load on any Node >=22, so it never compiles here.)
 say "Ensuring build tools for native modules"
 sudo apt-get install -y build-essential python3 git
 
