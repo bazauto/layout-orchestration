@@ -129,6 +129,9 @@ database, and the four residual moderate advisories it offers to fix are one unr
 chain. Full reasoning in `docs/current-state.md` (Repo notes). Plain `npm audit fix` is
 fine and cleared the rest.
 
+Deployment to the bench box is `bash deploy/deploy.sh [ref]` from the repo root; `/deploy`
+wraps it with the host facts and the pre-flight check. `docs/deployment.md` is the why.
+
 Repo housekeeping: `bash .claude/scripts/git-cleanup.sh` previews, and `--yes` applies,
 the removal of merged branches, stale `.claude/worktrees/` agent worktrees, and empty
 leftover directories. Everything it keeps it names. `/branch-cleanup` wraps it.
