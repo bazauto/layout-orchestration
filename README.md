@@ -270,9 +270,15 @@ nothing for logrotate to rotate — retention is journald's, configured host-wid
 `/etc/systemd/journald.conf.d/layout-orchestrator.conf` (500 MB, 30 days).
 
 ```bash
-journalctl -u layout-orchestrator -f          # follow
-journalctl -u layout-orchestrator -p err -b   # errors this boot
+journalctl -u layout-orchestrator -f                              # follow
+journalctl -u layout-orchestrator -b | grep '"level":"error"'     # errors this boot
+journalctl -u layout-orchestrator -b | grep '"level":"warn"'      # warnings this boot
 ```
+
+**`journalctl -p err` does not work here**, and returns an empty result rather than an
+error. The logger writes every line — errors included — to `process.stdout`, which
+journald records at `info` priority; the severity is a `level` field *inside* the JSON,
+which journald does not parse. Filter on the payload, as above.
 
 ## Database
 
