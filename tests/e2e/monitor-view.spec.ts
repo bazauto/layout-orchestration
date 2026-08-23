@@ -235,10 +235,10 @@ async function stub(page: Page) {
     contentType: 'application/json',
     body: JSON.stringify(body),
   });
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill(json([{ id: 'layout-1', name: 'Westgate Hollow' }])),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid', (r) =>
+  await page.route('**/api/layouts/layout-1/grid', (r) =>
     r.fulfill(
       json(
         TILES.map((t, i) => ({
@@ -252,28 +252,28 @@ async function stub(page: Page) {
       ),
     ),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/blocks', (r) =>
+  await page.route('**/api/layouts/layout-1/blocks', (r) =>
     r.fulfill(json(BLOCKS)),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/points', (r) =>
+  await page.route('**/api/layouts/layout-1/points', (r) =>
     r.fulfill(json(POINTS)),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/sensors', (r) => r.fulfill(json([])));
-  await page.route('**://localhost:3000/api/layouts/layout-1/locos', (r) => r.fulfill(json(LOCOS)));
-  await page.route('**://localhost:3000/api/layouts/layout-1/edges', (r) => r.fulfill(json(EDGES)));
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology/compile', (r) =>
+  await page.route('**/api/layouts/layout-1/sensors', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/locos', (r) => r.fulfill(json(LOCOS)));
+  await page.route('**/api/layouts/layout-1/edges', (r) => r.fulfill(json(EDGES)));
+  await page.route('**/api/layouts/layout-1/topology/compile', (r) =>
     r.fulfill(json(COMPILE)),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/openings', (r) =>
+  await page.route('**/api/layouts/layout-1/grid/openings', (r) =>
     r.fulfill(json([])),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/diagnostics', (r) =>
+  await page.route('**/api/layouts/layout-1/grid/diagnostics', (r) =>
     r.fulfill(json([])),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill(json({ valid: true, violations: [], edgeCount: 1 })),
   );
-  await page.route('**://localhost:3000/api/capabilities', (r) =>
+  await page.route('**/api/capabilities', (r) =>
     r.fulfill(json({ sensorSimulation: false })),
   );
 }

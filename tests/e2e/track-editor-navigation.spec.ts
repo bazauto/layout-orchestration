@@ -30,11 +30,11 @@ async function stubApis(page: Page, writes: Write[], deletes: { x: number; y: nu
     body: JSON.stringify(body),
   });
 
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill(json([{ id: 'layout-1', name: 'Westgate Hollow' }])),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid', async (route) => {
+  await page.route('**/api/layouts/layout-1/grid', async (route) => {
     const req = route.request();
     if (req.method() === 'PUT') {
       writes.push({ method: 'PUT', url: req.url(), body: req.postDataJSON() });
@@ -46,7 +46,7 @@ async function stubApis(page: Page, writes: Write[], deletes: { x: number; y: nu
     return route.fulfill(json([]));
   });
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/tile**', (route) => {
+  await page.route('**/api/layouts/layout-1/grid/tile**', (route) => {
     const url = new URL(route.request().url());
     deletes.push({
       x: Number(url.searchParams.get('x')),
@@ -55,16 +55,16 @@ async function stubApis(page: Page, writes: Write[], deletes: { x: number; y: nu
     return route.fulfill({ status: 204, body: '' });
   });
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/diagnostics', (r) =>
+  await page.route('**/api/layouts/layout-1/grid/diagnostics', (r) =>
     r.fulfill(json(DIAGNOSTICS)),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/block-ends', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/block-ends', (r) => r.fulfill(json([])));
 
   for (const e of ['blocks', 'points', 'sensors', 'locos', 'edges']) {
-    await page.route(`**://localhost:3000/api/layouts/layout-1/${e}`, (r) => r.fulfill(json([])));
+    await page.route(`**/api/layouts/layout-1/${e}`, (r) => r.fulfill(json([])));
   }
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill(json({ valid: true, violations: [], edgeCount: 0 })),
   );
 }
@@ -196,7 +196,7 @@ test('a diagnostic with no coordinate renders as plain text, not a button', asyn
   await installMockWebSocket(page);
   await installMockAuth(page);
   await stubApis(page, writes);
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/diagnostics', (r) =>
+  await page.route('**/api/layouts/layout-1/grid/diagnostics', (r) =>
     r.fulfill({
       status: 200,
       contentType: 'application/json',

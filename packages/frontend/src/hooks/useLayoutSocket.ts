@@ -50,9 +50,21 @@ const INITIAL_SNAPSHOT: StateSnapshot = {
   automationRuns: [],
 };
 
+/**
+ * Derived from the page's own origin, for the same reason `API_BASE` is
+ * (#143): the backend serves the built SPA in production, and Vite proxies
+ * `/ws` to :3000 in development, so `location.host` is the right authority in
+ * both. It used to pin port 3000 explicitly, which broke as soon as the page
+ * was served from anywhere but that port.
+ *
+ * `wss:` when the page is `https:` — nothing serves TLS yet (docs/auth.md
+ * records why), but a `ws://` socket opened from an `https://` page is
+ * blocked outright by the browser, so the day TLS lands this must not be the
+ * thing that fails.
+ */
 const WS_URL =
   typeof window !== 'undefined'
-    ? `ws://${window.location.hostname}:3000/ws`
+    ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
     : 'ws://localhost:3000/ws';
 
 const BASE_RECONNECT_MS = 1000;

@@ -20,7 +20,7 @@ const PASSWORD = 'correct-horse-battery-staple';
 
 test.describe('Login screen', () => {
   test('an unauthenticated visit shows the login screen, not the operate UI', async ({ page }) => {
-    await page.route('**://localhost:3000/api/auth/me', (route) =>
+    await page.route('**/api/auth/me', (route) =>
       route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Authentication required' }) }),
     );
 
@@ -32,10 +32,10 @@ test.describe('Login screen', () => {
   });
 
   test('the wrong password shows an error and stays on the login screen', async ({ page }) => {
-    await page.route('**://localhost:3000/api/auth/me', (route) =>
+    await page.route('**/api/auth/me', (route) =>
       route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Authentication required' }) }),
     );
-    await page.route('**://localhost:3000/api/auth/login', (route) =>
+    await page.route('**/api/auth/login', (route) =>
       route.fulfill({
         status: 401,
         contentType: 'application/json',
@@ -58,14 +58,14 @@ test.describe('Login screen', () => {
     // GET /api/auth/me: unauthenticated until login flips this route's
     // response, matching the real backend's session-cookie behaviour.
     let authenticated = false;
-    await page.route('**://localhost:3000/api/auth/me', (route) =>
+    await page.route('**/api/auth/me', (route) =>
       route.fulfill(
         authenticated
           ? { status: 200, contentType: 'application/json', body: JSON.stringify({ username: USERNAME, role: 'admin' }) }
           : { status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Authentication required' }) },
       ),
     );
-    await page.route('**://localhost:3000/api/auth/login', (route) => {
+    await page.route('**/api/auth/login', (route) => {
       authenticated = true;
       return route.fulfill({
         status: 200,
@@ -73,16 +73,16 @@ test.describe('Login screen', () => {
         body: JSON.stringify({ username: USERNAME, role: 'admin' }),
       });
     });
-    await page.route('**://localhost:3000/api/auth/logout', (route) => {
+    await page.route('**/api/auth/logout', (route) => {
       authenticated = false;
       return route.fulfill({ status: 204, body: '' });
     });
 
-    await page.route('**://localhost:3000/api/layouts', (route) =>
+    await page.route('**/api/layouts', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'layout-1', name: 'Test' }]) }),
     );
     for (const entity of ['blocks', 'points', 'sensors', 'locos']) {
-      await page.route(`**://localhost:3000/api/layouts/layout-1/${entity}`, (route) =>
+      await page.route(`**/api/layouts/layout-1/${entity}`, (route) =>
         route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
       );
     }

@@ -115,7 +115,7 @@ describe('useLayoutSocket', () => {
       expect(result.current.connectionState).toBe('connected');
     });
 
-    it('connects to ws://<hostname>:3000/ws', () => {
+    it('connects to /ws on the page origin', () => {
       renderHook(() => useLayoutSocket());
 
       expect(currentSocket().url).toBe(`ws://${window.location.hostname}:3000/ws`);

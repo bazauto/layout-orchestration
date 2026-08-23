@@ -15,14 +15,14 @@ test('keyboard shortcuts 1–7 cycle through all palette items', async ({ page }
   await installMockWebSocket(page);
   await installMockAuth(page);
 
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'layout-1', name: 'Test' }]) }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid', (r) =>
+  await page.route('**/api/layouts/layout-1/grid', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
   for (const entity of ['blocks', 'points', 'sensors', 'locos']) {
-    await page.route(`**://localhost:3000/api/layouts/layout-1/${entity}`, (r) =>
+    await page.route(`**/api/layouts/layout-1/${entity}`, (r) =>
       r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
     );
   }
@@ -48,14 +48,14 @@ test('R rotates forward 45° per press and Shift+R rotates backward', async ({ p
   await installMockWebSocket(page);
   await installMockAuth(page);
 
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'layout-1', name: 'Test' }]) }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid', (r) =>
+  await page.route('**/api/layouts/layout-1/grid', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
   for (const entity of ['blocks', 'points', 'sensors', 'locos']) {
-    await page.route(`**://localhost:3000/api/layouts/layout-1/${entity}`, (r) =>
+    await page.route(`**/api/layouts/layout-1/${entity}`, (r) =>
       r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
     );
   }

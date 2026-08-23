@@ -46,7 +46,7 @@ A control system requires rigorous, layered testing:
 ## Engineering Standards & Production Readiness
 - **Testing, Linting & Formatting:** ESLint, Prettier, Husky pre-commit hooks.
 - **Architecture:** Layered design (Ports and Adapters). Hardware interfaces ↔ Services/Domain Logic ↔ API/WebSockets. Business logic must be entirely independent of hardware specifics.
-- **Linux Operations:** Designed for `systemd` deployment. Include structured logging (`Pino`), SQLite automated backups, configuration management, and log rotation.
+- **Linux Operations:** Designed for `systemd` deployment. Include structured logging, SQLite automated backups, configuration management, and log retention. **Delivered by #143** — see `docs/deployment.md`. Two corrections to what this line originally said: the logging interface is hand-rolled (`{info,warn,error}` writing JSON to stdout) and **Pino is not, and never was, a dependency of any workspace**; and because stdout lands in the journal under systemd there is no log file, so retention is a `journald` setting rather than a logrotate config.
 - **CI/CD:** GitHub Actions configured from day one to run tests and linters on every push.
 
 ## Further Considerations

@@ -8,6 +8,7 @@ import fastifyCors from '@fastify/cors';
 import fastifyWebSocket from '@fastify/websocket';
 import fastifyCookie from '@fastify/cookie';
 import fastifyRateLimit from '@fastify/rate-limit';
+import fastifyStatic from '@fastify/static';
 import { LayoutService } from '../../services/LayoutService';
 import { TopologyService } from '../../services/TopologyService';
 import { AuthService } from '../../services/AuthService';
@@ -59,6 +60,10 @@ export async function buildServer(
   // same instance `LayoutService` reads its gap count through. Constructed here
   // when absent, which is every test that does not care.
   compileService: CompileService = new CompileService(repo, topologyService),
+  // #143: path to the built SPA (`packages/frontend/dist`), or undefined to
+  // serve no static files at all — which is development, and every test that
+  // does not specifically cover this.
+  frontendDistPath?: string,
 ) {
   const fastify = Fastify({ logger: { level: logLevel } });
 
@@ -76,11 +81,50 @@ export async function buildServer(
   await fastify.register(fastifyRateLimit, { global: false });
   await fastify.register(fastifyWebSocket);
 
+  // ── The built SPA (#143) ────────────────────────────────────────────────────
+  //
+  // A deployment serves the operator UI from this process, on this port, so
+  // every browser request is same-origin — which is what takes CORS and the
+  // cross-site cookie question out of a real deployment entirely.
+  //
+  // These files must be reachable WITHOUT a session: one of them is the login
+  // screen, and a 401 on index.html is a deployment nobody can log into.
+  // Registering the plugin before the auth hook is not enough to achieve that
+  // — `@fastify/static` registers inside its own encapsulation context, which
+  // inherits the root's onRequest hooks whenever they were added — so the
+  // exemption is explicit, via the predicate handed to `registerAuthHook`
+  // below. Serving the bundle anonymously gives nothing away: it is the same
+  // compiled JavaScript that is public in this repository and it carries no
+  // layout data. Every byte of layout state still arrives over /api or /ws.
+  //
+  // `wildcard: false` because the SPA has no client-side router — `/` is the
+  // only HTML path there is. If routing is ever added, deep links will 401 and
+  // the fix is a history-API fallback that has to answer for the auth hook
+  // too, not just for the router.
+  if (frontendDistPath) {
+    await fastify.register(fastifyStatic, { root: frontendDistPath, wildcard: false });
+  }
+
+  // Exactly what `vite build` emits for this app: `index.html` plus hashed
+  // files under `build.assetsDir` (default `assets/`), and nothing else — the
+  // frontend workspace has no `public/` directory. Deny-by-default on purpose:
+  // adding one later means adding it here, and the symptom is an obvious 401
+  // in the browser rather than a route quietly becoming anonymous.
+  const isPublicSpaPath = frontendDistPath
+    ? (path: string) => path === '/' || path === '/index.html' || path.startsWith('/assets/')
+    : undefined;
+
   // Registered before ANY route (including /health and the login route
   // themselves) — Fastify hooks only apply to routes declared after the
   // hook, on the same encapsulation context. See auth/hook.ts for the
   // exemption list and the WebSocket-upgrade rationale.
-  registerAuthHook(fastify, authService, authConfig.cookieName, authConfig.cookieSecure);
+  registerAuthHook(
+    fastify,
+    authService,
+    authConfig.cookieName,
+    authConfig.cookieSecure,
+    isPublicSpaPath,
+  );
 
   // Health check (exempt from auth)
   fastify.get('/health', async () => {

@@ -207,7 +207,7 @@ describe('useGridEditor', () => {
     const empty: GridMap = new Map();
     expect(result.current.grid).toEqual(empty);
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:3000/api/layouts/layout-1/grid',
+      '/api/layouts/layout-1/grid',
       expect.objectContaining({ method: 'DELETE' }),
     );
   });

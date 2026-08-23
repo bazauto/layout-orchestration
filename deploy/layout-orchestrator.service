@@ -1,0 +1,71 @@
+[Unit]
+Description=Layout Orchestrator (Westgate Hollow)
+Documentation=https://github.com/bazauto/layout-orchestration/blob/main/docs/deployment.md
+
+# network-online, not just network: MQTT_URL and the HTTP bind both want a
+# configured address. Wants= rather than Requires= because a broker that is
+# slow to come up must not stop the orchestrator from starting — MqttAdapter
+# reconnects on its own, and the layout is in Safe-Stop until it does, which
+# is the correct state to boot into anyway.
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+# No start-rate limit. A missing serial port is a startup throw, not a degraded
+# mode: the process exits and systemd retries every RestartSec until the
+# command station is plugged in. With the default limit systemd would give up
+# after five attempts and leave the unit dead — a control system that cannot
+# reach its hardware should keep saying so, not go quiet.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pbarrett
+Group=pbarrett
+# The DCC command station is a USB CDC device (/dev/picodcc-dccex -> ttyACMn,
+# named by /etc/udev/rules.d/60-picodcc-bench.rules), and its group is dialout.
+SupplementaryGroups=dialout
+
+WorkingDirectory=/opt/layout-orchestrator
+# The SAME file `dotenv` loads from the deployment root (config.ts resolves it
+# relative to packages/backend/dist), so there is one .env and not two that can
+# disagree. It is read by systemd as well so `systemctl show` reflects the real
+# configuration — which means the file must stay parsable by both: plain
+# KEY=value, no `export` prefix, no shell expansion. deploy.sh checks this
+# before restarting.
+EnvironmentFile=/opt/layout-orchestrator/.env
+
+# Migrations apply automatically on startup from MIGRATIONS_PATH (see
+# adapters/db/connection.ts), so `systemctl restart` after a deploy is the
+# whole procedure. Do NOT add a manual migration step here — a second migrator
+# racing the one in-process is the failure this design avoids.
+ExecStart=/usr/bin/node packages/backend/dist/index.js
+
+Restart=on-failure
+RestartSec=5
+
+SyslogIdentifier=layout-orchestrator
+StandardOutput=journal
+StandardError=journal
+
+# ── Hardening ────────────────────────────────────────────────────────────────
+# Deliberately NOT PrivateDevices=yes: that hides /dev/ttyACM* and the command
+# station link would never open.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+# ProtectSystem=strict makes the whole hierarchy read-only, /opt included, so
+# the two paths the process actually writes have to be named. The database is
+# the only durable state; backups are written by the backup unit, not this one,
+# but the directory is listed so a manual run under this unit's identity works.
+ReadWritePaths=/opt/layout-orchestrator/data
+ReadWritePaths=/opt/layout-orchestrator/backups
+
+[Install]
+WantedBy=multi-user.target

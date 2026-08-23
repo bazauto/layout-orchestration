@@ -14,24 +14,24 @@ const BLOCKS = [{ id: 'block-a', layoutId: 'layout-1', name: 'Block A' }];
 
 /** Stubs every GET `useLayoutConfig.refresh()` fires, mirroring edge-authoring.spec.ts's `stubApis`. */
 async function stubApis(page: Page, options: { blocksRoute: (route: import('@playwright/test').Route) => Promise<void> }) {
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'layout-1', name: 'Test Layout' }]) }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/blocks', options.blocksRoute);
-  await page.route('**://localhost:3000/api/layouts/layout-1/blocks/*', options.blocksRoute);
-  await page.route('**://localhost:3000/api/layouts/layout-1/points', (r) =>
+  await page.route('**/api/layouts/layout-1/blocks', options.blocksRoute);
+  await page.route('**/api/layouts/layout-1/blocks/*', options.blocksRoute);
+  await page.route('**/api/layouts/layout-1/points', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/sensors', (r) =>
+  await page.route('**/api/layouts/layout-1/sensors', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/locos', (r) =>
+  await page.route('**/api/layouts/layout-1/locos', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/edges', (r) =>
+  await page.route('**/api/layouts/layout-1/edges', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ valid: true, violations: [], edgeCount: 0 }) }),
   );
 }

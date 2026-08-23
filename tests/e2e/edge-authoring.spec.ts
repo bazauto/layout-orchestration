@@ -34,7 +34,7 @@ async function stubApis(
 ) {
   const edges: unknown[] = [...(options.initialEdges ?? [])];
 
-  await page.route('**://localhost:3000/api/layouts', (r) =>
+  await page.route('**/api/layouts', (r) =>
     r.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -42,20 +42,20 @@ async function stubApis(
     }),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/blocks', (r) =>
+  await page.route('**/api/layouts/layout-1/blocks', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(BLOCKS) }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/points', (r) =>
+  await page.route('**/api/layouts/layout-1/points', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(POINTS) }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/sensors', (r) =>
+  await page.route('**/api/layouts/layout-1/sensors', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
-  await page.route('**://localhost:3000/api/layouts/layout-1/locos', (r) =>
+  await page.route('**/api/layouts/layout-1/locos', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/topology', (r) =>
+  await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -65,7 +65,7 @@ async function stubApis(
     }),
   );
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/edges', (route) =>
+  await page.route('**/api/layouts/layout-1/edges', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(edges) }),
   );
 }

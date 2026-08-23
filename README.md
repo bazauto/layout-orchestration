@@ -121,6 +121,7 @@ Planned next:
 │  └─ frontend/  # React + Vite operator/config/editor UI
 ├─ tests/
 │  └─ e2e/       # Playwright end-to-end tests
+├─ deploy/       # systemd units, backup timer, journald retention, deploy scripts
 ├─ .github/
 │  └─ workflows/ # CI
 └─ docs/         # Project notes and contracts
@@ -156,6 +157,11 @@ Important mode flags:
 
 Default local development is typically best in hybrid mode.
 
+`FRONTEND_DIST_PATH` points at the built operator UI (`packages/frontend/dist`). When set,
+the backend serves it from `/` on the same port as the API — that is what makes a
+deployment one process on one port. **Leave it unset in development**, where Vite serves
+the UI instead. See the Deployment section below.
+
 `SENSOR_SIMULATION=true` exposes a bench-testing panel and API that FABRICATE sensor
 readings — off by default; **do not enable on a live layout**. See
 `docs/sensor-simulation.md`.
@@ -184,7 +190,89 @@ Start frontend:
 npm run dev:frontend
 ```
 
-Frontend runs on Vite's dev server and talks to the backend on port `3000`.
+Frontend runs on Vite's dev server, which proxies `/api` and `/ws` to the backend on port
+`3000`. The frontend addresses its own origin rather than a hardcoded host, so the proxy
+is what connects the two — there is no API URL to configure.
+
+Leave `FRONTEND_DIST_PATH` unset in development. Setting it makes the backend serve a
+*built* copy of the UI on :3000 as well, and debugging a stale bundle you forgot you were
+looking at is a poor use of an afternoon.
+
+## Deployment
+
+The full reasoning is `docs/deployment.md`; this is the short version.
+
+The stack runs as a **systemd service**, with the backend serving the built operator UI on
+its own port — one process, one port, one unit. Everything lives in `deploy/`.
+
+One-time, on the target machine:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bazauto/layout-orchestration/main/deploy/bootstrap.sh | bash
+```
+
+That installs Node from NodeSource, clones the repository to `/opt/layout-orchestrator`,
+installs the two units, the timer and the journald drop-in, and adds the service account
+to `dialout` for the DCC serial port. It deliberately does **not** write `.env`, copy a
+database, or start anything.
+
+Then write `/opt/layout-orchestrator/.env` (start from `.env.example`), put a database in
+`data/`, and:
+
+```bash
+sudo systemctl enable --now layout-orchestrator
+```
+
+Thereafter, deploy from the development machine:
+
+```bash
+bash deploy/deploy.sh              # deploys origin/main
+bash deploy/deploy.sh <tag|sha>    # deploys anything else
+```
+
+The target checks the ref out from GitHub, runs `npm ci`, builds both workspaces and
+restarts the service. Nothing is copied from the development machine — what runs on the
+layout is always a commit that exists in the repository.
+
+Two things the deployed `.env` must get right, both of which are silent if wrong:
+
+- **Absolute paths.** The unit's working directory is the repository root, not
+  `packages/backend`, so `MIGRATIONS_PATH=./migrations` resolves to a directory that does
+  not exist and the backend starts against an unmigrated database.
+- **systemd's grammar.** The same file is read by `dotenv` *and* by systemd's
+  `EnvironmentFile`, and systemd accepts plain `KEY=value` only — no `export`, no shell
+  expansion. `deploy.sh` refuses to deploy a file that breaks this.
+
+### Backups
+
+`layout-orchestrator-backup.timer` runs `deploy/backup-db.cjs` daily, which takes a
+`VACUUM INTO` snapshot and retains 14.
+
+**Never back this database up with a file copy.** It runs in WAL mode with a log reaching
+megabytes; copying `layout.db` alone produces a backup that restores cleanly and is
+missing the most recent session's work. `VACUUM INTO` folds the WAL in and writes one
+self-contained file.
+
+```bash
+sudo systemctl start layout-orchestrator-backup       # snapshot now
+journalctl -u layout-orchestrator-backup              # what happened
+systemctl list-timers layout-orchestrator-backup      # when is the next one
+```
+
+To restore: stop the service, copy the snapshot over `data/layout.db`, **delete
+`layout.db-wal` and `layout.db-shm`**, start. Leaving the old WAL beside a restored
+snapshot resurrects the state you were rolling back.
+
+### Logs
+
+The backend writes structured JSON to stdout, so under systemd there is no log file and
+nothing for logrotate to rotate — retention is journald's, configured host-wide in
+`/etc/systemd/journald.conf.d/layout-orchestrator.conf` (500 MB, 30 days).
+
+```bash
+journalctl -u layout-orchestrator -f          # follow
+journalctl -u layout-orchestrator -p err -b   # errors this boot
+```
 
 ## Database
 
@@ -375,6 +463,22 @@ The system follows a fail-safe posture:
 Positions the system holds deliberately, each with a document behind it. **This is not a
 changelog** — nothing here is a bug waiting to be fixed in passing, and a limit leaves
 this list only when the decision behind it changes.
+
+### Deployment
+
+**Backups live on the same disk as the database.** The bench box has one disk, so the
+daily `VACUUM INTO` snapshot protects against corruption, a bad migration and an
+accidental delete — and not against the disk failing. Pulling a snapshot off the box is a
+manual `scp` today. `docs/deployment.md` D6.
+
+**The broker on the bench listens on `127.0.0.1:1883` only.** That is sufficient for the
+orchestrator, which runs on the same machine, and it means the ESP sensor and point
+controllers cannot reach it. Opening a LAN listener is a firmware-session task with an
+authentication question attached, not a line in a config file.
+
+**No TLS, and `COOKIE_SECURE` stays `false`.** A deliberate position with its own threat
+model in `docs/auth.md`, on a private network. Flipping the cookie flag before TLS exists
+makes every session fail closed, which is why the two move together or not at all.
 
 ### Track graph
 

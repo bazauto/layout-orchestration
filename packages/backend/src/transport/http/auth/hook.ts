@@ -20,6 +20,12 @@
  *    someone can halt a runaway is the wrong trade. See docs/auth.md.
  *    Every other control path (throttle, points, functions, mode changes)
  *    requires auth.
+ *  - Whatever `isPublicPath` accepts — the built SPA's own files, when a
+ *    deployment is serving them from this process (#143). Supplied by
+ *    server.ts rather than listed here because the paths are a fact about
+ *    Vite's build output, not about authentication. It is a predicate and not
+ *    a prefix so that it stays deny-by-default: registering the static plugin
+ *    does not, on its own, make anything public.
  */
 
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -43,6 +49,7 @@ export function registerAuthHook(
   authService: AuthService,
   cookieName: string,
   cookieSecure: boolean,
+  isPublicPath: (path: string) => boolean = () => false,
 ): void {
   fastify.decorateRequest('user', undefined);
 
@@ -50,7 +57,7 @@ export function registerAuthHook(
     // Path only — a query string on an exempt path (there isn't one today)
     // must not accidentally fall through the exemption check.
     const path = request.url.split('?')[0];
-    if (EXEMPT_PATHS.has(path)) {
+    if (EXEMPT_PATHS.has(path) || isPublicPath(path)) {
       return;
     }
 

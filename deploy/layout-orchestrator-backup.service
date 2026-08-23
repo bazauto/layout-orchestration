@@ -1,0 +1,27 @@
+[Unit]
+Description=Layout Orchestrator database snapshot (VACUUM INTO)
+Documentation=https://github.com/bazauto/layout-orchestration/blob/main/docs/deployment.md
+
+[Service]
+Type=oneshot
+User=pbarrett
+Group=pbarrett
+WorkingDirectory=/opt/layout-orchestrator
+# Same file as the main unit, so DATABASE_PATH cannot drift between the process
+# that writes the database and the job that snapshots it.
+EnvironmentFile=/opt/layout-orchestrator/.env
+ExecStart=/usr/bin/node deploy/backup-db.cjs
+
+SyslogIdentifier=layout-orchestrator-backup
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# Reads the database and writes a snapshot beside it. Both paths are named
+# because ProtectSystem=strict makes /opt read-only; the source is read-write
+# rather than read-only because SQLite maps the -shm file even to take a
+# read snapshot of a WAL database.
+ReadWritePaths=/opt/layout-orchestrator/data
+ReadWritePaths=/opt/layout-orchestrator/backups

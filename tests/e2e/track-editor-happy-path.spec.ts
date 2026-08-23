@@ -7,7 +7,7 @@ test('track editor happy path: select tool, rotate, place tiles', async ({ page 
   await installMockWebSocket(page);
   await installMockAuth(page);
 
-  await page.route('**://localhost:3000/api/layouts', async (route) => {
+  await page.route('**/api/layouts', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -15,7 +15,7 @@ test('track editor happy path: select tool, rotate, place tiles', async ({ page 
     });
   });
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid', async (route) => {
+  await page.route('**/api/layouts/layout-1/grid', async (route) => {
     const req = route.request();
     if (req.method() === 'GET') {
       await route.fulfill({
@@ -52,20 +52,20 @@ test('track editor happy path: select tool, rotate, place tiles', async ({ page 
     await route.continue();
   });
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/grid/tile**', async (route) => {
+  await page.route('**/api/layouts/layout-1/grid/tile**', async (route) => {
     await route.fulfill({ status: 204, body: '' });
   });
 
-  await page.route('**://localhost:3000/api/layouts/layout-1/blocks', async (route) => {
+  await page.route('**/api/layouts/layout-1/blocks', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
   });
-  await page.route('**://localhost:3000/api/layouts/layout-1/points', async (route) => {
+  await page.route('**/api/layouts/layout-1/points', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
   });
-  await page.route('**://localhost:3000/api/layouts/layout-1/sensors', async (route) => {
+  await page.route('**/api/layouts/layout-1/sensors', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
   });
-  await page.route('**://localhost:3000/api/layouts/layout-1/locos', async (route) => {
+  await page.route('**/api/layouts/layout-1/locos', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
   });
 
