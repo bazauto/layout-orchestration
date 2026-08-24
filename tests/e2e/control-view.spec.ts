@@ -134,6 +134,20 @@ const SNAPSHOT = {
   systemStatus: 'online',
   systemMode: 'manual',
   safeStopReason: null,
+  // #149. Present because the real snapshot always carries it — `dccLink` is
+  // not optional on `StateSnapshot`, and the view reads `mainPowerOn` off it to
+  // draw the track-power badge. A fixture missing it is a fixture that does not
+  // resemble the wire.
+  dccLink: {
+    responsive: true,
+    reason: null,
+    fault: null,
+    mainPowerOn: true,
+    progPowerOn: true,
+    identity: null,
+    restartCount: 0,
+    lastResponseAt: null,
+  },
   blocks: {
     es1: {
       blockId: 'es1',
@@ -557,9 +571,43 @@ test('a monitor gets the same mimic with none of the controls', async ({ page })
   await expect(page.getByRole('list', { name: 'Routes' })).toBeVisible();
   await expect(page.getByLabel('Point key', { exact: true })).toBeVisible();
 
+  // #149: it reads track power like everything else. Situational awareness is
+  // exactly what this role is for, and "the rails are dead" is the most
+  // situational fact there is.
+  await expect(page.getByText(/Track power on/)).toBeVisible();
+
   // Nothing it could press. Absent, not disabled (#61's argument): a greyed
   // control still poses a question whose honest answer is "you may not".
   await expect(page.getByLabel('Add a throttle')).toHaveCount(0);
   await expect(page.getByRole('button', { name: /Set P7 - Yard Neck/ })).toHaveCount(0);
   await expect(page.getByRole('columnheader', { name: 'Set' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Switch track power off' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Switch track power on' })).toHaveCount(0);
+});
+
+test('an operator can switch track power off, and the state follows what the station reports (#149)', async ({
+  page,
+}) => {
+  let requested: unknown = null;
+  await page.route('**/api/layouts/layout-1/dcc-link/power', async (r) => {
+    requested = JSON.parse(r.request().postData() ?? 'null');
+    // The station answers, and its answer is what the view believes — the reply
+    // is the link view, not an acknowledgement (`docs/dcc-link.md` D12).
+    await r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...SNAPSHOT.dccLink, mainPowerOn: false, progPowerOn: false }),
+    });
+  });
+
+  await openControl(page, 'operator');
+
+  // Live to begin with, so "on" is the disabled one: the button for the current
+  // state stays put rather than disappearing under the pointer.
+  await expect(page.getByText(/Track power on/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Switch track power on' })).toBeDisabled();
+
+  await page.getByRole('button', { name: 'Switch track power off' }).click();
+
+  expect(requested).toEqual({ on: false });
 });

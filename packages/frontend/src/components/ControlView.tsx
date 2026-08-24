@@ -64,6 +64,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { apiFetch } from '../api';
 import { TrackDiagram, RULER_SIZE } from './TrackDiagram';
 import { PointKeyPanel } from './PointKeyPanel';
 import { buildPointKey } from '../diagram/pointKey';
@@ -294,6 +295,20 @@ export function ControlView({
       */}
       <div style={st.strip}>
         <FreshnessBadge freshness={freshness} />
+
+        {/*
+          #149. Track power is its own fact, next to connection freshness and
+          deliberately not folded into it: a station can be perfectly
+          responsive and the rails still dead, which is precisely the state
+          that used to be invisible. Before this, the first sign was a train
+          that would not move.
+        */}
+        <TrackPowerControl
+          layoutId={layoutId}
+          mainPowerOn={snapshot.dccLink.mainPowerOn}
+          canControl={canControl}
+          disabled={disabled}
+        />
 
         <span
           style={st.caveat}
@@ -649,6 +664,117 @@ function FreshnessBadge({ freshness }: { freshness: Freshness }) {
   );
 }
 
+/**
+ * Track power state, and — for an operator or admin — the control (#149).
+ *
+ * Three states, not two. `null` is "the station has not told us", which is
+ * genuinely different from off and must not be drawn as either: showing
+ * `unknown` as "off" would have an operator hunting a power fault that does not
+ * exist, and showing it as "on" is the failure this whole issue is about.
+ *
+ * Explicit `On` / `Off` buttons rather than a toggle, for the reason the point
+ * key gives (#165 M14): a toggle asks the operator to derive "the other one"
+ * from a state that may read `unknown`, which is exactly when guessing is worst.
+ * The button for the current state is disabled rather than hidden, so the
+ * control does not move under the pointer as state changes.
+ *
+ * The reply is the link view, and the badge follows what the STATION reported
+ * rather than what was asked for — `setTrackPower` probes afterwards, so a
+ * command that went out and did nothing leaves the badge where it was
+ * (`docs/dcc-link.md` D12). The socket delivers the same fact a moment later;
+ * this component holds only its own in-flight and error state.
+ */
+function TrackPowerControl({
+  layoutId,
+  mainPowerOn,
+  canControl,
+  disabled,
+}: {
+  layoutId: string | null;
+  mainPowerOn: boolean | null;
+  canControl: boolean;
+  disabled: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const command = useCallback(
+    async (on: boolean) => {
+      if (!layoutId) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const res = await apiFetch(`/api/layouts/${layoutId}/dcc-link/power`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ on }),
+        });
+        if (!res.ok) {
+          // Shown, not only logged — the same rule #165 M15 applied to a
+          // refused WebSocket command. A power button that silently does
+          // nothing is worse than one that is not there.
+          setError(res.status === 403 ? 'Not permitted' : `Failed (${res.status})`);
+        }
+      } catch {
+        setError('Failed to reach the orchestrator');
+      } finally {
+        setBusy(false);
+      }
+    },
+    [layoutId],
+  );
+
+  const label = mainPowerOn === null ? 'unknown' : mainPowerOn ? 'on' : 'off';
+  const colour =
+    mainPowerOn === null
+      ? OCCUPANCY.unknown.colour
+      : mainPowerOn
+        ? OCCUPANCY.clear.colour
+        : FAULT.colour;
+
+  return (
+    <span style={st.powerGroup}>
+      <span
+        style={{ ...st.badge, borderColor: colour, color: colour }}
+        title="Main track power, as last reported by the command station (#149)"
+        aria-live="polite"
+      >
+        {/* A word, never colour alone (#81). */}
+        {mainPowerOn === null ? '?' : mainPowerOn ? '⚡' : '○'} Track power {label}
+      </span>
+
+      {canControl && layoutId && (
+        <>
+          <button
+            type="button"
+            style={st.powerButton}
+            aria-label="Switch track power on"
+            disabled={disabled || busy || mainPowerOn === true}
+            onClick={() => void command(true)}
+          >
+            On
+          </button>
+          <button
+            type="button"
+            style={st.powerButton}
+            aria-label="Switch track power off"
+            disabled={disabled || busy || mainPowerOn === false}
+            onClick={() => void command(false)}
+          >
+            Off
+          </button>
+        </>
+      )}
+
+      {error && (
+        <span style={st.powerError} role="alert">
+          {error}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function LegendItem({ glyph, label }: { glyph: string; label: string }) {
   return (
     <span style={st.legendItem}>
@@ -688,6 +814,24 @@ const st = {
   } as React.CSSProperties,
   caveat: {
     color: INK.secondary,
+  } as React.CSSProperties,
+  powerGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  } as React.CSSProperties,
+  powerButton: {
+    background: '#313244',
+    color: INK.primary,
+    border: '1px solid #45475a',
+    borderRadius: 3,
+    padding: '2px 8px',
+    cursor: 'pointer',
+    fontSize: 12,
+  } as React.CSSProperties,
+  powerError: {
+    color: FAULT.colour,
+    fontSize: 12,
   } as React.CSSProperties,
   legend: {
     marginLeft: 'auto',

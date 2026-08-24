@@ -211,7 +211,7 @@ One line per area: enough to know whether it is what you are touching. The long 
 | **Grid diagnostics** (#84, #83, #91, #92, #103) | `GET .../grid/diagnostics` — read-only, advisory, **never a gate**. A diagnostic compares two representations that may legitimately disagree; a compile *gap* says the compiler is not confident, and only that gates. | `track-grid.md` D11 |
 | **Track graph compilation** (#103) | `services/trackGraphCompiler.ts` is the **only** writer of `block_edges` and the only source of an opening's name. Compile → review in `CompilePanel` → fingerprinted admin-only apply. Gaps gate `auto`/`hybrid` only, never Safe-Stop. `block_ends` is deleted. | `track-graph-compilation.md` |
 | **One renderer, live mimic** (#75, #63, #82, #129) | `TrackDiagram` is the **only** thing that draws the railway. State wins the colour channel; a route is a halo drawn from a **walk** along held track; three global layers, not per-tile groups. | `liveness.md` |
-| **The control plane** (#165) | `ControlView` (was `MonitorView`) is the mimic **and** the screen the layout is driven from: `ThrottleCard` overlays per loco, `Normal`/`Reverse` on each point-key row. **Track is never a button**; a card for an `auto`-route loco opens *armed*; a refused command is shown, not just logged. Tab reads *Control*, or *Monitor* for the `monitor` role, which gets no controls. | `liveness.md` M10–M16 |
+| **The control plane** (#165, #149) | `ControlView` (was `MonitorView`) is the mimic **and** the screen the layout is driven from: `ThrottleCard` overlays per loco, `Normal`/`Reverse` on each point-key row, track power on the status strip. **Track is never a button**; a card for an `auto`-route loco opens *armed*; a refused command is shown, not just logged. Tab reads *Control*, or *Monitor* for the `monitor` role, which gets the state and none of the controls. | `liveness.md` M10–M17 |
 | **Control view e2e** | `tests/e2e/control-view.spec.ts` — the one spec that mounts this view, reading the rendered SVG back in one `evaluate`, plus which controls each role is offered. | `liveness.md` |
 | **Point position feedback** (#25, #167) | `commandedPosition` / `confirmedPosition` / seven-state `confirmation`; **`effectivePosition` decides which is trusted**. Nothing is persisted. Every *fault* kind Safe-Stops; the escape hatch is `positionFeedback: 'none'`. A controller must **re-assert every 30 s** — silence past the window degrades the point to `stale`, which latches nothing. | `point-feedback.md` |
 | **Per-loco braking** (#6) | `domain/braking.ts` is pure; `BrakingService` plans and `LayoutService` executes one chained timer on `IClock`. Unmeasured intermediate track **refuses** — never guess a stopping distance. | `braking.md` |
@@ -220,7 +220,7 @@ One line per area: enough to know whether it is what you are touching. The long 
 | **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) — publishes to the sensor's own `mqttTopic` so the broker echoes it back through ordinary ingestion, byte-identical to hardware. | `sensor-simulation.md` |
 | **DCC wire format** (#147) | `domain/dccWireFormat.ts` builds every DCC-EX command string; `SerialDccAdapter` only writes them. Throttle is the current **three-field** `<t CAB SPEED DIR>` — the legacy leading register shifts every field and moved the wrong train. Formats, never validates. | issue #153 (index) |
 | **Deployment** (#143) | Runs as a systemd unit on the bench box. `FRONTEND_DIST_PATH` makes the backend serve the built SPA on its own port, so a deployment is one process and every request is same-origin; the frontend addresses `window.location`, never a hardcoded host. Backups are `VACUUM INTO` on a timer, **never a file copy**. Everything lives in `deploy/`. | `deployment.md` |
-| **DCC link** (#148, #150) | The station **answers**: `domain/dccResponse.ts` frames and parses, `domain/dccLink.ts` correlates replies to commands positionally, `DccLinkService` holds `SystemHealth.dccLink`. Silence Safe-Stops; `<X>` faults the route that issued the command; a wrong-cab `<l>` Safe-Stops. Power is observed, **not** gated — that is #149. `setFunction` throws. | `dcc-link.md` |
+| **DCC link** (#148, #150, #149) | The station **answers**: `domain/dccResponse.ts` frames and parses, `domain/dccLink.ts` correlates replies to commands positionally, `DccLinkService` holds `SystemHealth.dccLink`. Silence Safe-Stops; `<X>` faults the route that issued the command; a wrong-cab `<l>` Safe-Stops. `setFunction` throws. **Track power is commanded on at connect and controllable by an operator**; observed dark refuses routes and automation and is **never** a Safe-Stop. | `dcc-link.md` |
 
 ### Traps
 
@@ -279,6 +279,14 @@ the id (`grep -n "^### D9" docs/sensor-trust.md`) before concluding any of these
 - **A malformed sensor payload Safe-Stops on the first message; a malformed operator UI
   request is an ordinary 400.** The fail-safe rule is scoped to sensor/control topics
   (`sensor-trust.md`).
+- **Track power off refuses routes but is not a Safe-Stop, and latches nothing** — the layout is
+  already stopped, and an operator who switched it off to re-rail a wagon must not come back to a
+  system needing acknowledgement. It refuses on an *observed* `false`, never on `null`
+  (`dcc-link.md` D10).
+- **Automation is stopped twice over when power goes — abandoned AND its sweep gated — and that is
+  not belt and braces.** The abandon stops the run in flight; the gate stops a route automation has
+  never taken from departing, which `AutomationService`'s `adopted` set structurally cannot cover
+  for a resumed route (`dcc-link.md` D15).
 - **`NameBookCache.refresh` catches `BlockEdgeRowInvalidError` and nothing else** — it runs
   before `loadTopology`, so a wider catch regresses #10's Safe-Stop-not-throw guarantee
   (`naming.md`).
@@ -323,10 +331,9 @@ Recorded rather than closed — **none of these is a bug to fix in passing.** On
 - **Automation's coverage tracks where the beams are.** No trusted, measured `ir_position`
   beam at the destination — or no `crawl_speed_step` on the loco — means no berth: the run
   stops at the destination block's entry boundary and an operator finishes the move.
-- **A power cutoff is still silent on the wire** (`bazauto/PicoDCC#4`, half done). #148 sees it only at
-  the next `<s>` probe, and #148 deliberately does **not** gate on track power at all — observing it is
-  this issue, acting on it is #149. A station that cut power and still answers probes reads
-  *responsive and dark* (`dcc-link.md` D10, D12).
+- **A power cutoff is pushed on the wire** as of `bazauto/PicoDCC#59`, and #149 acts on it: `<1>` at
+  connect, an operator control, routes and automation refused while the layout is observed dark, and
+  **never** a Safe-Stop — the layout is already stopped (`dcc-link.md` D10, D12, D14, D15).
 - **Backups are on the same disk as the database** (`deployment.md` D6). A single-disk bench
   box: the timer protects against corruption, a bad migration and an accidental delete, and
   not against the disk failing. Pulling a snapshot off the box is manual.

@@ -102,6 +102,23 @@ export function formatEmergencyStop(): string {
 }
 
 /**
+ * `<1>` / `<0>` — track power on or off (#149).
+ *
+ * No track argument, which means **both** tracks: DCC-EX reads a bare `<1>` as
+ * `DCCEX_TRACK_ALL`, and PicoDCC implements it that way. Per-track control is
+ * deliberately not offered here — the operator-facing concept is "the layout is
+ * live" or "the layout is dead", and a UI that could power the main track
+ * without the programming track invites a state nobody asked for.
+ *
+ * The reply is `<p1 MAIN>` / `<p1 PROG>` (or `p0`), which is why this command is
+ * worth sending even when the station is believed to be in the desired state:
+ * the answer is the only thing that makes the belief evidence.
+ */
+export function formatTrackPower(on: boolean): string {
+  return frame(on ? '1' : '0');
+}
+
+/**
  * `<s>` — ask the station what it is and how it stands (#148).
  *
  * One round trip, three facts: the identity banner (carrying the git hash of the

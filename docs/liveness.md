@@ -3,7 +3,7 @@
 This document records the design behind #82: whether a client is still
 receiving live layout state, as distinct from the layout simply being quiet —
 and, since #165, the design of the view that state is displayed on, which is
-now also the view the layout is driven from (M10–M16).
+now also the view the layout is driven from (M10–M17).
 Same posture as `docs/auth.md`, `docs/route-locking.md`, and
 `docs/point-feedback.md` — not binding the way `docs/mqtt-contract.md` is, but
 it explains *why*, not just *what*, so a later change doesn't quietly undo a
@@ -39,7 +39,7 @@ is not what the issue asked for), and Safe-Stop made unmissable on the diagram
 (item 4).
 
 The view this document describes stopped being read-only in #165 — it is the
-screen the layout is driven from, and M10–M16 at the end record what that
+screen the layout is driven from, and M10–M17 at the end record what that
 changed and, more importantly, what it deliberately did not. Everything in
 D5–D9 is unchanged by it: a control plane that has stopped receiving updates is
 a *worse* thing to act on than a mimic that has, not a better one.
@@ -580,6 +580,38 @@ The tab reads **Control** for `admin` and `operator`, and still reads
 This is affordance only. `DRIVING_MESSAGE_TYPES` in the WebSocket transport
 already refused a throttle or point command from a `monitor` connection (#63
 D2/D3), which is why this view could be given controls with no new gate.
+
+### M17 — Track power sits on the status strip, and has three states (#149)
+
+Next to the connection-freshness badge, and deliberately not folded into it: a
+station can be perfectly responsive and the rails still dead, which is exactly
+the state that used to be invisible. Before #149 the first sign of it was a
+train that would not move.
+
+**Three states, not two.** `null` — the station has not told us — is genuinely
+different from off, and drawing it as either is wrong in a different direction
+each time: showing `unknown` as "off" sends an operator hunting a power fault
+that does not exist, and showing it as "on" is the whole failure #149 closes.
+
+**Explicit `On` / `Off` buttons, never a toggle**, for M14's reason applied to
+a second control: a toggle asks the operator to derive "the other one" from a
+state that may read `unknown`, which is precisely when guessing is worst. The
+button for the current state is **disabled rather than hidden**, so the control
+does not move under a finger on a touchscreen as state changes.
+
+**The badge follows the station, not the request.** `setTrackPower` probes with
+`<s>` afterwards and the response channel is what moves `mainPowerOn`
+(`docs/dcc-link.md` D14), so a command that went out and did nothing leaves the
+badge where it was. A refusal is shown next to the buttons rather than only
+logged — M15's rule, which applied to a refused WebSocket command and applies
+just as well to a 403 on this one.
+
+For the `monitor` role the badge is present and the buttons are not. That is not
+an exception to M16: "the rails are dead" is the most situational fact on the
+screen, and reading it is exactly what the role is for. Switching it is
+`requireNotMonitor` at the transport edge (`docs/auth.md`), not an affordance
+decision — this control goes over REST rather than the socket, so it needed a
+guard of its own rather than inheriting `DRIVING_MESSAGE_TYPES`.
 
 ### What the operator's desk remembers
 

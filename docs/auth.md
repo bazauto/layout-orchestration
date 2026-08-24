@@ -117,7 +117,19 @@ footgun that eventually ships enabled-off. Instead:
   reset command (below). Simulator mode keeps its "no external dependency"
   property — a local password table is not an external dependency.
 
-### Roles ship in the first cut
+### Roles
+
+> **Three route postures, not two** (#149). `requireAdmin` guards topology and config writes;
+> no guard at all means any authenticated role, used for driving-adjacent recovery like
+> acknowledging a fault; and `requireNotMonitor` admits `admin` and `operator` for actions
+> that **move or energise the layout** without being config edits. Track power is the first
+> of the third kind, and it is the most literal form of the authority `monitor` does not
+> have: energising the rails is what makes every other command capable of an effect.
+>
+> It is written as a deny-list of one rather than an allow-list of two on purpose. A role
+> added later should have to be considered here explicitly, and the failure mode of
+> forgetting is then "the new role cannot switch the power on", not "the new role silently
+> can". ship in the first cut
 
 A `role` column on `users` from the start, not retrofitted later: `admin`
 may edit topology and config, `operator` may drive. This maps to a real

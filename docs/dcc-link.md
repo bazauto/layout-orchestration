@@ -214,21 +214,82 @@ The framer applies the same discipline in the other direction: bytes outside any
 counted and discarded, and an unterminated `<` is dropped once it exceeds `MAX_FRAME_LENGTH`
 (the station gives up at 100 characters on its side, for the same reason).
 
-## D10 — Track power is observed here and gated in #149
+## D10 — Track power is observed here, and gated as of #149
 
-`<p1 MAIN>` / `<p0 MAIN>` are parsed, recorded in `dccLink.mainPowerOn` / `progPowerOn`, and
-a main-track power-off is logged. **Nothing gates on them in #148.** `null` means never
-observed, which is not the same as off.
+`<p1 MAIN>` / `<p0 MAIN>` are parsed and recorded in `dccLink.mainPowerOn` / `progPowerOn`.
+#148 observed them and gated nothing; #149 acts on them. `null` still means **never
+observed**, which is not the same as off, and the distinction is load-bearing everywhere
+below.
 
-Acting on it is #149: `setTrackPower` on `IDccController`, `<1>` on connect, refusing routes
-while the main track is dark, and an operator control to turn it back on. Two constraints
-that issue inherits and this one records:
+**Track power off is not a Safe-Stop.** The layout is already stopped, and by the most
+complete means available — there is no current on the rails. Calling that an emergency would
+mean an operator who switched power off for two minutes to re-rail a wagon came back to a
+Safe-Stopped system needing an acknowledgement. It latches nothing and clears itself the
+moment `<p1 MAIN>` arrives.
 
-- Track power off is **not** a Safe-Stop. The layout is already stopped. What it must do is
-  refuse new routes and automation, the way an untrusted sensor does.
-- **Never auto-restore power after a fault.** A decoder that loses the DCC signal falls back
-  to DC, and DC on a powered main track is full speed. `<1>` on connect is a cold start with
-  an operator present; an automatic `<1>` in response to observing `<p0 MAIN>` is not.
+What it does do:
+
+- **Refuses new routes**, with its own `RouteRejection` kind, `track-power-off`. Refused in
+  `LayoutService.requestRoute`, never inside `ReservationService`, which has no
+  `SystemHealth` access and must not gain any — the boundary `docs/route-locking.md` draws
+  and #25's resume precondition already respects.
+- **Abandons automation and any braking ramp in flight**, and gates the automation sweep.
+  Both halves are needed, for different reasons — see D15.
+- **Refuses on `=== false` only.** An *observed* dark layout refuses; `null` does not. The
+  never-answered case is covered from the other side, where `responsive` is false and the
+  system is already Safe-Stopped, and refusing on `null` too would turn every start-up race
+  into a rejection nobody could explain.
+
+**Never auto-restore power after a fault.** A decoder that loses the DCC signal falls back to
+DC, and DC on a powered main track is full speed. `<1>` on connect is a cold start with an
+operator present; an automatic `<1>` in response to observing `<p0 MAIN>` is not, and nothing
+in #149 sends one.
+
+## D14 — `<1>` is sent by the service on connect, not by the adapter
+
+The issue asked for `SerialDccAdapter.connect()` to send `<1>` after the port opens. It is
+sent from `LayoutService.handleDccConnectionChange` instead, for two reasons the codebase
+acquired after #149 was written:
+
+- **"The layout should be live" is a decision**, and decisions do not live in adapters
+  (CLAUDE.md safety rule 2). The adapter opens a port and writes bytes.
+- **Every command must be recorded before it is written.** D8's correlation is positional, so
+  a command written from inside the adapter — invisible to `recordCommand` — would leave its
+  `<p1 MAIN>` reply to be attributed to whatever *was* outstanding. The write path that
+  records first is `LayoutService.setTrackPower`, and connect goes through it.
+
+`setTrackPower` also probes with `<s>` immediately afterwards, and that is the point rather
+than belt and braces: the command resolving means the bytes went out, and D12's whole
+argument is that a command's success is not evidence of its effect. What moves
+`dccLink.mainPowerOn` is the `<p1 MAIN>` in the reply, so the operator sees the state the
+**station reported**, never the state we asked for. A `<1>` that vanishes leaves the badge
+where it was.
+
+## D15 — Abandoning automation and gating the sweep are different jobs
+
+A power loss does both, and they are not redundant.
+
+**Abandoning** stops the run that is in flight. Without it, automation would keep issuing
+speed commands into dead rails and the train would leap into motion the moment `<1>` was
+sent — the ghost-movement failure in a different costume. A braking ramp would do the same,
+one step at a time.
+
+**Gating the sweep** (`permitted` in `runAutomationSweep`) stops a run *starting*. It is not
+what stops an abandoned run resuming: `AutomationService`'s `adopted` set already does that,
+for exactly the reason it does after an emergency stop — a route is taken at most once while
+it stays `active`. What the gate covers is a route automation has never taken. Two ways that
+happens: a route granted while the layout was live and not yet under way when the power went,
+and — the case `adopted` structurally cannot cover, because it prunes on leaving `active` — a
+**suspended route an operator resumes while the layout is dark**.
+
+The gate is ANDed in at the call site rather than folded into `canIssueAutoCommand`, the same
+placement and the same reasoning as #103's compile-gap gate on `handleSetMode`:
+`canIssueAutoCommand` is a pure function of status and mode, and power is a live observation
+off this link.
+
+**An existing route keeps its locks in the dark.** The locks are what stop a second train
+being routed over track this one is standing on, and that is as true unpowered as powered —
+more so, since the train cannot be moved off it.
 
 ## D11 — The simulator answers
 
@@ -244,18 +305,25 @@ deliberately kept out of `commandLog` and counted in `probeCount` instead: that 
 "commands meant to move something", and a probe every five seconds would turn every existing
 assertion into a hunt for the interesting entry.
 
-## D12 — What is still invisible
+## D12 — What was invisible, and is not any more
 
-`PicoDCC#4` is only half done. `#47` made **rejected commands** answer `<X>`; it did **not**
-make the power-cutoff paths say anything, because one of the two runs in
-`PicoDccController::dccLoop` on **core 1**, where `DCCEX_RESPONSE` is a blocking `uart_puts`
-sitting in the DCC hot path. That needs a design — most likely a flag core 1 latches and
-core 0 drains.
+`PicoDCC#4` is closed as of `PicoDCC#59` (2026-08-24). `#47` had made **rejected commands**
+answer `<X>`; what was left was the power-cutoff paths, which said nothing, because one of
+them runs in `PicoDccController::dccLoop` on **core 1**, where `DCCEX_RESPONSE` is a blocking
+`uart_puts` sitting in the DCC hot path.
 
-So today an emergency power cutoff is detected only at the next `<s>` probe, up to five
-seconds later, and only as `<p0 MAIN>` in a probe reply — never pushed. A station that cuts
-power and keeps answering probes is **responsive and dark**, which #148 reports and #149
-will act on.
+The design this document guessed at — "most likely a flag core 1 latches and core 0 drains"
+— is what landed. Core 1 sets two `volatile bool`s and the error LED; core 0 drains them in
+`dccexLoop` and emits `<p0 MAIN>` / `<p0 PROG>`, once per cutoff rather than once per 10 ms
+pass. Every path that cuts power because something is wrong now reports it: the timing
+violation, either track's PIO failure, the core 1 heartbeat cutoff, and an overcurrent trip.
+`PicoDCC#42` landed with it — the same cutoff used to clear its own error LED on the next
+pass, leaving a dead layout showing no fault at all.
+
+So a cutoff is now **pushed**, not merely discovered at the next `<s>` probe up to five
+seconds later. *Responsive and dark* is no longer a state that has to be waited out. The
+probe remains as the backstop for a station that goes dark without managing to say so —
+losing its UART, for instance, which is the one case that cannot announce itself.
 
 Also relevant, and merged: `PicoDCC#32` — `time_us_32() / 1000` wrapped every 71.6 minutes,
 firing the timing-violation cutoff spuriously about once an hour and leaving both tracks

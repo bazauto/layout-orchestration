@@ -841,6 +841,12 @@ export type RouteRejection =
   | { kind: 'loco-already-routed'; locoAddress: LocoAddress; routeId: RouteId }
   | { kind: 'unknown-loco'; locoAddress: LocoAddress }
   | { kind: 'no-graph' }
+  // #149. Distinct from `system-not-online`: track power off is not a fault and
+  // not a Safe-Stop -- the layout is *already* stopped, deliberately, and an
+  // operator may well have turned it off on purpose to handle stock. It is a
+  // refusal with an obvious remedy, and saying so is the difference between
+  // "the system is unwell" and "turn the power on".
+  | { kind: 'track-power-off' }
   // ── Pathfinding (#4, see docs/pathfinding.md) ──
   // Produced by `ReservationService` before `planReservation` runs, when a
   // request named a destination rather than an explicit edge list and the

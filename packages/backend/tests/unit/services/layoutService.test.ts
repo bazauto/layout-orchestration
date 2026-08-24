@@ -225,6 +225,10 @@ describe('LayoutService — throttle commands', () => {
   it('issues a DCC speed command and updates loco state', async () => {
     const { service, dcc } = await buildStartedService();
 
+    // #149: connecting commands track power on, so the log is not empty before
+    // this call. Filtering rather than indexing keeps the assertion about the
+    // throttle command instead of about how many other commands precede it.
+    dcc.clearLog();
     await service.handleThrottleCommand({ locoAddress: 3, speed: 50, direction: 'fwd' });
 
     expect(dcc.commandLog).toHaveLength(1);
@@ -317,6 +321,8 @@ describe('LayoutService — point commands', () => {
   it('issues a DCC point command and updates point state', async () => {
     const { service, dcc, stateManager } = await buildStartedService();
 
+    // #149: connecting commands track power on, so clear before asserting.
+    dcc.clearLog();
     await service.handlePointCommand({ pointId: 'p1', position: 'reverse' });
 
     expect(dcc.commandLog).toHaveLength(1);

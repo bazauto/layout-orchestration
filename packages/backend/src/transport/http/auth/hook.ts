@@ -97,3 +97,28 @@ export async function requireAdmin(request: FastifyRequest, reply: FastifyReply)
     await reply.status(403).send({ error: 'Admin role required' });
   }
 }
+
+/**
+ * Route preHandler: rejects the `monitor` role, admitting `admin` and
+ * `operator` (#149).
+ *
+ * The third posture, alongside `requireAdmin` and no guard at all. It exists
+ * for actions that **move or energise the layout** without being topology or
+ * config edits — today, track power. `monitor` is situational awareness only
+ * and carries no authority to move anything (`docs/auth.md`), and energising
+ * the rails is the most literal form of that authority there is: it is what
+ * makes every other command capable of having an effect.
+ *
+ * Written as a deny-list of one rather than an allow-list of two on purpose.
+ * A role added later should have to be considered here explicitly, and the
+ * failure mode of forgetting is then "the new role cannot switch the power on",
+ * not "the new role silently can".
+ */
+export async function requireNotMonitor(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<void> {
+  if (request.user?.role === 'monitor') {
+    await reply.status(403).send({ error: 'Operator or admin role required' });
+  }
+}
