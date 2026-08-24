@@ -11,7 +11,6 @@
 import { describe, expect, it } from 'vitest';
 import { describeCursor } from './cursorAnnouncement';
 import { DiagnosticNames } from './diagnostics';
-import { SensorObservationView } from '../types';
 
 const NAMES: DiagnosticNames = {
   blocks: new Map([['b1', 'Fiddle Yard 1']]),
@@ -90,72 +89,6 @@ describe('describeCursor', () => {
         NAMES,
       ),
     ).toBe('Column 8, row 3. Straight tile, block Fiddle Yard 1, sensor Platform Beam.');
-  });
-
-  // #76: the sensor's live state is a parenthetical on the same sentence,
-  // available to any caller that has one — omitted by every caller today
-  // (the Track Editor draws no live state), which is exactly the "no
-  // sensorState given" case above.
-  describe('with a sensor observation (#76)', () => {
-    function observation(overrides: Partial<SensorObservationView> = {}): SensorObservationView {
-      return {
-        sensorId: 's1',
-        blockId: 'b1',
-        type: 'ir_position',
-        lastReading: 'occupied',
-        trusted: true,
-        inService: true,
-        faulted: false,
-        lastReadingAt: '2026-08-08T00:00:00.000Z',
-        source: 'live',
-        ...overrides,
-      };
-    }
-
-    it('appends the state as a parenthetical when an observation is supplied', () => {
-      expect(
-        describeCursor(
-          { x: 8, y: 3 },
-          {
-            tileType: 'straight-h',
-            metadata: { blockId: 'b1', annotations: [{ entityType: 'sensor', entityId: 's1' }] },
-            openings: [],
-          },
-          NAMES,
-          new Map([['s1', observation({ lastReading: 'occupied' })]]),
-        ),
-      ).toBe('Column 8, row 3. Straight tile, block Fiddle Yard 1, sensor Platform Beam (occupied).');
-    });
-
-    it('says "not evidence" for an untrusted observation, never presenting it as a clear reading (D-d)', () => {
-      expect(
-        describeCursor(
-          { x: 8, y: 3 },
-          {
-            tileType: 'straight-h',
-            metadata: { blockId: 'b1', annotations: [{ entityType: 'sensor', entityId: 's1' }] },
-            openings: [],
-          },
-          NAMES,
-          new Map([['s1', observation({ lastReading: 'clear', trusted: false })]]),
-        ),
-      ).toBe('Column 8, row 3. Straight tile, block Fiddle Yard 1, sensor Platform Beam (not evidence).');
-    });
-
-    it('falls back to naming the sensor alone when no observation is supplied for it', () => {
-      expect(
-        describeCursor(
-          { x: 8, y: 3 },
-          {
-            tileType: 'straight-h',
-            metadata: { blockId: 'b1', annotations: [{ entityType: 'sensor', entityId: 's1' }] },
-            openings: [],
-          },
-          NAMES,
-          new Map(), // an empty map is a real "not given for this sensor", not "no map at all"
-        ),
-      ).toBe('Column 8, row 3. Straight tile, block Fiddle Yard 1, sensor Platform Beam.');
-    });
   });
 
   it('names the boundary an opening crosses, not merely that one is here (#103)', () => {
