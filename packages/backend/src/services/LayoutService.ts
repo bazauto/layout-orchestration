@@ -68,7 +68,6 @@ import {
   canIssueAutoCommand,
   canIssueManualCommand,
   evaluateSystemSafeStop,
-  isBlockEffectivelyOccupied,
   isValidLocoAddress,
   isValidSpeed,
   SystemHealth,
@@ -158,6 +157,7 @@ export interface LayoutServiceLogger {
   info(msg: string, data?: Record<string, unknown>): void;
   warn(msg: string, data?: Record<string, unknown>): void;
   error(msg: string, data?: Record<string, unknown>): void;
+  debug?(msg: string, data?: Record<string, unknown>): void;
 }
 
 /** Thrown when a manual point command targets a point locked by an active route and `force` was not set. */
@@ -1441,6 +1441,19 @@ export class LayoutService extends EventEmitter {
       receivedAt,
       retained ? 'retained' : 'live',
     );
+    // #161: the ordinary accepted-reading path logged nothing at all, which
+    // made a flapping-but-valid sensor invisible short of attaching an MQTT
+    // client to the broker. `debug`, not `info` — this fires on every reading,
+    // and is wire traffic in the same sense the DCC TX/RX lines are.
+    this.log.debug?.('[LayoutService] Sensor reading', {
+      layoutId: this.layoutId,
+      sensorId,
+      sensorName: this.names.get().sensors.get(sensorId),
+      blockId: obs.blockId,
+      blockName: obs.blockId ? this.names.get().blocks.get(obs.blockId) : undefined,
+      reading: result.data.state,
+      delivery: retained ? 'retained' : 'live',
+    });
     if (!retained && !obs.trusted) {
       this.stateManager.setSensorTrusted(sensorId, true);
       this.log.info(
@@ -1626,12 +1639,19 @@ export class LayoutService extends EventEmitter {
     this.publishBlockState(updated);
     this.emit('event', { type: 'BLOCK_STATE', payload: updated } satisfies LayoutEvent);
 
-    if (isBlockEffectivelyOccupied(updated.occupancy)) {
-      this.log.info('[LayoutService] Block occupied', {
-        blockId,
-        blockName: this.names.get().blocks.get(blockId),
-      });
-    }
+    // #161: unconditional, not gated on `isBlockEffectivelyOccupied` — that
+    // predicate is `occupancy !== 'clear'`, so `occupied` and `unknown` both
+    // satisfied it and produced the identical line. A beam oscillating
+    // between the two read as a stuck sensor re-announcing itself instead of
+    // a block flapping into the state that refuses routes. The method has
+    // already returned early above if nothing changed, so this is
+    // change-gated and safe at volume.
+    this.log.info('[LayoutService] Block occupancy changed', {
+      blockId,
+      blockName: this.names.get().blocks.get(blockId),
+      from: previousOccupancy,
+      to: derived,
+    });
 
     // B5, checked BEFORE `onOccupancyChange` below: a train reaching its
     // route's destination block is both a normal arrival and — under a

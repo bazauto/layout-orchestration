@@ -25,6 +25,7 @@ import { DccResponse, decodeSpeedByte, encodeSpeedByte } from '../../domain/dccR
 
 export interface SimulatedDccLogger {
   info(msg: string, data?: Record<string, unknown>): void;
+  debug?(msg: string, data?: Record<string, unknown>): void;
 }
 
 /** What a simulated station reports as its identity. The commit is what a restart test changes. */
@@ -103,7 +104,7 @@ export class SimulatedDccAdapter implements IDccController {
 
   async setSpeed(address: number, speed: number, direction: 'fwd' | 'rev' | 'stop'): Promise<void> {
     const data = { address, speed, direction };
-    this.log.info('[SimDCC] SET_SPEED', data);
+    this.log.debug?.('[SimDCC] SET_SPEED', data);
     this.commandLog.push({ ts: new Date(), type: 'SET_SPEED', data });
 
     if (this.consumeRejection()) return;
@@ -132,20 +133,20 @@ export class SimulatedDccAdapter implements IDccController {
     // PicoDCC accepts `<F>` and discards it; the model has no such limit and a
     // simulator that threw would make the limitation look like a design choice.
     const data = { address, fn, state };
-    this.log.info('[SimDCC] SET_FUNCTION', data);
+    this.log.debug?.('[SimDCC] SET_FUNCTION', data);
     this.commandLog.push({ ts: new Date(), type: 'SET_FUNCTION', data });
   }
 
   async setPoint(dccAddress: number, position: 'normal' | 'reverse'): Promise<void> {
     const data = { dccAddress, position };
-    this.log.info('[SimDCC] SET_POINT', data);
+    this.log.debug?.('[SimDCC] SET_POINT', data);
     this.commandLog.push({ ts: new Date(), type: 'SET_POINT', data });
     if (this.consumeRejection()) return;
     this.respond({ kind: 'accessory-ok' });
   }
 
   async emergencyStop(): Promise<void> {
-    this.log.info('[SimDCC] EMERGENCY_STOP');
+    this.log.debug?.('[SimDCC] EMERGENCY_STOP');
     this.commandLog.push({ ts: new Date(), type: 'EMERGENCY_STOP', data: {} });
   }
 

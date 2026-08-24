@@ -171,11 +171,13 @@ and quote real output — never claim passing tests you did not run.
     The only one today is the lazy `SerialDccAdapter` load in `src/index.ts`, commented in
     place. Do not "fix" it.
   - **Frontend** — ESM (`"type": "module"`, `"module": "ESNext"`, bundler resolution).
-- Structured logging through a hand-rolled `{info,warn,error}` interface
-  (`LayoutServiceLogger` and siblings), wired in `index.ts` to `process.stdout.write`.
-  **Pino is not a dependency of any workspace.** Always include `layoutId`, and
-  `locoAddress` / `blockId` / `pointId` / `sensorId` where relevant, each **paired with
-  its `*Name` counterpart** from the `NameBook` (#54).
+- Structured logging through a hand-rolled `{info,warn,error,debug?}` interface
+  (`LayoutServiceLogger` and siblings), built by `logger.ts#createLogger` from
+  `LOG_LEVEL` and wired in `index.ts` to `process.stdout.write`. `debug` is wire
+  traffic (DCC TX/RX, per-reading MQTT ingest); `info` and above is operational
+  events. **Pino is not a dependency of any workspace.** Always include `layoutId`,
+  and `locoAddress` / `blockId` / `pointId` / `sensorId` where relevant, each
+  **paired with its `*Name` counterpart** from the `NameBook` (#54).
 - Prettier + ESLint run on pre-commit via Husky. Don't fight the formatter.
 - Commit only when asked. Branch off `main` rather than committing to it directly.
 - **Documentation moves with the code that invalidates it**, in the same PR — never as a

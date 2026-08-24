@@ -6,6 +6,7 @@
  */
 
 import { config } from './config';
+import { createLogger } from './logger';
 import { LayoutStateManager } from './domain/layoutState';
 import { SimulatedDccAdapter } from './adapters/dcc/SimulatedDccAdapter';
 import { SimulatedMqttAdapter } from './adapters/mqtt/SimulatedMqttAdapter';
@@ -69,14 +70,7 @@ async function main() {
   let dcc: IDccController;
   let mqtt: IMqttAdapter;
 
-  const adapterLogger = {
-    info: (msg: string, data?: Record<string, unknown>) =>
-      process.stdout.write(JSON.stringify({ level: 'info', msg, ...data }) + '\n'),
-    warn: (msg: string, data?: Record<string, unknown>) =>
-      process.stdout.write(JSON.stringify({ level: 'warn', msg, ...data }) + '\n'),
-    error: (msg: string, data?: Record<string, unknown>) =>
-      process.stdout.write(JSON.stringify({ level: 'error', msg, ...data }) + '\n'),
-  };
+  const adapterLogger = createLogger(config.log.level);
 
   if (config.simulator.full) {
     dcc = new SimulatedDccAdapter(adapterLogger);

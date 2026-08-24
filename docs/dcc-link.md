@@ -201,7 +201,8 @@ verifying them would report a mismatch on every one.
 ## D9 — An unrecognised frame is not a fault
 
 A malformed *sensor* payload Safe-Stops on the first message (`docs/sensor-trust.md` D10). A
-frame the DCC parser does not recognise is logged and ignored.
+frame the DCC parser does not recognise is logged and ignored — through the same RX line as
+every other frame (D13), which #161 moved to `debug`.
 
 The asymmetry is deliberate. A sensor speaks one schema, and a device sending something else
 is lying about occupancy. The command station speaks a whole protocol of which we implement
@@ -263,7 +264,10 @@ rather than a real fault rate. The design gap is unchanged; the expected frequen
 
 ## D13 — The RX line carries the frame *and* the decode
 
-The first bench run of #147's fixed throttle produced this, and only this:
+The first bench run of #147's fixed throttle produced this, and only this (at `info` — #161
+later moved TX/RX to `debug`, since an idle layout's `<s>` keepalive alone put a pair of
+these in the journal every `DCC_PROBE_INTERVAL_MS`; the example below keeps the level it was
+captured at):
 
 ```
 {"level":"info","msg":"[SerialDCC] TX","cmd":"<t 3 7 1>"}
