@@ -21,7 +21,7 @@
  * and nothing else — no palette, no ghost-preview *policy*, no mouse
  * painting, no writes. Those stay in `GridEditor`, which composes this
  * component and supplies its own mouse/keyboard handlers as props. That
- * split is what lets a future monitor view (#63/#82) mount this same
+ * split is what lets the control view (#63/#82, #165) mount this same
  * component with a read-only set of handlers instead of writing a second
  * renderer of the same railway.
  *

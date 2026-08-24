@@ -12,7 +12,7 @@ import { RoutesPanel } from './components/RoutesPanel';
 import { SensorSimulationPanel } from './components/SensorSimulationPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { GridEditor } from './components/GridEditor';
-import { MonitorView } from './components/MonitorView';
+import { ControlView } from './components/ControlView';
 import { SensorFaultBanner } from './components/SensorFaultBanner';
 import { PointFaultBanner } from './components/PointFaultBanner';
 import { BrakingFaultBanner } from './components/BrakingFaultBanner';
@@ -20,16 +20,16 @@ import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { apiFetch, API_BASE } from './api';
 import { ClientMessage, Role, SystemMode } from './types';
 
-type AppTab = 'operate' | 'monitor' | 'configure' | 'grid';
+type AppTab = 'operate' | 'control' | 'configure' | 'grid';
 
 /**
- * Which tabs a role is offered (#61, #63).
+ * Which tabs a role is offered (#61, #63, #165).
  *
- * | role       | tabs                                   |
- * |------------|----------------------------------------|
- * | `admin`    | Operate, Monitor, Track Editor, Configure |
- * | `operator` | Operate, Monitor                       |
- * | `monitor`  | Monitor                                |
+ * | role       | tabs                                      |
+ * |------------|-------------------------------------------|
+ * | `admin`    | Operate, Control, Track Editor, Configure  |
+ * | `operator` | Operate, Control                          |
+ * | `monitor`  | Monitor (the same view, without controls)  |
  *
  * Two decisions are encoded here, both recorded in `docs/auth.md`:
  *
@@ -37,7 +37,7 @@ type AppTab = 'operate' | 'monitor' | 'configure' | 'grid';
  * greyed-out control still poses a question whose honest answer is "you may
  * not", and a nav entry says that better by not existing.
  *
- * **An operator gets the Monitor view too**, which "an operator sees the
+ * **An operator gets the Control view too**, which "an operator sees the
  * Operate screen and nothing else" does not literally allow — that sentence
  * predates this view. The same section rejects a read-only Configure and a
  * read-only track view on the grounds that what an operator actually wants is
@@ -51,17 +51,36 @@ type AppTab = 'operate' | 'monitor' | 'configure' | 'grid';
  * load-bearing.
  */
 const TABS_BY_ROLE: Record<Role, AppTab[]> = {
-  admin: ['operate', 'monitor', 'grid', 'configure'],
-  operator: ['operate', 'monitor'],
-  monitor: ['monitor'],
+  admin: ['operate', 'control', 'grid', 'configure'],
+  operator: ['operate', 'control'],
+  monitor: ['control'],
 };
 
 const TAB_LABELS: Record<AppTab, string> = {
   operate: 'Operate',
-  monitor: 'Monitor',
+  control: 'Control',
   grid: 'Track Editor',
   configure: 'Configure',
 };
+
+/**
+ * One tab, two honest names (#165).
+ *
+ * `ControlView` is the same component for every role, but a `monitor` session
+ * gets none of its controls — the throttle cards and the point buttons are not
+ * rendered, and the backend would refuse the commands anyway (#63 D2/D3). So
+ * for that role the tab keeps its old name: labelling it "Control" would
+ * promise an authority the session does not have, and there is no second view
+ * to send them to instead.
+ *
+ * The *role* is `monitor`, a person who may only watch. The *view* is the
+ * control plane. Both names are right and they are not the same word by
+ * accident.
+ */
+function tabLabel(tab: AppTab, role: Role): string {
+  if (tab === 'control' && role === 'monitor') return 'Monitor';
+  return TAB_LABELS[tab];
+}
 
 export default function App() {
   const auth = useAuth();
@@ -74,7 +93,13 @@ export default function App() {
     return <LoginScreen onLogin={auth.login} error={auth.error} />;
   }
 
-  return <AuthenticatedApp username={auth.user!.username} role={auth.user!.role} onLogout={auth.logout} />;
+  return (
+    <AuthenticatedApp
+      username={auth.user!.username}
+      role={auth.user!.role}
+      onLogout={auth.logout}
+    />
+  );
 }
 
 function AuthenticatedApp({
@@ -91,7 +116,8 @@ function AuthenticatedApp({
   // (Q3, docs/auth.md) — this is the client-side mirror, resetting local
   // auth state back to LoginScreen the same way a deliberate "Log out" does.
   const capabilities = useCapabilities();
-  const { snapshot, connectionState, lastMessageAt, send } = useLayoutSocket();
+  const { snapshot, connectionState, lastMessageAt, lastError, dismissError, send } =
+    useLayoutSocket();
   const {
     systemStatus,
     systemMode,
@@ -129,7 +155,9 @@ function AuthenticatedApp({
     if (connectionState !== 'connected' || layoutId) return;
     apiFetch('/api/layouts')
       .then((r) => r.json())
-      .then((list: Array<{ id: string }>) => { if (list[0]) setLayoutId(list[0].id); })
+      .then((list: Array<{ id: string }>) => {
+        if (list[0]) setLayoutId(list[0].id);
+      })
       .catch(() => undefined);
   }, [connectionState, layoutId]);
 
@@ -211,11 +239,13 @@ function AuthenticatedApp({
             onClick={() => setAppTab(t)}
             style={{ ...styles.navBtn, ...(appTab === t ? styles.navBtnActive : {}) }}
           >
-            {TAB_LABELS[t]}
+            {tabLabel(t, role)}
           </button>
         ))}
         <div style={styles.session}>
-          <span style={styles.sessionLabel}>{username} ({role})</span>
+          <span style={styles.sessionLabel}>
+            {username} ({role})
+          </span>
           <ChangePasswordDialog onChanged={onLogout} />
           <button onClick={onLogout} style={styles.logoutBtn}>
             Log out
@@ -293,9 +323,9 @@ function AuthenticatedApp({
             })()}
           </>
         )}
-        {appTab === 'monitor' && visibleTabs.includes('monitor') && (
+        {appTab === 'control' && visibleTabs.includes('control') && (
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <MonitorView
+            <ControlView
               layoutId={layoutId}
               blocks={layoutConfig.config.blocks}
               points={layoutConfig.config.points}
@@ -304,6 +334,15 @@ function AuthenticatedApp({
               edges={layoutConfig.config.edges}
               snapshot={snapshot}
               freshness={freshness}
+              role={role}
+              disabled={isDisabled}
+              send={send as (msg: ClientMessage) => void}
+              onBrake={async (locoAddress) => {
+                const result = await layoutConfig.brakeLoco(locoAddress);
+                return { ok: result.ok, message: result.message };
+              }}
+              lastError={lastError}
+              dismissError={dismissError}
             />
           </div>
         )}

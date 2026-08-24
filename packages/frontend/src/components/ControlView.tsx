@@ -1,11 +1,42 @@
 /**
- * MonitorView (#63, #75, #82)
+ * ControlView (#63, #75, #82, #165) — the live mimic, and the screen the
+ * layout is driven from.
  *
- * A read-only live mimic: the same railway the Track Editor draws, with what
- * the layout is doing now laid over it. No palette, no paint handlers, no
- * write path — it renders `TrackDiagram` with a `live` prop and a set of
- * no-op handlers, which is the whole reason #75 extracted that component
- * rather than letting a second renderer of the same railway grow here.
+ * The same railway the Track Editor draws, with what the layout is doing now
+ * laid over it. It still has no palette and no paint handlers: it renders
+ * `TrackDiagram` with a `live` prop and a set of no-op *drawing* handlers,
+ * which is the whole reason #75 extracted that component rather than letting a
+ * second renderer of the same railway grow here.
+ *
+ * ## Why this stopped being read-only (#165)
+ *
+ * Through #129 this was `MonitorView`, and "no write path" was stated here as
+ * a virtue. What that cost, once the layout was actually being operated, was
+ * that every act — a speed change, a point — meant leaving the picture of the
+ * railway to go and find a form on another tab, and coming back to a train
+ * that had moved. A mimic you cannot act on makes the operator the transport
+ * between two screens.
+ *
+ * So the controls came to the mimic, and they came as **overlays the operator
+ * places**, not as chrome: throttle cards (`ThrottleCard`) and the point key's
+ * per-row `Normal`/`Reverse` buttons. The canvas keeps its whole width for
+ * anyone who wants the display and nothing else.
+ *
+ * Three things did *not* change, and are the reason this is still one view
+ * rather than two:
+ *
+ * - **The drawing is still authored in the Track Editor.** Nothing here writes
+ *   a tile, an edge or a name. `grid_tiles` remains the editor's, and the
+ *   compiler remains the only writer of `block_edges`.
+ * - **Every control is an overlay.** Track is never a button — see the
+ *   rejected alternative in `docs/liveness.md` M10.
+ * - **The `monitor` role sees none of them.** `canControl` gates the
+ *   affordance; `DRIVING_MESSAGE_TYPES` in the WebSocket transport is what
+ *   actually refuses the command (#63 D2/D3).
+ *
+ * The *role* is still called `monitor` — a person who may only watch — while
+ * the *view* is the control plane. Those are different things and both names
+ * are right.
  *
  * ## What this view refuses to imply
  *
@@ -32,7 +63,7 @@
  * the canvas is covered, not badged — see `docs/liveness.md` M5.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TrackDiagram, RULER_SIZE } from './TrackDiagram';
 import { PointKeyPanel } from './PointKeyPanel';
 import { buildPointKey } from '../diagram/pointKey';
@@ -54,11 +85,23 @@ import {
   SURFACE,
   routeStyle,
 } from '../diagram/encoding';
+import { ThrottleCard } from './ThrottleCard';
+import {
+  addThrottle,
+  autoRouteHoldingLoco,
+  loadOpenThrottles,
+  MAX_THROTTLE_CARDS,
+  removeThrottle,
+  saveOpenThrottles,
+} from '../controlThrottles';
+import { CommandRefusal } from '../hooks/useLayoutSocket';
 import {
   BlockEdgeRecord,
   BlockRecord,
+  ClientMessage,
   LocoRecord,
   PointRecord,
+  Role,
   SensorRecord,
   StateSnapshot,
 } from '../types';
@@ -73,12 +116,25 @@ interface Props {
   edges: BlockEdgeRecord[];
   snapshot: StateSnapshot;
   freshness: Freshness;
+  /** #165: `monitor` gets the mimic and none of the controls. */
+  role: Role;
+  /** The same rule Operate uses: not connected, or the system is offline. */
+  disabled: boolean;
+  send: (msg: ClientMessage) => void;
+  onBrake: (locoAddress: number) => Promise<{ ok: boolean; message?: string }>;
+  /** The last command the backend refused, and the way to clear it (#165). */
+  lastError: CommandRefusal | null;
+  dismissError: () => void;
 }
 
-/** A no-op mouse/keyboard handler set. The monitor has no authoring gestures at all. */
+/**
+ * A no-op mouse/keyboard handler set for the *drawing* gestures. #165 added
+ * controls to this view but none of them are on the canvas: track is never a
+ * button here (`docs/liveness.md` M10).
+ */
 const noop = () => {};
 
-export function MonitorView({
+export function ControlView({
   layoutId,
   blocks,
   points,
@@ -87,6 +143,12 @@ export function MonitorView({
   edges,
   snapshot,
   freshness,
+  role,
+  disabled,
+  send,
+  onBrake,
+  lastError,
+  dismissError,
 }: Props) {
   const { grid, loading, loadError } = useGridEditor(layoutId);
   /**
@@ -171,6 +233,57 @@ export function MonitorView({
 
   const safeStopped = snapshot.systemStatus === 'safe-stop';
 
+  /**
+   * #165. Affordance only — the WebSocket transport refuses a driving message
+   * from a `monitor` connection whatever this says (#63 D2/D3), and a control
+   * hidden here is still a control that cannot be reached by a stale tab or a
+   * `curl`.
+   */
+  const canControl = role !== 'monitor';
+
+  /**
+   * Which locos have a throttle card open. Per layout, persisted, and re-read
+   * when the layout changes — an operator's desk is a preference, not session
+   * state, and rebuilding it after every reload is exactly the friction this
+   * issue exists to remove.
+   */
+  const [openThrottles, setOpenThrottles] = useState<number[]>(() => loadOpenThrottles(layoutId));
+  useEffect(() => {
+    setOpenThrottles(loadOpenThrottles(layoutId));
+  }, [layoutId]);
+
+  const updateThrottles = useCallback(
+    (next: number[]) => {
+      setOpenThrottles(next);
+      saveOpenThrottles(layoutId, next);
+    },
+    [layoutId],
+  );
+
+  const locoRecords = useMemo(() => new Map(locos.map((l) => [l.address, l])), [locos]);
+
+  /**
+   * Every loco the operator could open a card for: the roster, plus any the
+   * layout is reporting on that has no record. `docs/naming.md` D8 again — a
+   * train that is moving and cannot be selected is worse than an ugly label.
+   */
+  const throttleChoices = useMemo(() => {
+    const addresses = new Set<number>([
+      ...locos.map((l) => l.address),
+      ...Object.keys(snapshot.locos).map(Number),
+    ]);
+    return [...addresses]
+      .filter((a) => Number.isFinite(a) && !openThrottles.includes(a))
+      .sort((a, b) => a - b);
+  }, [locos, snapshot.locos, openThrottles]);
+
+  const setPoint = useCallback(
+    (pointId: string, position: 'normal' | 'reverse') => {
+      send({ type: 'POINT_COMMAND', payload: { pointId, position } });
+    },
+    [send],
+  );
+
   return (
     <div style={st.wrapper}>
       {/*
@@ -206,6 +319,42 @@ export function MonitorView({
           Sensors
         </label>
 
+        {/*
+          #165: adding a throttle is one interaction, not a picker plus an
+          "Add" button — the list only ever offers locos that do not already
+          have a card, so choosing one has exactly one meaning. It resets to
+          its own label immediately, because it is a command rather than a
+          field with a value.
+        */}
+        {canControl && (
+          <label style={st.caveat}>
+            <span style={st.srOnly}>Add a throttle</span>
+            <select
+              value=""
+              onChange={(e) => {
+                const address = Number(e.target.value);
+                if (Number.isFinite(address) && address > 0) {
+                  updateThrottles(addThrottle(openThrottles, address));
+                }
+              }}
+              disabled={throttleChoices.length === 0 || openThrottles.length >= MAX_THROTTLE_CARDS}
+              style={st.select}
+              title={
+                openThrottles.length >= MAX_THROTTLE_CARDS
+                  ? `At most ${MAX_THROTTLE_CARDS} throttles at once — close one first`
+                  : 'Open a throttle for a loco'
+              }
+            >
+              <option value="">+ Throttle</option>
+              {throttleChoices.map((address) => (
+                <option key={address} value={address}>
+                  {locoRecords.get(address)?.name ?? `Loco ${address}`}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
         {loading && <span style={st.status}>Loading…</span>}
         {loadError && <span style={st.statusErr}>Could not load the drawing: {loadError}</span>}
 
@@ -218,6 +367,30 @@ export function MonitorView({
       </div>
 
       {/*
+        A refused command, said out loud (#165).
+
+        The backend answers a rejected `ClientMessage` with an `ERROR` frame,
+        and until this existed the reply reached `console.warn` and nobody. On
+        a form that is survivable; on a control plane it is the difference
+        between "the point is held by route r-7" and a button that appears to
+        do nothing. Dismissible and never self-clearing: a refusal that faded
+        after three seconds would be missed by exactly the operator who was
+        watching the train rather than the screen.
+
+        `role="alert"` rather than `status`: this is the consequence of
+        something the operator just did, and it is announced.
+      */}
+      {lastError && (
+        <div style={st.refusal} role="alert">
+          <span style={st.glyph}>{FAULT.glyph}</span>
+          <span style={st.refusalText}>{lastError.message}</span>
+          <button type="button" onClick={dismissError} style={st.dismiss} title="Dismiss">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/*
         The sensor key (#76). Only mounted with the layer, on the same
         "no permanent chrome for an absent feature" argument the route key
         below gives for itself.
@@ -225,8 +398,14 @@ export function MonitorView({
       {showSensors && (
         <div style={st.strip} role="list" aria-label="Sensors">
           <span style={st.caveat}>Sensors — raw readings, not derived occupancy</span>
-          <LegendItem glyph={SENSOR_OBSERVATION.occupied.glyph} label={SENSOR_OBSERVATION.occupied.label} />
-          <LegendItem glyph={SENSOR_OBSERVATION.clear.glyph} label={SENSOR_OBSERVATION.clear.label} />
+          <LegendItem
+            glyph={SENSOR_OBSERVATION.occupied.glyph}
+            label={SENSOR_OBSERVATION.occupied.label}
+          />
+          <LegendItem
+            glyph={SENSOR_OBSERVATION.clear.glyph}
+            label={SENSOR_OBSERVATION.clear.label}
+          />
           <LegendItem
             glyph={SENSOR_OBSERVATION['not-evidence'].glyph}
             label={SENSOR_OBSERVATION['not-evidence'].label}
@@ -400,7 +579,50 @@ export function MonitorView({
               under it, and a stale display is exactly when someone starts
               moving things around to work out what is going on.
             */}
-          <PointKeyPanel layoutId={layoutId} rows={pointKey} />
+          <PointKeyPanel
+            layoutId={layoutId}
+            rows={pointKey}
+            canControl={canControl}
+            disabled={disabled}
+            onSetPoint={setPoint}
+          />
+
+          {/*
+            The throttle cards (#165), last of all and above the point key.
+
+            Above, because a throttle is the control most likely to be reached
+            for in a hurry, and a card half-hidden under the key is one the
+            operator has to move something to use. Both are placed by hand, so
+            an operator who wants the other order can simply put them
+            side by side.
+
+            Rendered only for a role that may drive — not disabled, absent. A
+            greyed-out throttle poses a question whose honest answer is
+            "you may not" (#61's argument, and the same reason a `monitor` has
+            no Operate tab rather than an empty one).
+          */}
+          {canControl &&
+            openThrottles.map((address, index) => {
+              const record = locoRecords.get(address);
+              return (
+                <ThrottleCard
+                  key={address}
+                  layoutId={layoutId}
+                  address={address}
+                  // `docs/naming.md` D8: a missing record degrades to the
+                  // identifier, never to nothing.
+                  name={record?.name ?? `Loco ${address}`}
+                  maxSpeed={record?.maxSpeed ?? 126}
+                  state={snapshot.locos[address]}
+                  autoRouteId={autoRouteHoldingLoco(snapshot.routes, address)}
+                  disabled={disabled}
+                  index={index}
+                  send={send}
+                  onBrake={onBrake}
+                  onClose={() => updateThrottles(removeThrottle(openThrottles, address))}
+                />
+              );
+            })}
         </div>
       )}
     </div>
@@ -489,6 +711,50 @@ const st = {
   legendGlyph: {
     fontFamily: 'monospace',
     color: INK.primary,
+  } as React.CSSProperties,
+  glyph: {
+    fontFamily: 'monospace',
+  } as React.CSSProperties,
+  select: {
+    background: '#313244',
+    color: INK.primary,
+    border: '1px solid #45475a',
+    borderRadius: 4,
+    padding: '2px 6px',
+    font: 'inherit',
+    fontSize: 12,
+  } as React.CSSProperties,
+  srOnly: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    overflow: 'hidden',
+    clip: 'rect(0 0 0 0)',
+    whiteSpace: 'nowrap',
+  } as React.CSSProperties,
+  refusal: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '6px 10px',
+    background: '#181825',
+    border: `1px solid ${FAULT.colour}`,
+    borderRadius: 4,
+    color: FAULT.colour,
+    fontSize: 12,
+  } as React.CSSProperties,
+  refusalText: {
+    flex: 1,
+    minWidth: 0,
+    color: INK.primary,
+  } as React.CSSProperties,
+  dismiss: {
+    background: 'transparent',
+    border: 'none',
+    color: INK.muted,
+    cursor: 'pointer',
+    font: 'inherit',
+    fontSize: 12,
   } as React.CSSProperties,
   /** The canvas takes all the room there is; the point key floats over it. */
   canvasWrap: {

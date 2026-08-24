@@ -64,27 +64,40 @@ Implemented:
 - Monitor role (#63): situational awareness with no authority to move anything. The
   WebSocket transport captures the connection's role once at the upgrade and refuses a
   monitor's driving commands with an `ERROR` reply, never a socket close;
-  `EMERGENCY_STOP` stays available to every role. The purpose-built frontend view is a
-  later PR — see `docs/auth.md` "The monitor role"
+  `EMERGENCY_STOP` stays available to every role. The purpose-built frontend view is the
+  Control view below, which this role gets labelled **Monitor** and stripped of every
+  control (#165) — see `docs/auth.md` "The monitor role"
 - Connection-health heartbeat (#82): a periodic application-level `HEARTBEAT`
   `ServerMessage` (not a protocol-level `ws` ping, which the browser can't observe) so a
-  client can tell a frozen socket from a quiet layout. The frontend staleness indicator
-  is a later PR — see `docs/liveness.md`
+  client can tell a frozen socket from a quiet layout. The frontend indicator is on the
+  Control view: stale or disconnected covers the canvas — see `docs/liveness.md`
 - Frontend login screen; the rest of the UI requires an authenticated session
-- Role-scoped navigation (#61, #63): `admin` gets Operate, Monitor, Track Editor and
-  Configure; `operator` gets Operate and Monitor; `monitor` gets Monitor alone. The
+- Role-scoped navigation (#61, #63, #165): `admin` gets Operate, Control, Track Editor and
+  Configure; `operator` gets Operate and Control; `monitor` gets that same view alone,
+  labelled **Monitor** because it carries none of the controls for that role. The
   authoring screens are **absent** for a non-admin rather than disabled — affordance
   only, with `requireAdmin` and the WebSocket role gate as the actual enforcement
-- Monitor view (#63, #75, #82, #129): a read-only live mimic drawing block occupancy,
+- Control view (#63, #75, #82, #129, #165): the live mimic drawing block occupancy,
   commanded point roads and which loco is where, on the **same** renderer the Track
   Editor uses. A set route is a coloured, dashed line **along the track it holds**,
   through the decorative sections between blocks too, with a key naming each route by
   its loco — several concurrent routes are told apart by hue and dash, not hue alone.
-  A point key beside the canvas resolves the abbreviated point names and shows what
-  each point is set to and who holds it. Connection health is always on screen, and a
+  A point key floating over the canvas — dragged where the operator wants it — resolves
+  the abbreviated point names and shows what each point is set to and who holds it. Connection health is always on screen, and a
   stale or disconnected diagram is covered rather than badged — see `docs/liveness.md`.
   An off-by-default "Sensors" checkbox (#76) overlays each placed sensor's live reading
   on its own mark, distinct from a block's occupancy fill — see `docs/diagram-encoding.md` D8
+- The control plane (#165): the mimic is also where the layout is driven from. **Throttle
+  cards** — one per loco, several at once, dragged where the operator wants them and
+  remembered per layout — carry a speed slider that commands as it moves (no *Set* press),
+  forward/reverse, `Stop` and `Brake`. Each row of the point key gained `Normal` /
+  `Reverse` buttons. Three interlocks, all in `docs/liveness.md` M10–M16: **track is never
+  a button** (a mis-tap on a wall display must not move a point under a train); a card for
+  a loco under an **auto**-authority route opens *armed*, behind a `Take control` button
+  naming the route it will cancel; and direction cannot change while the loco is commanded
+  to move. A point a route holds offers no buttons — forcing it cancels that route, which
+  stays on the Routes panel. A refused command now says so on screen instead of only in the
+  browser console
 - Per-loco braking (#6): a deceleration ramp planned from the loco's `brakingFactor` and
   the measured track ahead, run against an injected clock, with a `Brake` button beside
   each loco's `Stop` for the calibration procedure in `docs/braking.md` B8. An overrun —
@@ -111,7 +124,7 @@ Implemented:
 - Live sensor observations on the wire (#76): `StateSnapshot.sensors` and a `SENSOR_STATE`
   delta, pushed only when a sensor's contributed value (or `faulted`/`inService`) changes —
   so a healthy sensor re-asserting inside the freshness window pushes nothing, and a
-  flapping beam is visible on every transition. Surfaced on the monitor as an off-by-default
+  flapping beam is visible on every transition. Surfaced on the control view as an off-by-default
   "Sensors" layer, drawn on its own channel — never a block tint — so raw sensor evidence
   stays visibly subordinate to derived block occupancy
 
@@ -634,12 +647,12 @@ Two things about that are deliberate and look like oversights:
 tell a live detector from a dead one. Manual driving is unaffected; route granting and
 automation over unobserved track are refused. The firmware side is #9 and #50.
 
-**A sensor's own reading is now on the monitor, not just its effect on a block** (#76).
+**A sensor's own reading is now on the control view, not just its effect on a block** (#76).
 `StateSnapshot.sensors` and a `SENSOR_STATE` delta carry every registered sensor's current
 observation — pushed only when its contributed value, `faulted`, or `inService` changes, so
 a healthy sensor re-asserting inside the 30 s window above pushes nothing, and an
 oscillating beam is visible on every transition instead of being invisible entirely. It is
-an off-by-default layer on the monitor (a "Sensors" checkbox), and it is deliberately
+an off-by-default layer on the control view (a "Sensors" checkbox), and it is deliberately
 subordinate to derived occupancy on screen — the two can legitimately disagree
 (`deriveBlockOccupancy` clause 3), and the beam gets its own small mark, never a share of a
 block's fill. See `docs/diagram-encoding.md` D8 and `docs/sensor-fault-recovery.md` D10.
@@ -731,7 +744,7 @@ preamble in `docs/sensor-simulation.md`.
    junction, or plan a timetable
 5. A shared workspace package for the remaining backend↔frontend duplicates
    (`findBlockRuns`, `TILE_LEGS` vs `diagram/trackGeometry.ts`, and the heartbeat
-   constants). #75 unified the editor↔monitor seam *inside* the frontend and deliberately
+   constants). #75 unified the editor↔control-view seam *inside* the frontend and deliberately
    left these alone — they span a CommonJS backend and an ESM frontend, which is a different
    problem. `EDGE_OFFSET`'s mirror is closed, having gone with the opening marks
 6. Hardware validation and operator workflows
