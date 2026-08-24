@@ -159,7 +159,8 @@ Planned next:
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 22+ — matching the `engines.node` floor in `package.json`. CI runs 24.x and
+  `deploy/bootstrap.sh` provisions 24, so 24 is the tested version
 - npm
 - Optional for hybrid/full hardware modes:
   - MQTT broker (for example Mosquitto)
