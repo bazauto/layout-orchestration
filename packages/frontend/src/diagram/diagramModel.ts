@@ -4,7 +4,7 @@
  * block runs and their tints, where a point's name is drawn, and the
  * per-cell view of the compiled openings.
  *
- * Pure functions plus a thin memoising hook. Exactly what a monitor view
+ * Pure functions plus a thin memoising hook. Exactly what the control view
  * (#63/#82) also needs — none of it reads live state, and `useDiagramModel`
  * takes nothing but the drawing.
  */
@@ -190,7 +190,7 @@ export interface DiagramModel {
 
 /**
  * Memoises the model above against `(grid, openings)` — the same two inputs
- * the editor already recomputes on every stroke end, and what a monitor view
+ * the editor already recomputes on every stroke end, and what the control view
  * will read from a snapshot instead. No live state: this is geometry, not
  * occupancy, and stays that way (see `TrackDiagram`'s extension-point note).
  */

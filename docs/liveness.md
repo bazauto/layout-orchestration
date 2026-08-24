@@ -1,7 +1,9 @@
-# Connection Health and Staleness — Decision Record
+# Connection Health, Staleness, and the Control Plane — Decision Record
 
 This document records the design behind #82: whether a client is still
-receiving live layout state, as distinct from the layout simply being quiet.
+receiving live layout state, as distinct from the layout simply being quiet —
+and, since #165, the design of the view that state is displayed on, which is
+now also the view the layout is driven from (M10–M16).
 Same posture as `docs/auth.md`, `docs/route-locking.md`, and
 `docs/point-feedback.md` — not binding the way `docs/mqtt-contract.md` is, but
 it explains *why*, not just *what*, so a later change doesn't quietly undo a
@@ -31,10 +33,16 @@ their own.
 
 **Complete.** The backend half — the heartbeat itself (#82 item 3) and the
 verification that a reconnect resynchronises correctly (open question 2) —
-is D5–D7 below. The frontend half is M1–M5 at the end of this document: the
-connection-state indicator (item 1), the treatment of staleness (item 2, and
-see D6 for why it is not what the issue asked for), and Safe-Stop made
-unmissable on the diagram (item 4).
+is D5–D7 below. The frontend half is M1–M5 further down: the connection-state
+indicator (item 1), the treatment of staleness (item 2, and see D6 for why it
+is not what the issue asked for), and Safe-Stop made unmissable on the diagram
+(item 4).
+
+The view this document describes stopped being read-only in #165 — it is the
+screen the layout is driven from, and M10–M16 at the end record what that
+changed and, more importantly, what it deliberately did not. Everything in
+D5–D9 is unchanged by it: a control plane that has stopped receiving updates is
+a *worse* thing to act on than a mimic that has, not a better one.
 
 ## D5 — The heartbeat is an application-level `ServerMessage`, not a protocol-level ping
 
@@ -441,6 +449,153 @@ A block containing a passing loop therefore lights both roads. Accepted: the
 alternative is a walk through the block, which is the compiler's job and not a
 display's.
 
+## The control plane (#165)
+
+Through #129 this view was `MonitorView`, and "no write path" was stated in its
+own header as a virtue. Operating the layout for a while showed what that cost:
+every act — a speed change, a point — meant leaving the picture of the railway,
+finding a form on the Operate tab, and coming back to a train that had moved.
+The Operate screen's throttle is a *form* — pick a loco, set a speed, press
+**Set** — which is the right shape for issuing a command and the wrong one for
+driving something you are watching. It also holds one loco at a time.
+
+So the mimic became the screen the layout is driven from. The decisions below
+are what that cost and what it deliberately did not buy.
+
+### M10 — Controls are overlays; **track is never a button**
+
+Every control #165 adds floats *over* the canvas (throttle cards) or lives in a
+panel already floating over it (the point key's buttons). Nothing on the drawing
+itself became clickable, and `ControlView` still hands `TrackDiagram` a set of
+no-op mouse handlers.
+
+Clicking a point on the diagram to throw it was the obvious design and is
+rejected. This display's most valuable form is a wall panel, often a
+touchscreen, read from across a room: on it a pan gesture and a tap are
+separated by a movement threshold, and the cost of the threshold guessing wrong
+is a point moving under a train. A drawing that can be operated by mis-click is
+a drawing an operator learns not to touch, which takes away the pan and zoom
+too.
+
+The overlay form also keeps the canvas whole for the audience that wants the
+display and nothing else — nothing is permanently reserved, because a card the
+operator did not open does not exist.
+
+### M11 — The slider commands; there is no **Set**
+
+Moving a card's slider sends a `THROTTLE_COMMAND` immediately, throttled to one
+command per 120 ms while dragging, with the released value always sent — a
+trailing timer holding the *latest* value, never a dropped final frame. A run of
+intermediate speeds is what a physical throttle produces on the wire too; the
+one that must not be lost is the last.
+
+Staging the value behind a button was considered and is what the Operate panel
+already does. Two throttles with different commit rules would be worse than
+either rule applied consistently, and the whole complaint that opened #165 was
+the extra press.
+
+### M12 — A card for a loco under automation opens **armed**, not live
+
+`LayoutService.handleThrottleCommand` cancels an auto-authority route holding
+that loco and abandons its automation run (`docs/route-locking.md` D6,
+`docs/automation.md` A12). That is correct — two authorities on one train is
+worse than a lost route — but combined with M11 it makes a brushed slider on a
+wall display into a cancelled run.
+
+So the card renders its controls inert behind a **Take control** button naming
+the route it will cancel. One press to get there, and no way to arrive by
+accident. The interlock is re-armed if the loco is later held by another auto
+route, and it is checked *in the handlers*, not only as a `disabled` attribute:
+the attribute is a presentational guarantee standing in for a behavioural one,
+and what it is standing in front of cancels routes.
+
+A `manual`-authority route is deliberately not armed against. That route *is*
+the operator driving their own reserved road, and warning them off their own
+throttle would be nonsense — `autoRouteHoldingLoco` mirrors
+`ReservationService.routeHoldingLoco` (`active`/`suspended`) narrowed to `auto`,
+and is one of the hand-maintained backend↔frontend duplicates.
+
+### M13 — Direction cannot change under a moving train
+
+The forward/reverse buttons are disabled while the loco is commanded above
+speed 0. Stop first.
+
+This is mechanical sympathy, not system safety: the backend accepts a reversal
+at speed and a decoder will perform it. But the two direction buttons sit a
+few millimetres apart on a small card, and a mis-tap at speed 60 is a
+locomotive slamming into reverse. `ThrottlePanel`'s form is left unchanged —
+its **Set** press is the same protection arrived at differently.
+
+`'stop'` is a direction on the wire but not a heading, so a stopped card keeps
+offering the way the loco last went rather than re-arming as forward.
+
+### M14 — A point is set from its row in the key, and a held point offers nothing
+
+The point key already carried everything needed to decide whether to move a
+point — its trusted position, how far that position can be trusted, and whether
+a route holds it — and could not act on any of it. Each row gained explicit
+`Normal` and `Reverse` buttons.
+
+**Explicit positions, never a toggle.** A toggle asks the operator to work out
+what "the other one" means from a position that may read `unknown`, which is
+precisely the state where guessing is worst. Re-commanding the position a point
+already reports is allowed on purpose: that is how an operator re-asserts a
+point whose confirmation came back `mismatch` or `timed-out`.
+
+**A point a route holds shows no buttons at all** — the word "route", not two
+greyed controls. Forcing it cancels the holding route (`docs/point-feedback.md`
+D6), which is a consequential act that belongs on the Routes panel where the
+route it destroys is named and visible, not one mis-tap from a table that is
+mostly read.
+
+No function or lights buttons, either: `SerialDccAdapter.setFunction` throws
+rather than writing against PicoDCC (#150, `docs/dcc-link.md` D8), so on the
+live layout that control is one that always fails.
+
+### M15 — A refused command is said out loud
+
+The backend answers a rejected `ClientMessage` with an `ERROR` frame. Until
+#165, `useLayoutSocket` sent it to `console.warn` and nowhere else — the code
+said so, and called surfacing it "still open".
+
+That was survivable while every control was a form the operator had just pressed
+**Set** on. It is not survivable on a control plane, where "point P4 is held by
+route r-7" is the entire answer to why a button appeared to do nothing. The hook
+now keeps the last refusal (with a sequence number, so an identical refusal
+twice reads as two events) and the view shows it above the canvas.
+
+Dismissible, and never self-clearing: a notice that faded after three seconds
+would be missed by exactly the operator who was watching the train rather than
+the screen. The `console.warn` stays too — the on-screen notice shows one
+refusal at a time, and a burst of them is a thing you want the whole of, in
+order, with a timestamp.
+
+### M16 — The role is `monitor`; the view is the control plane
+
+The tab reads **Control** for `admin` and `operator`, and still reads
+**Monitor** for the `monitor` role, which gets the same component with
+`canControl` false: no throttle affordance, no Set column. Absent, not disabled
+— #61's argument, applied per control.
+
+This is affordance only. `DRIVING_MESSAGE_TYPES` in the WebSocket transport
+already refused a throttle or point command from a `monitor` connection (#63
+D2/D3), which is why this view could be given controls with no new gate.
+
+### What the operator's desk remembers
+
+Which locos have a card is one entry per layout; where each card sits and
+whether it is expanded is one entry per card, in `useFloatingPlacement` —
+extracted from the point key, which established the placement posture in M6, so
+that the drag, the clamp, the arrow-key nudge and the persistence exist once
+rather than per panel.
+
+The split is deliberate: closing a card and re-opening it later brings it back
+to the corner the operator put it in, and no record accumulates for cards that
+no longer exist. A stored address that is not a plain positive integer is
+dropped rather than coerced — `parseInt("3junk")` is `3`, and a truncated
+localStorage entry must never be the thing that decides which train a slider
+drives.
+
 ## Related
 
 - #63 (monitor role, `docs/auth.md` "The monitor role") is the strongest
@@ -449,5 +604,9 @@ display's.
   the same hazard one layer down — a stale reading presented as current.
   Worth keeping the two consistent in how staleness is expressed once the
   frontend side of this lands.
-- #75 (shared renderer) is what lets the editor and monitor views degrade
+- #75 (shared renderer) is what lets the editor and control views degrade
   identically once the frontend consumer exists.
+- #165 (the control plane) is why this view has controls at all. Its
+  interlocks lean on `docs/route-locking.md` D6 and `docs/automation.md` A12
+  for what a manual throttle command does to a route, and on
+  `docs/point-feedback.md` D6 for what forcing a held point costs.

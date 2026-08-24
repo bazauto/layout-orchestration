@@ -21,6 +21,15 @@ import {
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 
+/** A command the backend refused, as an `ERROR` frame (#165). */
+export interface CommandRefusal {
+  message: string;
+  /** `Date.now()` when it arrived. */
+  at: number;
+  /** Increments per refusal, so an identical message twice reads as two events. */
+  seq: number;
+}
+
 const INITIAL_SNAPSHOT: StateSnapshot = {
   systemStatus: 'offline',
   systemMode: 'manual',
@@ -95,6 +104,23 @@ export function useLayoutSocket() {
    * `STATE_SNAPSHOT` has nothing on screen to have gone stale.
    */
   const [lastMessageAt, setLastMessageAt] = useState<number | null>(null);
+  /**
+   * The last command the backend refused (#165).
+   *
+   * A rejected `ClientMessage` comes back as an `ERROR` frame carrying no
+   * state, so there is nothing for the snapshot reducer to merge — and until
+   * #165 that meant it went to `console.warn` and nowhere else. That was
+   * survivable while every control lived on a form the operator had just
+   * pressed *Set* on; it is not survivable on a control plane, where "point P4
+   * is held by route R7" is the entire answer to why the button appeared to do
+   * nothing.
+   *
+   * `seq` is what makes an identical refusal re-fire the display: pressing a
+   * held point twice must flash twice, and two equal `{message, at}` objects a
+   * few milliseconds apart are otherwise indistinguishable to a consumer
+   * watching for a change.
+   */
+  const [lastError, setLastError] = useState<CommandRefusal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectDelay = useRef(BASE_RECONNECT_MS);
   const unmounted = useRef(false);
@@ -124,6 +150,19 @@ export function useLayoutSocket() {
       }
 
       setLastMessageAt(Date.now());
+
+      // Handled here rather than in `applyMessage`, which is a pure snapshot
+      // reducer and an `ERROR` carries no snapshot. It still stamps liveness
+      // above: a refusal is the backend answering, which is exactly the thing
+      // liveness measures.
+      if (msg.type === 'ERROR') {
+        setLastError((was) => ({
+          message: msg.payload.message,
+          at: Date.now(),
+          seq: (was?.seq ?? 0) + 1,
+        }));
+      }
+
       setSnapshot((prev) => applyMessage(prev, msg));
     };
 
@@ -166,7 +205,9 @@ export function useLayoutSocket() {
     }
   }, []);
 
-  return { snapshot, connectionState, lastMessageAt, send };
+  const dismissError = useCallback(() => setLastError(null), []);
+
+  return { snapshot, connectionState, lastMessageAt, lastError, dismissError, send };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -250,9 +291,14 @@ function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
       // but it must not vanish either. It used to fall through to `default`,
       // which is how a backend TypeError that killed every broadcast looked
       // to an operator like a control that simply did nothing: no network
-      // request to inspect, no console output, no UI change. Surfacing it
-      // properly (a toast on the affected control) is still open; until then
-      // this at least puts it where someone with devtools open will find it.
+      // request to inspect, no console output, no UI change.
+      //
+      // #165 gave it somewhere to go on screen: `onmessage` above puts it in
+      // `lastError`, and the control plane shows it. This line stays anyway —
+      // the on-screen notice is dismissible and shows one refusal at a time,
+      // and a burst of them (a route re-commanding every point it holds) is a
+      // thing you want the whole of, in order, with a timestamp.
+
       // eslint-disable-next-line no-console -- deliberate; the frontend has no logger, and silence here is what hid the bug
       console.warn(
         '[ws] command rejected by backend:',

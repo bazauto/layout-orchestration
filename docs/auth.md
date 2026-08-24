@@ -328,9 +328,21 @@ nav and the panel render guards both read.
 
 | Role | Tabs |
 |---|---|
-| `admin` | Operate, Monitor, Track Editor, Configure |
-| `operator` | Operate, Monitor |
-| `monitor` | Monitor |
+| `admin` | Operate, Control, Track Editor, Configure |
+| `operator` | Operate, Control |
+| `monitor` | Monitor — the same view, with no controls rendered |
+
+**One view, two labels (#165).** The mimic became the screen the layout is
+driven from, so for the roles that may drive it the tab reads **Control**. For
+a `monitor` it still reads **Monitor**, because that session gets the mimic and
+none of the controls: labelling it "Control" would promise an authority the
+WebSocket transport will refuse, and there is no second view to send that role
+to instead. `tabLabel` in `App.tsx` is the whole of that rule.
+
+Nothing about enforcement moved. `DRIVING_MESSAGE_TYPES` (D2/D3 above) already
+refused `THROTTLE_COMMAND` and `POINT_COMMAND` from a `monitor` connection
+before #165 existed, which is why putting those controls on this view needed no
+new gate — only the affordance to match.
 
 A `monitor` briefly shared the operator's nav — every control on it refused
 server-side by "The monitor role" above (D2/D3), but with the screen not
@@ -340,7 +352,7 @@ nothing else, and `appTab` initialises to the role's *first* visible tab
 rather than the constant `'operate'`, so the role cannot land on a screen its
 nav has no way back to.
 
-**An operator gets the Monitor view as well**, which "an operator sees the
+**An operator gets the Control view as well**, which "an operator sees the
 Operate screen and nothing else" below does not literally allow. That sentence
 predates the view. This same section rejects a read-only Configure and a
 read-only track view on the grounds that what an operator actually wants is

@@ -46,7 +46,10 @@ function installFetchMock(routes: FetchRoutes): void {
       if (url.includes('/api/capabilities')) {
         if (routes.capabilities?.reject) return Promise.reject(new Error('network error'));
         return Promise.resolve(
-          jsonResponse(routes.capabilities?.status ?? 200, routes.capabilities?.body ?? { sensorSimulation: false }),
+          jsonResponse(
+            routes.capabilities?.status ?? 200,
+            routes.capabilities?.body ?? { sensorSimulation: false },
+          ),
         );
       }
 
@@ -115,7 +118,7 @@ describe('App — sensor simulation capability gate (#65)', () => {
  * `installMockAuth`-style fetch mock keyed by role, rather than the fixed
  * admin identity the #65 tests assume.
  */
-const TAB_NAMES = ['Operate', 'Monitor', 'Track Editor', 'Configure'];
+const TAB_NAMES = ['Operate', 'Control', 'Monitor', 'Track Editor', 'Configure'];
 
 function installRoleFetchMock(role: 'admin' | 'operator' | 'monitor'): void {
   vi.stubGlobal(
@@ -146,7 +149,7 @@ function visibleTabs(): (string | null)[] {
 }
 
 describe('App — operator UI scope (#61)', () => {
-  it('offers an operator the Operate and Monitor screens only, with no Track Editor / Configure panel', async () => {
+  it('offers an operator the Operate and Control screens only, with no Track Editor / Configure panel', async () => {
     installMockWebSocket();
     installRoleFetchMock('operator');
 
@@ -154,7 +157,7 @@ describe('App — operator UI scope (#61)', () => {
 
     await waitFor(() => expect(screen.queryByText(/test-operator/)).not.toBeNull());
 
-    expect(visibleTabs()).toEqual(['Operate', 'Monitor']);
+    expect(visibleTabs()).toEqual(['Operate', 'Control']);
 
     // appTab defaults to 'operate' so these panels were never going to be on
     // screen either way — the nav assertion above is the real coverage —
@@ -172,21 +175,27 @@ describe('App — operator UI scope (#61)', () => {
 
     await waitFor(() => expect(screen.queryByText(/test-admin/)).not.toBeNull());
 
-    expect(visibleTabs()).toEqual(['Operate', 'Monitor', 'Track Editor', 'Configure']);
+    expect(visibleTabs()).toEqual(['Operate', 'Control', 'Track Editor', 'Configure']);
   });
 });
 
 /**
- * App — the monitor role's nav (#63).
+ * App — the monitor role's nav (#63, #165).
  *
  * A monitor has no authority to move anything, so it is offered nothing that
  * looks like it might. In particular it must not land on the Operate screen:
  * every control there is refused server-side by the WebSocket's per-connection
  * role gate, so offering them would be exactly the greyed-out-control problem
  * `docs/auth.md` argues against for the operator.
+ *
+ * Since #165 the one tab this role gets is the same `ControlView` an operator
+ * drives from, so the label is the assertion that matters: it must still read
+ * **Monitor** here and **Control** in the operator test above. One view, two
+ * honest names — `tabLabel` in `App.tsx` is the whole of that rule, and a
+ * regression in it would promise a monitor an authority the backend refuses.
  */
-describe('App — monitor role nav (#63)', () => {
-  it('offers a monitor the Monitor screen alone, and defaults to it', async () => {
+describe('App — monitor role nav (#63, #165)', () => {
+  it('offers a monitor the Monitor screen alone, labelled as such, and defaults to it', async () => {
     installMockWebSocket();
     installRoleFetchMock('monitor');
 

@@ -1,5 +1,5 @@
 /**
- * Live diagram state (#63, #82) — the pure half of the monitor overlay.
+ * Live diagram state (#63, #82) — the pure half of the control view's overlay.
  *
  * `TrackDiagram` (#75) draws the railway from the drawing alone. This module
  * builds the *second* layer it can be given: what the layout is doing right
@@ -95,7 +95,7 @@ export interface LiveDiagramState {
    * #76: every registered sensor's current observation, keyed by id — the
    * annotation glyph's own channel (`diagram/encoding.ts#sensorGlyphStateOf`),
    * never the block tint (D-c, `docs/diagram-encoding.md`). Empty when the
-   * sensor layer is toggled off — `MonitorView` controls visibility by
+   * sensor layer is toggled off — `ControlView` controls visibility by
    * choosing what it builds this from, not by a flag `TrackDiagram` reads.
    */
   sensors: ReadonlyMap<string, SensorObservationView>;

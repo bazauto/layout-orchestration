@@ -3,7 +3,7 @@
  *
  * Pure per-tile drawing: no state, no viewport, no knowledge of the grid it
  * sits in. Extracted from `GridEditor.tsx` by #75 so the editor and the
- * monitor view (#63/#82) draw exactly the same track — a second, subtly
+ * control view (#63/#82) draw exactly the same track — a second, subtly
  * different renderer of the same railway is the whole risk that issue names.
  *
  * The **shapes** are no longer here. `diagram/trackGeometry.ts` owns them, and

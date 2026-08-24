@@ -211,7 +211,8 @@ One line per area: enough to know whether it is what you are touching. The long 
 | **Grid diagnostics** (#84, #83, #91, #92, #103) | `GET .../grid/diagnostics` — read-only, advisory, **never a gate**. A diagnostic compares two representations that may legitimately disagree; a compile *gap* says the compiler is not confident, and only that gates. | `track-grid.md` D11 |
 | **Track graph compilation** (#103) | `services/trackGraphCompiler.ts` is the **only** writer of `block_edges` and the only source of an opening's name. Compile → review in `CompilePanel` → fingerprinted admin-only apply. Gaps gate `auto`/`hybrid` only, never Safe-Stop. `block_ends` is deleted. | `track-graph-compilation.md` |
 | **One renderer, live mimic** (#75, #63, #82, #129) | `TrackDiagram` is the **only** thing that draws the railway. State wins the colour channel; a route is a halo drawn from a **walk** along held track; three global layers, not per-tile groups. | `liveness.md` |
-| **Monitor e2e** | `tests/e2e/monitor-view.spec.ts` — the one spec that mounts the monitor, reading the rendered SVG back in one `evaluate`. | `liveness.md` |
+| **The control plane** (#165) | `ControlView` (was `MonitorView`) is the mimic **and** the screen the layout is driven from: `ThrottleCard` overlays per loco, `Normal`/`Reverse` on each point-key row. **Track is never a button**; a card for an `auto`-route loco opens *armed*; a refused command is shown, not just logged. Tab reads *Control*, or *Monitor* for the `monitor` role, which gets no controls. | `liveness.md` M10–M16 |
+| **Control view e2e** | `tests/e2e/control-view.spec.ts` — the one spec that mounts this view, reading the rendered SVG back in one `evaluate`, plus which controls each role is offered. | `liveness.md` |
 | **Point position feedback** (#25) | `commandedPosition` / `confirmedPosition` / six-state `confirmation`; **`effectivePosition` decides which is trusted**. Nothing is persisted. Every fault kind Safe-Stops; the escape hatch is `positionFeedback: 'none'`. | `point-feedback.md` |
 | **Per-loco braking** (#6) | `domain/braking.ts` is pure; `BrakingService` plans and `LayoutService` executes one chained timer on `IClock`. Unmeasured intermediate track **refuses** — never guess a stopping distance. | `braking.md` |
 | **Sub-block sensor position** (#77) | `position_toward_block_id` + `position_offset_mm`, anchored to an operator-owned **block id**. A **rising edge** sets the fix and it decays by a worst-case travel allowance; **a clear beam still clears nothing.** Consumed as the `lead` term in `remainingRouteDistanceMm`. | `sensor-position.md` |
@@ -246,6 +247,16 @@ the id (`grep -n "^### D9" docs/sensor-trust.md`) before concluding any of these
 - **`SerialDccAdapter.setFunction` throws instead of writing** (#150) — PicoDCC validates `<F>`,
   accepts it, and does nothing with it. Refusing is also what makes `<X>` attributable at all
   (`dcc-link.md` D8).
+- **A throttle card for a loco under an `auto` route opens inert behind "Take control", and the
+  guard is re-checked inside every handler, not just the `disabled` attribute** — a manual
+  throttle command cancels that route and abandons its run, so a brushed slider on a wall display
+  would otherwise cancel an automated journey (`liveness.md` M12).
+- **The Control tab is labelled "Monitor" for the `monitor` role, and that is not a leftover** —
+  it is the same view with `canControl` false, and calling it "Control" would promise an authority
+  the WebSocket transport refuses (`liveness.md` M16, `auth.md`).
+- **`PointKeyPanel`'s localStorage key still says `monitorPointKey` after the rename** — renaming
+  it would silently reset the position and collapsed state of everyone who had already placed the
+  panel (`liveness.md` M10–M16).
 - A point `command` arms the confirmation deadline; a **`query` deliberately does not** —
   arming on query would halt the layout at boot for any instrumented point whose controller
   was powered off (`point-feedback.md` D6).
@@ -329,7 +340,9 @@ Recorded rather than closed — **none of these is a bug to fix in passing.** On
 - **Duplicates hand-maintained across the backend↔frontend wire** — a change to one wants the
   other: `findBlockRuns`, `TILE_LEGS`/`EDGE_OFFSET` (frontend `diagram/trackGeometry.ts`, with
   `trackGeometry.test.ts` asserting the table literally), `HEARTBEAT_INTERVAL_MS`, and
-  `effectivePosition`, and `DccLinkView`/`DccLinkFaultView` (#148). Closing them needs a shared
+  `effectivePosition`, `autoRouteHoldingLoco` (mirrors `ReservationService.routeHoldingLoco`'s
+  `active`/`suspended` statuses, narrowed to `auto` — #165), and `DccLinkView`/`DccLinkFaultView`
+  (#148). Closing them needs a shared
   package spanning a CommonJS backend and an ESM frontend; nobody has scoped it. **#75 did not close these** — it closed the
   editor↔monitor seam *inside* the frontend.
 - **Westgate Hollow's authoring passes are done and the compiled graph is applied**

@@ -1,5 +1,6 @@
 /**
- * The monitor view (#63, #82, #129) - what it draws, read back off the SVG.
+ * The control view (#63, #82, #129, #165) - what it draws, read back off the
+ * SVG, and which controls each role is offered over it.
  *
  * The drawing below is Westgate Hollow's Engine / Goods Transfer corner,
  * because that is the shape every one of these tests is about: a 45 degree
@@ -20,6 +21,13 @@ const BLOCKS = [
 const POINTS = [
   { id: 'p5', layoutId: 'layout-1', name: 'P5 - Goods Shed', dccAddress: 5, blockId: null },
   { id: 'p6', layoutId: 'layout-1', name: 'P6 - Engine Shed', dccAddress: 6, blockId: null },
+  // #165: a point NO route holds, and deliberately one with no tile on this
+  // drawing — the key is built from the roster union the snapshot, so an
+  // undrawn point still gets a row. It is here because both of the points
+  // above are held by the fixture's route, which makes them the wrong half of
+  // the control assertion: they prove buttons are withheld, and nothing proves
+  // they are ever offered.
+  { id: 'p7', layoutId: 'layout-1', name: 'P7 - Yard Neck', dccAddress: 7, blockId: null },
 ];
 const LOCOS = [
   { address: 3, layoutId: 'layout-1', name: 'Jinty' },
@@ -190,6 +198,19 @@ const SNAPSHOT = {
       lockedByRoute: 'r1',
       lastUpdated: '',
     },
+    p7: {
+      pointId: 'p7',
+      layoutId: 'layout-1',
+      commandedPosition: 'normal',
+      confirmedPosition: 'normal',
+      confirmation: 'confirmed',
+      positionFeedback: 'none',
+      awaitingSince: null,
+      lastReadingAt: null,
+      locked: false,
+      lockedByRoute: null,
+      lastUpdated: '',
+    },
   },
   locos: {},
   routes: { r1: ROUTE },
@@ -273,12 +294,8 @@ async function stub(page: Page) {
       ),
     ),
   );
-  await page.route('**/api/layouts/layout-1/blocks', (r) =>
-    r.fulfill(json(BLOCKS)),
-  );
-  await page.route('**/api/layouts/layout-1/points', (r) =>
-    r.fulfill(json(POINTS)),
-  );
+  await page.route('**/api/layouts/layout-1/blocks', (r) => r.fulfill(json(BLOCKS)));
+  await page.route('**/api/layouts/layout-1/points', (r) => r.fulfill(json(POINTS)));
   await page.route('**/api/layouts/layout-1/sensors', (r) =>
     r.fulfill(
       json([
@@ -296,21 +313,13 @@ async function stub(page: Page) {
   );
   await page.route('**/api/layouts/layout-1/locos', (r) => r.fulfill(json(LOCOS)));
   await page.route('**/api/layouts/layout-1/edges', (r) => r.fulfill(json(EDGES)));
-  await page.route('**/api/layouts/layout-1/topology/compile', (r) =>
-    r.fulfill(json(COMPILE)),
-  );
-  await page.route('**/api/layouts/layout-1/grid/openings', (r) =>
-    r.fulfill(json([])),
-  );
-  await page.route('**/api/layouts/layout-1/grid/diagnostics', (r) =>
-    r.fulfill(json([])),
-  );
+  await page.route('**/api/layouts/layout-1/topology/compile', (r) => r.fulfill(json(COMPILE)));
+  await page.route('**/api/layouts/layout-1/grid/openings', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/grid/diagnostics', (r) => r.fulfill(json([])));
   await page.route('**/api/layouts/layout-1/topology', (r) =>
     r.fulfill(json({ valid: true, violations: [], edgeCount: 1 })),
   );
-  await page.route('**/api/capabilities', (r) =>
-    r.fulfill(json({ sensorSimulation: false })),
-  );
+  await page.route('**/api/capabilities', (r) => r.fulfill(json({ sensorSimulation: false })));
 }
 
 /**
@@ -362,13 +371,15 @@ async function readDiagram(page: Page) {
   });
 }
 
-async function openMonitor(page: Page) {
+async function openControl(page: Page, role: 'admin' | 'operator' | 'monitor' = 'admin') {
   await page.setViewportSize({ width: 1500, height: 900 });
   await installMockWebSocket(page, { snapshot: SNAPSHOT });
-  await installMockAuth(page);
+  await installMockAuth(page, { role });
   await stub(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Monitor' }).click();
+  // One view, two honest names (#165): a `monitor` session may only watch, so
+  // its tab keeps the old label rather than promising a control it does not get.
+  await page.getByRole('button', { name: role === 'monitor' ? 'Monitor' : 'Control' }).click();
   await expect(page.getByRole('list', { name: 'Routes' })).toBeVisible();
 }
 
@@ -380,7 +391,7 @@ async function openMonitor(page: Page) {
  * used to be lit, because they belong to a block the route holds.
  */
 test('the route line follows the road, and stops at the point it holds shut', async ({ page }) => {
-  await openMonitor(page);
+  await openControl(page);
   const { routeCells } = await readDiagram(page);
 
   // Engine Shed 1, the two connective cells, and the staircase up to its far end.
@@ -416,7 +427,7 @@ test('the route line follows the road, and stops at the point it holds shut', as
  * strength over this, so what is left faint is the road that is *not* set.
  */
 test('a point’s own roads are drawn faint under the live overlay', async ({ page }) => {
-  await openMonitor(page);
+  await openControl(page);
   const { baseOpacity } = await readDiagram(page);
 
   expect(baseOpacity['18,8']).toBe('0.3'); // P5
@@ -434,7 +445,7 @@ test('a point’s own roads are drawn faint under the live overlay', async ({ pa
  * broken road.
  */
 test('decorative track is drawn like any other track', async ({ page }) => {
-  await openMonitor(page);
+  await openControl(page);
   const { baseOpacity } = await readDiagram(page);
 
   // (19,7) is decorative and carries the route between the two blocks.
@@ -442,7 +453,7 @@ test('decorative track is drawn like any other track', async ({ page }) => {
 });
 
 test('a held point wears the lock beside its name, not in a corner', async ({ page }) => {
-  await openMonitor(page);
+  await openControl(page);
   const { labels } = await readDiagram(page);
 
   const p5 = labels.find((l) => l.text.startsWith('P5'));
@@ -450,7 +461,7 @@ test('a held point wears the lock beside its name, not in a corner', async ({ pa
 });
 
 test('a block label lies along diagonal track', async ({ page }) => {
-  await openMonitor(page);
+  await openControl(page);
   const { labels } = await readDiagram(page);
 
   const egt = labels.find((l) => l.text.startsWith('Engine / Goods Transfer'));
@@ -469,7 +480,7 @@ test('a block label lies along diagonal track', async ({ page }) => {
 test('the sensor layer is off by default; toggling it reveals the beam state as a title', async ({
   page,
 }) => {
-  await openMonitor(page);
+  await openControl(page);
 
   const before = await readDiagram(page);
   expect(Object.keys(before.sensorTitles)).toEqual([]);
@@ -479,4 +490,76 @@ test('the sensor layer is off by default; toggling it reveals the beam state as 
   const after = await readDiagram(page);
   const titles = Object.values(after.sensorTitles).flat();
   expect(titles).toContain('sensor Beam 1: occupied');
+});
+
+/**
+ * #165 — the control plane, in the browser.
+ *
+ * The command semantics (what the slider sends, when a card is armed, what a
+ * point button commands) are covered where they can be asserted properly, in
+ * the component tests. This mock socket's `send` is deliberately inert, and
+ * the helper says why: making it echo would prove nothing about the real
+ * server. So what is asserted here is the part only a browser can answer —
+ * that the controls appear on the mimic, over the drawing, for the roles that
+ * may use them and for no others.
+ */
+test('an operator can open a throttle over the drawing, and close it again', async ({ page }) => {
+  await openControl(page, 'operator');
+
+  await expect(page.getByLabel('Throttle for Jinty', { exact: true })).toHaveCount(0);
+
+  await page.getByLabel('Add a throttle').selectOption({ label: 'Jinty' });
+
+  const card = page.getByLabel('Throttle for Jinty', { exact: true });
+  await expect(card).toBeVisible();
+  await expect(card.getByRole('slider', { name: /Speed for Jinty/ })).toBeVisible();
+
+  // Several at once is the case the Operate screen's single form cannot serve.
+  await page.getByLabel('Add a throttle').selectOption({ label: 'Pannier' });
+  await expect(page.getByLabel('Throttle for Pannier', { exact: true })).toBeVisible();
+  await expect(card).toBeVisible();
+
+  await card.getByRole('button', { name: 'Close the throttle for Jinty' }).click();
+  await expect(card).toHaveCount(0);
+  await expect(page.getByLabel('Throttle for Pannier', { exact: true })).toBeVisible();
+});
+
+test('an open throttle survives a reload', async ({ page }) => {
+  await openControl(page, 'operator');
+  await page.getByLabel('Add a throttle').selectOption({ label: 'Jinty' });
+  await expect(page.getByLabel('Throttle for Jinty', { exact: true })).toBeVisible();
+
+  await page.reload();
+  await page.getByRole('button', { name: 'Control' }).click();
+
+  // An operator's desk is a preference, not session state — rebuilding it
+  // after every reload is the friction #165 exists to remove.
+  await expect(page.getByLabel('Throttle for Jinty', { exact: true })).toBeVisible();
+});
+
+test('a point is set from its row in the key, and a held point offers no buttons', async ({
+  page,
+}) => {
+  await openControl(page, 'operator');
+
+  // P7 is free in this snapshot, so both positions are offered.
+  await expect(page.getByRole('button', { name: /Set P7 - Yard Neck to reverse/ })).toBeVisible();
+
+  // P5 is held by route r1, which is why it has no buttons at all: forcing it
+  // would cancel the route holding it, and that belongs on the Routes panel.
+  await expect(page.getByRole('button', { name: /Set P5 - Goods Shed/ })).toHaveCount(0);
+});
+
+test('a monitor gets the same mimic with none of the controls', async ({ page }) => {
+  await openControl(page, 'monitor');
+
+  // Everything it reads, unchanged.
+  await expect(page.getByRole('list', { name: 'Routes' })).toBeVisible();
+  await expect(page.getByLabel('Point key', { exact: true })).toBeVisible();
+
+  // Nothing it could press. Absent, not disabled (#61's argument): a greyed
+  // control still poses a question whose honest answer is "you may not".
+  await expect(page.getByLabel('Add a throttle')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Set P7 - Yard Neck/ })).toHaveCount(0);
+  await expect(page.getByRole('columnheader', { name: 'Set' })).toHaveCount(0);
 });

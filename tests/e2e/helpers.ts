@@ -12,13 +12,16 @@ import type { Page } from '@playwright/test';
  * unaffected (issue #53) — pass `{ role: 'operator' }` for specs exercising
  * the operator-role posture (e.g. the Users tab must not render).
  */
-export async function installMockAuth(page: Page, options: { role?: 'admin' | 'operator' } = {}) {
+export async function installMockAuth(
+  page: Page,
+  options: { role?: 'admin' | 'operator' | 'monitor' } = {},
+) {
   const role = options.role ?? 'admin';
   await page.route('**/api/auth/me', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ username: role === 'admin' ? 'e2e-admin' : 'e2e-operator', role }),
+      body: JSON.stringify({ username: `e2e-${role}`, role }),
     }),
   );
 }
