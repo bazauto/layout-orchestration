@@ -213,7 +213,7 @@ One line per area: enough to know whether it is what you are touching. The long 
 | **One renderer, live mimic** (#75, #63, #82, #129) | `TrackDiagram` is the **only** thing that draws the railway. State wins the colour channel; a route is a halo drawn from a **walk** along held track; three global layers, not per-tile groups. | `liveness.md` |
 | **The control plane** (#165) | `ControlView` (was `MonitorView`) is the mimic **and** the screen the layout is driven from: `ThrottleCard` overlays per loco, `Normal`/`Reverse` on each point-key row. **Track is never a button**; a card for an `auto`-route loco opens *armed*; a refused command is shown, not just logged. Tab reads *Control*, or *Monitor* for the `monitor` role, which gets no controls. | `liveness.md` M10–M16 |
 | **Control view e2e** | `tests/e2e/control-view.spec.ts` — the one spec that mounts this view, reading the rendered SVG back in one `evaluate`, plus which controls each role is offered. | `liveness.md` |
-| **Point position feedback** (#25) | `commandedPosition` / `confirmedPosition` / six-state `confirmation`; **`effectivePosition` decides which is trusted**. Nothing is persisted. Every fault kind Safe-Stops; the escape hatch is `positionFeedback: 'none'`. | `point-feedback.md` |
+| **Point position feedback** (#25, #167) | `commandedPosition` / `confirmedPosition` / seven-state `confirmation`; **`effectivePosition` decides which is trusted**. Nothing is persisted. Every *fault* kind Safe-Stops; the escape hatch is `positionFeedback: 'none'`. A controller must **re-assert every 30 s** — silence past the window degrades the point to `stale`, which latches nothing. | `point-feedback.md` |
 | **Per-loco braking** (#6) | `domain/braking.ts` is pure; `BrakingService` plans and `LayoutService` executes one chained timer on `IClock`. Unmeasured intermediate track **refuses** — never guess a stopping distance. | `braking.md` |
 | **Sub-block sensor position** (#77) | `position_toward_block_id` + `position_offset_mm`, anchored to an operator-owned **block id**. A **rising edge** sets the fix and it decays by a worst-case travel allowance; **a clear beam still clears nothing.** Consumed as the `lead` term in `remainingRouteDistanceMm`. | `sensor-position.md` |
 | **Automation engine** (#7) | Drives an `auto`-authority route: departs, runs, brakes, crawls, berths. The invariant is that **a train under automation never passes the end of its authority**. A 250 ms sweep, not an occupancy hook; the stop target is a **berthing beam**. | `automation.md` |
@@ -260,6 +260,13 @@ the id (`grep -n "^### D9" docs/sensor-trust.md`) before concluding any of these
 - A point `command` arms the confirmation deadline; a **`query` deliberately does not** —
   arming on query would halt the layout at boot for any instrumented point whose controller
   was powered off (`point-feedback.md` D6).
+- **A `stale` point latches no `PointFault` and does not Safe-Stop, unlike every other
+  non-confirmed state** — silence is a device dying, not lying, so it degrades like a stale
+  sensor rather than faulting like a timeout. It still suspends any route holding it, which
+  is the *route's* fault, not the point's (`point-feedback.md` D11, D12).
+- **`resumeRoute` deliberately has no staleness precondition** — resuming re-commands every
+  held point, so the resume itself probes whether the controller is alive and settles it in
+  8 s. Adding one would block the probe (`point-feedback.md` D12).
 - A **`retained` point reading is dropped with a warn, not faulted** — it confirms nothing
   and arms nothing. A malformed or id-mismatched payload still faults, retained or not
   (`point-feedback.md`).

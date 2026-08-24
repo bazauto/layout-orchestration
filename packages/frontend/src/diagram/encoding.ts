@@ -222,16 +222,25 @@ export const POINT_POSITION: Record<'normal' | 'reverse' | 'unknown', StateEncod
  * is drawn from can be trusted, and is what a point badge's colour/glyph are
  * keyed on rather than on the raw position (`LayoutPanel`, `PointKeyPanel`).
  *
- * Six members, six glyphs — `mismatch`, `indeterminate` and `timed-out` all
- * sit in "known bad" territory and must stay visibly distinct from one
+ * Seven members, seven glyphs — `mismatch`, `indeterminate` and `timed-out`
+ * all sit in "known bad" territory and must stay visibly distinct from one
  * another without relying on their (deliberately similar) fault colour, per
  * #81's rule that colour is never the sole carrier. `unreported` and
  * `pending` are both "no verdict yet" but for different reasons (never
  * commanded this session, vs. a deadline actively running) and get their own
  * glyphs for the same reason.
+ *
+ * `stale` (#167, docs/point-feedback.md D11) is the seventh, and it is
+ * deliberately NOT fault-coloured: a stale point is a **degrade**, not a
+ * fault — its controller went quiet, nothing latched, and it recovers on its
+ * own the moment a reading arrives. It takes the `unknown` yellow it shares
+ * with `indeterminate`, distinguished by its own glyph and word, because what
+ * the two have in common is exactly what the operator needs to read off the
+ * badge: the position cannot currently be trusted. Colouring it red would say
+ * "something is broken" about a node that may simply be rebooting.
  */
 export const POINT_CONFIRMATION: Record<
-  'unreported' | 'pending' | 'confirmed' | 'mismatch' | 'indeterminate' | 'timed-out',
+  'unreported' | 'pending' | 'confirmed' | 'mismatch' | 'indeterminate' | 'timed-out' | 'stale',
   StateEncoding
 > = {
   unreported: { colour: '#6c7086', pattern: null, glyph: '–', label: 'unreported' },
@@ -240,6 +249,7 @@ export const POINT_CONFIRMATION: Record<
   mismatch: { colour: '#f38ba8', pattern: 'diag-occupied', glyph: '✗', label: 'mismatch' },
   indeterminate: { colour: '#f9e2af', pattern: 'cross-unknown', glyph: '?', label: 'indeterminate' },
   'timed-out': { colour: '#f38ba8', pattern: 'cross-unknown', glyph: '⏱', label: 'timed-out' },
+  stale: { colour: '#f9e2af', pattern: 'cross-unknown', glyph: '⌛', label: 'stale' },
 };
 
 /**

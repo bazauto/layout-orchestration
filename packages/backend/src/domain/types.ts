@@ -614,6 +614,12 @@ export type PointFeedbackMode = 'none' | 'required';
  *    `'driver'`-sourced reading on a `'required'` point (D3).
  *  - `'timed-out'`     — the confirmation deadline elapsed with no reading
  *    (D5).
+ *  - `'stale'`         — the point HAD confirmed, and then its controller
+ *    stopped re-asserting inside the freshness window (#167, D11). Distinct
+ *    from `'unreported'` on purpose: "never heard from" is ordinary at boot,
+ *    "heard, then went quiet" means a node died. Unlike every state above it
+ *    except `'confirmed'` and `'unreported'`, this latches NO `PointFault` —
+ *    silence is a device dying, not a device lying (D11).
  */
 export type PointConfirmation =
   | 'unreported'
@@ -621,7 +627,8 @@ export type PointConfirmation =
   | 'confirmed'
   | 'mismatch'
   | 'indeterminate'
-  | 'timed-out';
+  | 'timed-out'
+  | 'stale';
 
 /**
  * A point's live confirmation state (#25). Replaces the pre-#25 single
@@ -642,6 +649,7 @@ export interface PointState {
   positionFeedback: PointFeedbackMode;
   /** Non-null iff `confirmation === 'pending'` — the invariant `applyPointReading`/`evaluateTimeout`/`onPointCommanded` maintain. */
   awaitingSince: Date | null;
+  /** When the last reading landed, on the backend's own clock. `null` = never. This is what `evaluateStaleness` measures the freshness window against (#167 D11), the same role `SensorObservation.lastLiveReadingAt` plays for a sensor. */
   lastReadingAt: Date | null;
   /** Whether this point is locked by an active route. */
   locked: boolean;

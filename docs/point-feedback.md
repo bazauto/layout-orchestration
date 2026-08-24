@@ -31,7 +31,8 @@ here rather than restate it (that update lands with PR B, see below).
 | Contract amendment (`docs/mqtt-contract.md`) | **Shipped** — `b2b6641` |
 | PR A — the channel | **Shipped** 2026-08-15 |
 | PR B — route interaction (D8) | **Shipped** 2026-08-15 |
-| ESP firmware (`bazauto/esp-layout-controller`) | Not started — see `docs/project-plan.md` |
+| Controller liveness (D11, D12 — #167) | **Shipped** 2026-08-24 |
+| Feedback node (`bazauto/layout-feedback#15`) | Designed, unblocked by D11 — `docs/point-position-feedback.md` there |
 
 Nothing on the live layout has feedback hardware fitted, so every point on
 Westgate Hollow is `positionFeedback: 'none'` and behaves exactly as it did
@@ -356,6 +357,111 @@ have to agree, because they are the same argument at two different layers.
 
 ---
 
+## D11 — A point controller must re-assert every 30 s; silence degrades the point, and only that point
+
+**#167, decided 2026-08-24.** Chosen from four candidate shapes: periodic
+re-assert (this one), a periodic backend query, a controller-level heartbeat,
+and accepting the gap knowingly.
+
+Before this, nothing anywhere checked that a point controller was still alive.
+Three decisions, each correct on its own, composed into the hole: a
+`point/*/reading` is not retained (D1), it had no periodic re-assert, and the
+confirmation deadline arms on a **command** and deliberately not on a **query**
+(D6). So no clock anywhere expected to hear from a point controller again, and a
+controller that died quietly left its last `confirmedPosition` standing
+indefinitely while the layout went on setting roads over it.
+
+The contract now requires a `positionFeedback: 'required'` point's controller to
+re-publish its observed position at least every **30 s**, matching
+`sensor/*/reading` exactly. A point from which no reading arrives inside
+`POINT_FRESHNESS_TIMEOUT_MS` (default 90 s = 3 × the interval, the same tolerance
+and the same reasoning as `DEFAULT_SENSOR_FRESHNESS_TIMEOUT_MS`) degrades to
+`confirmation: 'stale'`, `confirmedPosition: 'unknown'`.
+
+**Why the re-assert and not the periodic query.** The query shape keeps the
+controller dumb and the policy in one place, which is genuinely attractive — but
+it would have had to make an *unanswered* query into evidence, and D6 exists
+precisely to stop a query meaning anything. Reworking what a query means, on the
+one path that recovers position at boot, to gain a liveness check that a timer in
+the publish loop already provides, is a poor trade. A controller-level heartbeat
+is cheaper on the wire again and proves less: that the node is running, not that
+any particular point's sensing path is intact. Six points at one message per 30 s
+is not a traffic problem worth designing around.
+
+**Why this is sharper here than on the sensor side.** Command and feedback are
+two unrelated devices on two transports. The Cobalt iP motors are commanded over
+DCC accessory addresses and have no feedback mechanism of their own; position is
+read from their `S2` changeover contacts by a separate MQTT node. There is no
+shared component whose failure shows up in both, so a DCC accessory command —
+fire and forget — keeps succeeding long after the feedback node has stopped. The
+usual reassurance that silence after a command is at least *suspicious* does not
+apply, because the commanded device is not the reporting device.
+
+**Staleness is a degrade, not a fault.** It latches no `PointFault` and does not
+Safe-Stop, which puts it on the opposite side of the line from every kind in D4.
+That is #28 D10's split applied unchanged: a malformed payload is a device
+**lying** — immediate, sharp, system-wide; an unrefreshed reading is a device
+**dying** — a freshness window and a scoped degrade. It is also D6's organising
+principle read forward: a fault means something the backend *commanded* did not
+happen as promised, and nothing commanded a controller to keep talking.
+
+**Three narrowings, each load-bearing:**
+
+- **Only `positionFeedback: 'required'`.** A `'none'` point has nothing reporting
+  on it and would otherwise go stale immediately and permanently. All six points
+  on Westgate Hollow are `'none'` today, so this decision changes live behaviour
+  by exactly nothing until feedback hardware is fitted and a point is opted in —
+  the same rollout property D10's `DEFAULT 'none'` was chosen for.
+- **Only from `confirmed`.** That is the one state in which a reading is actually
+  being *trusted*. `unreported` must stay `unreported` or a `'required'` point
+  whose controller was powered off at boot would degrade into a different-looking
+  state for no new reason (D6's boot case). `pending` is owned by the 8 s
+  confirmation deadline, which fires an order of magnitude sooner. `mismatch`,
+  `indeterminate` and `timed-out` are already latched faults and already
+  untrusted; re-labelling one of them `stale` would replace a sharp fact with a
+  vaguer one.
+- **`stale` is a seventh `PointConfirmation`, not a reuse of `unreported`.**
+  "Never heard from" and "heard, then went quiet" are different facts about the
+  hardware and lead an operator to different places — the first is ordinary at
+  boot, the second means a node died. Collapsing them would throw away the only
+  evidence that distinguishes them.
+
+## D12 — A stale point suspends the routes holding it, but latches no point fault, and resume is the test
+
+A stale point does two things, and the split matters.
+
+**To itself:** `confirmedPosition` goes `'unknown'`, so `effectivePosition` (D7)
+returns `'unknown'` for a `'required'` point, every edge through it is
+untraversable, and no new route can be set over it. No fault is latched.
+
+**To routes already holding it:** each `active`/`suspended` reservation holding
+that point gets its loco stopped and a `RouteFault` of the existing kind
+`'point-not-confirmed'`. This is the same shape D8 gives a `timeout`/`mismatch`/
+`indeterminate`, minus the `PointFault` — and it is exactly the precedent the
+sensor side already sets. `runSensorTrustSweep` degrades a stale sensor's blocks
+and touches no fault, and the route-level consequence arrives through
+`recomputeBlock`'s existing `occupancy-unknown` path: loco stopped, `RouteFault`
+latched, no `SensorFault`. A stale point is the same event on the other channel,
+and answering it differently would be an inconsistency with no argument behind
+it.
+
+**The resume precondition needs no special case, because resume tests the
+staleness.** D8's precondition refuses a resume while any held point carries a
+latched, unacknowledged `PointFault` — and a stale point has none, so a resume
+proceeds. That is correct rather than a hole: `LayoutService.resumeRoute`
+re-commands every point the route holds, which puts each `'required'` one back to
+`pending` and arms the 8 s deadline. A controller that has recovered answers and
+the point confirms; a controller that is genuinely dead does not, the point times
+out, a `PointFault` latches, and the route re-suspends. The operator's resume is
+therefore a live probe of the thing that was in doubt, and it resolves in 8 s
+rather than in a freshness window.
+
+Adding a staleness clause to the precondition would have blocked that probe and
+left the operator holding a route that could not be resumed until a device that
+may already be healthy happened to speak again.
+
+---
+
 ## The commanded-over-serial / confirmed-over-MQTT asymmetry
 
 This is worth stating as its own fact because it is easy to assume symmetry
@@ -396,10 +502,14 @@ see.
    provisioning that mapping over MQTT or HTTP is a separate design question,
    to be raised in the firmware repository (`bazauto/esp-layout-controller`),
    not here.
-3. **#28's sensor-side mirror.** This document writes the retention asymmetry
-   (D1) into `docs/mqtt-contract.md` as a recorded decision, which is #28's
-   minimum requirement. Whether `sensor/*/reading` additionally needs its own
-   liveness/staleness check remains #28's call, not this document's.
+3. **#28's sensor-side mirror — settled, in both directions.** This document
+   wrote the retention asymmetry (D1) into `docs/mqtt-contract.md`, which was
+   #28's minimum requirement; #28 then answered its own half with the 30 s
+   re-assert and `isSensorFresh`. The *point*-side equivalent was never posed at
+   the time, because the only point controller then contemplated was one that
+   would also command the motors — the case where silence after a command is at
+   least suspicious. `bazauto/layout-feedback#15` made it a separate device on a
+   separate transport, and #167 answered it in D11/D12 above.
 
 ## Deferred, and stated so nobody has to ask
 

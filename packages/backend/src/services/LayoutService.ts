@@ -90,6 +90,7 @@ import {
   toSensorObservationView,
 } from '../domain/occupancy';
 import { DEFAULT_SENSOR_FRESHNESS_TIMEOUT_MS, isSensorFresh } from '../domain/sensorTrust';
+import { DEFAULT_POINT_FRESHNESS_TIMEOUT_MS } from '../domain/pointConfirmation';
 import { isEmptySensorPayload } from '../domain/sensorPayload';
 import { sensorPositionOf } from '../domain/sensorPosition';
 import {
@@ -434,6 +435,7 @@ export class LayoutService extends EventEmitter {
       stateManager,
       {
         timeoutMs: 8000,
+        freshnessTimeoutMs: DEFAULT_POINT_FRESHNESS_TIMEOUT_MS,
       },
     ),
     /**
@@ -2007,7 +2009,18 @@ export class LayoutService extends EventEmitter {
     this.emitPointFaults();
   }
 
-  /** D5: applies `evaluateTimeout` to every registered point via the sweep, publishing and fault-latching each transition. */
+  /**
+   * D5 + D11: applies the sweep's two predicates to every registered point,
+   * publishing each transition and giving it its consequence.
+   *
+   * The two consequences are deliberately different, and the difference is the
+   * whole of D11: `'timed-out'` latches a `PointFault` and Safe-Stops (a device
+   * **lying** about a command the backend issued), while `'stale'` latches no
+   * point fault at all (a device **dying**, which degrades only what it
+   * observes). Both stop the locos of any routes holding the point and latch a
+   * `RouteFault`, because in both cases route R's road is no longer known to be
+   * set.
+   */
   private async runConfirmationSweep(): Promise<void> {
     const transitioned = this.pointConfirmations.sweep(this.clock.now());
     for (const point of transitioned) {
@@ -2019,8 +2032,45 @@ export class LayoutService extends EventEmitter {
           'timeout',
           `Point ${pointLabel(point.pointId, this.names.get())} failed to confirm within the timeout — no reading received`,
         );
+      } else if (point.confirmation === 'stale') {
+        await this.handlePointWentStale(point);
       }
     }
+  }
+
+  /**
+   * D11/D12 (#167): the consequence of a confirmed point's controller going
+   * quiet. The degrade half of `handlePointNotConfirmed` — same route
+   * consequence, no `PointFault`.
+   *
+   * This is `runSensorTrustSweep`'s shape on the other channel, and the
+   * symmetry is the argument: a stale sensor degrades its own blocks, latches
+   * no `SensorFault`, and reaches routes only through `recomputeBlock`'s
+   * `occupancy-unknown` path. A stale point degrades its own position, latches
+   * no `PointFault`, and reaches routes through `point-not-confirmed`.
+   *
+   * No staleness clause is added to `resumeRoute`'s precondition, and D12
+   * records why: `resumeRoute` re-commands every held point, which puts a
+   * `'required'` one back to `'pending'` and arms the 8 s deadline. A recovered
+   * controller answers and the point confirms; a dead one does not, times out,
+   * latches a real `PointFault`, and the route re-suspends. The resume IS the
+   * probe, and it settles in 8 s rather than in a freshness window.
+   */
+  private async handlePointWentStale(point: PointState): Promise<void> {
+    this.log.warn(
+      '[LayoutService] Point stale — no reading inside the freshness window, position no longer trusted',
+      {
+        layoutId: this.layoutId,
+        pointId: point.pointId,
+        pointName: this.names.get().points.get(point.pointId),
+        lastReadingAt: point.lastReadingAt?.toISOString() ?? null,
+      },
+    );
+
+    await this.faultRoutesHoldingPoint(
+      point.pointId,
+      `stopped re-asserting its position (stale)`,
+    );
   }
 
   /** D5: started next to the heartbeat, stopped in `stop()`. Runs on `this.clock`, never a bare `setInterval` — the seam `ManualClock` drives in tests. */
@@ -2496,7 +2546,27 @@ export class LayoutService extends EventEmitter {
     pointFaultReason: string,
   ): Promise<void> {
     await this.raisePointFault(pointId, kind, pointFaultReason);
+    await this.faultRoutesHoldingPoint(pointId, `failed to confirm (${kind})`);
+  }
 
+  /**
+   * The route half of D8, extracted so D11's staleness can reuse it without
+   * the `PointFault` (D12). Stops the loco of every `active`/`suspended`
+   * reservation holding this point and latches a `'point-not-confirmed'`
+   * `RouteFault` naming it.
+   *
+   * The route is never cancelled here: `raiseRouteFault` re-evaluates
+   * Safe-Stop, and Safe-Stop suspends every active reservation with its locks
+   * retained (`docs/route-locking.md` D8) — the same mechanism
+   * `handleRouteOccupancyUnknown` relies on rather than suspending the one
+   * route directly.
+   *
+   * `situation` completes the sentence "point X ..." in the operator-facing
+   * reason, so the two callers read as what they are: "failed to confirm
+   * (timeout)" for a fault, "stopped re-asserting its position (stale)" for a
+   * degrade.
+   */
+  private async faultRoutesHoldingPoint(pointId: PointId, situation: string): Promise<void> {
     if (!this.layoutId) return;
     const routes = this.reservations.routesHoldingPoint(this.layoutId, pointId);
     for (const route of routes) {
@@ -2504,7 +2574,7 @@ export class LayoutService extends EventEmitter {
       await this.raiseRouteFault({
         routeId: route.id,
         kind: 'point-not-confirmed',
-        reason: `Route ${route.id} suspended: point ${pointLabel(pointId, this.names.get())} failed to confirm (${kind})`,
+        reason: `Route ${route.id} suspended: point ${pointLabel(pointId, this.names.get())} ${situation}`,
         blockId: null,
         pointId,
         locoAddress: route.locoAddress,

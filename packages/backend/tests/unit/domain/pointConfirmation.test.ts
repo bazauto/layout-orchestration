@@ -4,6 +4,7 @@ import {
   buildPointPositionMap,
   confirmationArms,
   effectivePosition,
+  evaluateStaleness,
   evaluateTimeout,
   initialPointState,
   onPointCommanded,
@@ -14,7 +15,7 @@ import { PointReading, PointState } from '../../../src/domain/types';
 
 const NOW = new Date('2026-08-14T00:00:00.000Z');
 const LATER = new Date('2026-08-14T00:00:09.000Z'); // +9000ms
-const POLICY: PointConfirmationPolicy = { timeoutMs: 8000 };
+const POLICY: PointConfirmationPolicy = { timeoutMs: 8000, freshnessTimeoutMs: 90_000 };
 
 function reading(overrides: Partial<PointReading> = {}): PointReading {
   return {
@@ -213,6 +214,105 @@ describe('evaluateTimeout', () => {
   it('a "none" point commanded and never reporting never times out — no deadline was armed (regression guard for the live layout)', () => {
     const commanded = onPointCommanded(initialPointState('p1', 'none', NOW), 'normal', NOW);
     expect(evaluateTimeout(commanded, new Date(NOW.getTime() + 100_000), POLICY)).toBeNull();
+  });
+});
+
+
+// ─── evaluateStaleness (#167 D11) ───────────────────────────────────────────
+
+/** A `required` point that has confirmed `normal` at `NOW` — the only state staleness can act on. */
+function confirmedAt(now: Date, feedback: 'required' | 'none' = 'required'): PointState {
+  const commanded = onPointCommanded(initialPointState('p1', feedback, now), 'normal', now);
+  return applyPointReading(commanded, reading({ position: 'normal' }), now);
+}
+
+describe('evaluateStaleness (#167 D11)', () => {
+  it('goes stale past the window: stale, confirmedPosition unknown, awaitingSince cleared', () => {
+    const confirmed = confirmedAt(NOW);
+    const past = new Date(NOW.getTime() + 90_001);
+    const stale = evaluateStaleness(confirmed, past, POLICY);
+    expect(stale).not.toBeNull();
+    expect(stale).toMatchObject({
+      confirmation: 'stale',
+      confirmedPosition: 'unknown',
+      awaitingSince: null,
+    });
+    assertAwaitingInvariant(stale!);
+  });
+
+  it('exactly at the window is still fresh — the boundary matches isSensorFresh', () => {
+    const confirmed = confirmedAt(NOW);
+    expect(evaluateStaleness(confirmed, new Date(NOW.getTime() + 90_000), POLICY)).toBeNull();
+    expect(evaluateStaleness(confirmed, new Date(NOW.getTime() + 90_001), POLICY)).not.toBeNull();
+  });
+
+  it('a re-assert inside the window keeps the point confirmed indefinitely', () => {
+    let p = confirmedAt(NOW);
+    // Three re-asserts at the contract's 30 s interval, checked just before each.
+    for (let i = 1; i <= 3; i += 1) {
+      const justBefore = new Date(NOW.getTime() + i * 30_000 - 1);
+      expect(evaluateStaleness(p, justBefore, POLICY)).toBeNull();
+      p = applyPointReading(p, reading({ position: 'normal' }), new Date(NOW.getTime() + i * 30_000));
+      expect(p.confirmation).toBe('confirmed');
+    }
+    // ...and it is the RE-ASSERTS holding it up. The last one landed at
+    // NOW+90s, so the window runs out at NOW+180s and not before.
+    expect(evaluateStaleness(p, new Date(NOW.getTime() + 180_000), POLICY)).toBeNull();
+    expect(evaluateStaleness(p, new Date(NOW.getTime() + 180_001), POLICY)).not.toBeNull();
+  });
+
+  it("a 'none' point never goes stale — nothing reports on it (every live Westgate Hollow point today)", () => {
+    const confirmed = confirmedAt(NOW, 'none');
+    expect(evaluateStaleness(confirmed, new Date(NOW.getTime() + 10_000_000), POLICY)).toBeNull();
+  });
+
+  it("'unreported' stays unreported — D6's boot case is not a dead controller", () => {
+    const unreported = initialPointState('p1', 'required', NOW);
+    expect(unreported.lastReadingAt).toBeNull();
+    expect(evaluateStaleness(unreported, new Date(NOW.getTime() + 10_000_000), POLICY)).toBeNull();
+  });
+
+  it("'pending' is left to the 8 s confirmation deadline, which fires far sooner", () => {
+    const commanded = onPointCommanded(initialPointState('p1', 'required', NOW), 'reverse', NOW);
+    expect(evaluateStaleness(commanded, new Date(NOW.getTime() + 90_001), POLICY)).toBeNull();
+  });
+
+  it('never re-labels an already-latched fault state — a sharp fact is not replaced by a vaguer one', () => {
+    const commanded = onPointCommanded(initialPointState('p1', 'required', NOW), 'normal', NOW);
+    const wayLater = new Date(NOW.getTime() + 90_001);
+
+    const mismatch = applyPointReading(commanded, reading({ position: 'reverse' }), NOW);
+    expect(mismatch.confirmation).toBe('mismatch');
+    expect(evaluateStaleness(mismatch, wayLater, POLICY)).toBeNull();
+
+    const indeterminate = applyPointReading(commanded, reading({ position: 'unknown' }), NOW);
+    expect(indeterminate.confirmation).toBe('indeterminate');
+    expect(evaluateStaleness(indeterminate, wayLater, POLICY)).toBeNull();
+
+    const timedOut = evaluateTimeout(commanded, new Date(NOW.getTime() + 8000), POLICY)!;
+    expect(timedOut.confirmation).toBe('timed-out');
+    expect(evaluateStaleness(timedOut, wayLater, POLICY)).toBeNull();
+  });
+
+  it('a reading stamped in the future reads as fresh — a clock skew must not untrust a healthy point', () => {
+    const confirmed = confirmedAt(NOW);
+    expect(evaluateStaleness(confirmed, new Date(NOW.getTime() - 10_000_000), POLICY)).toBeNull();
+  });
+
+  it('a stale point reads unknown through effectivePosition, which is what makes its edges untraversable', () => {
+    const stale = evaluateStaleness(confirmedAt(NOW), new Date(NOW.getTime() + 90_001), POLICY)!;
+    expect(effectivePosition(stale)).toBe('unknown');
+  });
+
+  it('recovers on the next reading, with no acknowledgement — it latched nothing to clear', () => {
+    const stale = evaluateStaleness(confirmedAt(NOW), new Date(NOW.getTime() + 90_001), POLICY)!;
+    const recovered = applyPointReading(
+      stale,
+      reading({ position: 'normal' }),
+      new Date(NOW.getTime() + 91_000),
+    );
+    expect(recovered.confirmation).toBe('confirmed');
+    expect(effectivePosition(recovered)).toBe('normal');
   });
 });
 

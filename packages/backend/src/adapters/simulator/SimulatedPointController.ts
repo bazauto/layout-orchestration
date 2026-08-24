@@ -23,7 +23,7 @@
  */
 
 import { IMqttAdapter } from '../../ports/IMqttAdapter';
-import { IClock } from '../../ports/IClock';
+import { ClockTimer, IClock } from '../../ports/IClock';
 import { LayoutId, PointId } from '../../domain/types';
 
 /**
@@ -44,6 +44,14 @@ export interface SimulatedPointControllerOptions {
   modes?: Record<string, PointSimulationMode>;
   /** D9: delay, on the injected clock, before answering a query or a command with a reading. */
   confirmDelayMs?: number;
+  /**
+   * D11 (#167): how often, on the injected clock, this controller re-asserts
+   * every point it knows about. Defaults to the contract's 30 s. A real
+   * controller is obliged to do this; a simulator that did not would make
+   * every `positionFeedback: 'required'` point go `'stale'` 90 s after its
+   * last command, which is a simulator defect rather than a system one.
+   */
+  reassertIntervalMs?: number;
 }
 
 export interface SimulatedPointControllerLogger {
@@ -62,6 +70,15 @@ export class SimulatedPointController {
    * hand-thrown point happens to be sitting at".
    */
   private readonly commanded = new Map<PointId, 'normal' | 'reverse'>();
+  /**
+   * Every point this controller has heard of, by command or by query — what
+   * the D11 re-assert loop walks. A real controller knows its own points from
+   * its pin allocation; this one learns them from traffic, which is the
+   * closest a simulator with no wiring can get.
+   */
+  private readonly known = new Set<PointId>();
+  private reassertTimer: ClockTimer | null = null;
+  private readonly reassertIntervalMs: number;
 
   constructor(
     private readonly mqtt: IMqttAdapter,
@@ -72,18 +89,49 @@ export class SimulatedPointController {
   ) {
     this.defaultMode = options.defaultMode ?? 'confirm';
     this.confirmDelayMs = options.confirmDelayMs ?? 150;
+    this.reassertIntervalMs = options.reassertIntervalMs ?? 30_000;
     for (const [pointId, mode] of Object.entries(options.modes ?? {})) {
       this.modes.set(pointId, mode);
     }
   }
 
-  /** Subscribes to `point/+/query`. The only MQTT subscription this controller ever makes. */
+  /** Subscribes to `point/+/query` — the only MQTT subscription this controller ever makes — and arms the D11 re-assert loop. */
   async start(): Promise<void> {
     await this.mqtt.subscribe(`layout/${this.layoutId}/point/+/query`, (_payload, topic) => {
       const pointId = topic.split('/')[3];
+      this.known.add(pointId);
       this.scheduleResponse(pointId);
     });
-    this.log.info('[SimPointController] Subscribed to point queries', { layoutId: this.layoutId });
+    this.reassertTimer = this.clock.setInterval(() => {
+      void this.reassertAll();
+    }, this.reassertIntervalMs);
+    this.log.info('[SimPointController] Subscribed to point queries', {
+      layoutId: this.layoutId,
+      reassertIntervalMs: this.reassertIntervalMs,
+    });
+  }
+
+  /** Cancels the re-assert loop. On `IClock`, so it is the harness's `ManualClock` in tests and a real timer only in the simulator binary. */
+  stop(): void {
+    this.reassertTimer?.cancel();
+    this.reassertTimer = null;
+  }
+
+  /**
+   * D11 (#167): re-publishes every known point's current reading, unchanged,
+   * on the contract's interval — the liveness assertion `evaluateStaleness`
+   * measures against.
+   *
+   * Goes through `respond` rather than publishing directly, so a controller in
+   * `'silent'` mode stays silent here too. That is the whole point of the mode:
+   * `'silent'` is a dead controller, and a dead controller does not re-assert.
+   * It is what lets a scenario take a point from `'confirmed'` to `'stale'`
+   * simply by flipping the mode and letting the clock run.
+   */
+  private async reassertAll(): Promise<void> {
+    for (const pointId of this.known) {
+      await this.respond(pointId);
+    }
   }
 
   /**
@@ -94,6 +142,7 @@ export class SimulatedPointController {
    */
   noteCommanded(pointId: PointId, position: 'normal' | 'reverse'): void {
     this.commanded.set(pointId, position);
+    this.known.add(pointId);
     this.scheduleResponse(pointId);
   }
 

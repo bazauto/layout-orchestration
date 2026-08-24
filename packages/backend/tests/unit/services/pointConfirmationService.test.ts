@@ -5,7 +5,7 @@ import { PointConfirmationPolicy } from '../../../src/domain/pointConfirmation';
 import { PointReading } from '../../../src/domain/types';
 
 const NOW = new Date('2026-08-14T00:00:00.000Z');
-const POLICY: PointConfirmationPolicy = { timeoutMs: 8000 };
+const POLICY: PointConfirmationPolicy = { timeoutMs: 8000, freshnessTimeoutMs: 90_000 };
 
 function reading(overrides: Partial<PointReading> = {}): PointReading {
   return {

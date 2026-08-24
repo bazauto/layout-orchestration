@@ -135,6 +135,7 @@ async function main() {
   const clock = new SystemClock();
   const pointConfirmations = new PointConfirmationService(stateManager, {
     timeoutMs: config.points.confirmTimeoutMs,
+    freshnessTimeoutMs: config.points.freshnessTimeoutMs,
   });
 
   // #25 D9: a genuine simulated twin of the ESP point controller — ships
@@ -265,6 +266,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     console.log(`[Shutdown] Received ${signal}`);
     await server.close();
+    simulatedPointController?.stop();
     await layoutService.stop();
     process.exit(0);
   };

@@ -54,6 +54,16 @@ export const POINT_CONFIRM_SWEEP_MS = 250;
 export const POINT_CONFIRM_DELAY_MS = 150;
 
 /**
+ * #167 D11: the point-side twin of `SENSOR_FRESHNESS_TIMEOUT_MS` /
+ * `SENSOR_REASSERT_MS` below. `POINT_REASSERT_MS` is not a backend setting
+ * either — it is the interval `docs/mqtt-contract.md` obliges point-controller
+ * *firmware* to re-publish on, and the number the freshness window is three of.
+ * A scenario simulating a healthy point controller re-asserts on it.
+ */
+export const POINT_FRESHNESS_TIMEOUT_MS = 90_000;
+export const POINT_REASSERT_MS = 30_000;
+
+/**
  * #28 D11: the same defaults `config.sensors` carries. `SENSOR_REASSERT_MS` is
  * not a backend setting at all — it is the interval `docs/mqtt-contract.md`
  * obliges sensor *firmware* to re-publish on, and the number the freshness
@@ -466,6 +476,7 @@ export function createScenarioHarness(options?: Partial<LayoutServiceOptions>): 
   const pointClock = new ManualClock(new Date('2026-01-01T00:00:00.000Z'));
   const pointConfirmations = new PointConfirmationService(stateManager, {
     timeoutMs: POINT_CONFIRM_TIMEOUT_MS,
+    freshnessTimeoutMs: POINT_FRESHNESS_TIMEOUT_MS,
   });
   // D9: a genuine simulated twin of the ESP point controller — subscribes to
   // `point/+/query` and answers on `pointClock`, never a live MQTT command
