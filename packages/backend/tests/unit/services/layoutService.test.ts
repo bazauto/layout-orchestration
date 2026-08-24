@@ -627,6 +627,68 @@ describe('LayoutService — sensor-driven block state', () => {
   });
 });
 
+describe('LayoutService — recomputeBlock occupancy-change logging (#161)', () => {
+  // Same pattern as the describe block below: `silentLogger` is a
+  // module-level singleton, cleared per-test so an earlier test's calls
+  // cannot be mistaken for this one's.
+  beforeEach(() => {
+    silentLogger.info.mockClear();
+    silentLogger.warn.mockClear();
+    silentLogger.error.mockClear();
+  });
+
+  it('logs an occupancy change unconditionally, naming both the old and new value', async () => {
+    const { service, mqtt } = await buildStartedService();
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', {
+      state: 'occupied',
+      updatedAt: new Date().toISOString(),
+    });
+    await new Promise((r) => setImmediate(r));
+
+    expect(silentLogger.info).toHaveBeenCalledWith('[LayoutService] Block occupancy changed', {
+      blockId: 'b1',
+      blockName: undefined,
+      from: 'unknown',
+      to: 'occupied',
+    });
+
+    await service.stop();
+  });
+
+  it('an occupied -> unknown transition logs distinguishably from a clear/unknown -> occupied one', async () => {
+    // #34/#28: the case the issue is about — a block whose only sensor is
+    // flapping reads identically at `info` before this fix, because
+    // `isBlockEffectivelyOccupied` (occupancy !== 'clear') is true for both
+    // `occupied` and `unknown`. `from`/`to` is what makes the two transitions
+    // distinguishable in the journal.
+    const { service, mqtt } = await buildStartedService();
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', {
+      state: 'occupied',
+      updatedAt: new Date().toISOString(),
+    });
+    await new Promise((r) => setImmediate(r));
+    silentLogger.info.mockClear();
+
+    // A malformed payload trips the sensor fault, which de-contributes the
+    // sensor immediately (D4) and drives the block to `unknown` — the same
+    // `recomputeBlock` path, reached from the fault branch rather than the
+    // ordinary accepted-reading one.
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', { badField: 'nonsense' });
+    await new Promise((r) => setImmediate(r));
+
+    expect(silentLogger.info).toHaveBeenCalledWith('[LayoutService] Block occupancy changed', {
+      blockId: 'b1',
+      blockName: undefined,
+      from: 'occupied',
+      to: 'unknown',
+    });
+
+    await service.stop();
+  });
+});
+
 describe('LayoutService — empty sensor payload is a retained-clear, not a fault (#65 D7, docs/sensor-fault-recovery.md D9)', () => {
   // `silentLogger` is a module-level singleton shared by every test in this
   // file with no reset — cleared here (scoped to this describe only, same

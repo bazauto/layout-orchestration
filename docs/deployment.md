@@ -144,10 +144,21 @@ closes that, and it is a manual step today.
 ## D7 — Log retention is a journald decision, not logrotate
 
 The backend writes structured JSON straight to stdout through the hand-rolled
-`{info,warn,error}` interface. **Pino is not a dependency of any workspace**, despite what
-`docs/project-plan.md` said until this change corrected it. Under systemd, stdout lands in
-the journal — so there is no log file, and nothing for logrotate to rotate. Retention is
+`{info,warn,error,debug?}` interface. **Pino is not a dependency of any workspace**, despite
+what `docs/project-plan.md` said until this change corrected it. Under systemd, stdout lands
+in the journal — so there is no log file, and nothing for logrotate to rotate. Retention is
 `SystemMaxUse` and `MaxRetentionSec` in a `journald.conf.d` drop-in.
+
+**`debug` is suppressed at source, not filtered at the journal (#161).** Because severity
+inside the JSON payload is invisible to journald (next paragraph), there is no `-p debug`
+that can hide a debug line once it is written — a debug line that is emitted is a debug
+line that is retained, counting against the same `SystemMaxUse` budget as everything else.
+`logger.ts#createLogger` handles this by **omitting the `debug` method from the returned
+object entirely** unless `LOG_LEVEL=debug`, so every call site's `this.log.debug?.(...)`
+short-circuits before building the message. Off by default: DCC `TX`/`RX` wire traffic
+(one pair per `<s>` probe, every `DCC_PROBE_INTERVAL_MS` even on an idle layout) and the
+per-reading MQTT ingest line stay out of the journal until an operator asks for them by
+setting `LOG_LEVEL=debug` and restarting the unit.
 
 **Severity does not survive the trip into the journal**, and this is worth knowing before
 you go looking for an error that is there. Everything the logger writes goes to
@@ -270,6 +281,7 @@ bash deploy/deploy.sh <tag|sha>      # anything else
 |---|---|
 | Follow the logs | `journalctl -u layout-orchestrator -f` |
 | Errors since boot | `journalctl -u layout-orchestrator -b \| grep '"level":"error"'` |
+| Turn on debug (wire traffic, per-reading MQTT ingest) | set `LOG_LEVEL=debug` in `.env`, `sudo systemctl restart layout-orchestrator` — and set it back afterward (D7) |
 | Service state | `systemctl status layout-orchestrator` |
 | Back up now | `sudo systemctl start layout-orchestrator-backup` |
 | Backup history | `journalctl -u layout-orchestrator-backup` |

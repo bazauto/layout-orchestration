@@ -47,6 +47,7 @@ export interface SerialDccLogger {
   info(msg: string, data?: Record<string, unknown>): void;
   warn(msg: string, data?: Record<string, unknown>): void;
   error(msg: string, data?: Record<string, unknown>): void;
+  debug?(msg: string, data?: Record<string, unknown>): void;
 }
 
 export interface SerialDccConfig {
@@ -166,7 +167,7 @@ export class SerialDccAdapter implements IDccController {
     // `<l>` are attributed elsewhere, so this line is the only place the wire
     // itself is visible.
     responses.forEach((response, i) => {
-      this.log.info('[SerialDCC] RX', {
+      this.log.debug?.('[SerialDCC] RX', {
         frame: `<${frames[i]}>`,
         ...describeDccResponse(response),
       });
@@ -207,7 +208,7 @@ export class SerialDccAdapter implements IDccController {
       if (!this.port?.isOpen) {
         return reject(new Error('Serial port is not open'));
       }
-      this.log.info('[SerialDCC] TX', { cmd });
+      this.log.debug?.('[SerialDCC] TX', { cmd });
       this.port.write(`${cmd}\n`, (err) => {
         if (err) reject(err);
         else resolve();
