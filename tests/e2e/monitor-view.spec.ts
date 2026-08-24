@@ -71,7 +71,14 @@ const TILES: T[] = [
   { x: 21, y: 10, tileType: 'straight-h', meta: { blockId: 'gs' } },
   { x: 22, y: 10, tileType: 'straight-h', meta: { blockId: 'gs' } },
   { x: 23, y: 10, tileType: 'buffer', meta: { blockId: 'gs' } },
-  { x: 12, y: 3, tileType: 'straight-h', meta: { blockId: 'fy1' } },
+  // #76: a beam placed on Fiddle Yard 1 — plain track, away from every
+  // point/route fixture above, so its title is unambiguous in the readback.
+  {
+    x: 12,
+    y: 3,
+    tileType: 'straight-h',
+    meta: { blockId: 'fy1', annotations: [{ entityType: 'sensor', entityId: 'sBeam' }] },
+  },
   { x: 11, y: 3, tileType: 'straight-h', meta: { blockId: 'fy1' } },
   { x: 10, y: 3, tileType: 'straight-h', meta: { blockId: 'fy1' } },
   { x: 9, y: 3, tileType: 'buffer', rotation: 180, meta: { blockId: 'fy1' } },
@@ -186,6 +193,20 @@ const SNAPSHOT = {
   },
   locos: {},
   routes: { r1: ROUTE },
+  // #76: one observation, on the beam placed at (12,3) / Fiddle Yard 1 above.
+  sensors: {
+    sBeam: {
+      sensorId: 'sBeam',
+      blockId: 'fy1',
+      type: 'block_detection',
+      lastReading: 'occupied',
+      trusted: true,
+      inService: true,
+      faulted: false,
+      lastReadingAt: '2026-08-08T00:00:00.000Z',
+      source: 'live',
+    },
+  },
   sensorFaults: [],
   pointFaults: [],
   routeFaults: [],
@@ -258,7 +279,21 @@ async function stub(page: Page) {
   await page.route('**/api/layouts/layout-1/points', (r) =>
     r.fulfill(json(POINTS)),
   );
-  await page.route('**/api/layouts/layout-1/sensors', (r) => r.fulfill(json([])));
+  await page.route('**/api/layouts/layout-1/sensors', (r) =>
+    r.fulfill(
+      json([
+        {
+          id: 'sBeam',
+          layoutId: 'layout-1',
+          name: 'Beam 1',
+          type: 'block_detection',
+          blockId: 'fy1',
+          mqttTopic: 'layout/layout-1/sensor/sBeam/reading',
+          inService: true,
+        },
+      ]),
+    ),
+  );
   await page.route('**/api/layouts/layout-1/locos', (r) => r.fulfill(json(LOCOS)));
   await page.route('**/api/layouts/layout-1/edges', (r) => r.fulfill(json(EDGES)));
   await page.route('**/api/layouts/layout-1/topology/compile', (r) =>
@@ -297,6 +332,10 @@ async function readDiagram(page: Page) {
 
     const routeCells: string[] = [];
     const baseOpacity: Record<string, string> = {};
+    // #76: every `<title>` on a sensor annotation, per cell — the mark's own
+    // channel is not colour, but its `<title>` is what a test (and a screen
+    // reader/tooltip) can read back without inspecting fill/stroke directly.
+    const sensorTitles: Record<string, string[]> = {};
 
     for (const g of Array.from(svg.querySelectorAll('g'))) {
       const cell = cellOf(g);
@@ -304,6 +343,9 @@ async function readDiagram(page: Page) {
 
       const titles = Array.from(g.querySelectorAll('title')).map((t) => t.textContent ?? '');
       if (titles.some((t) => t.startsWith('route '))) routeCells.push(cell);
+
+      const sTitles = titles.filter((t) => t.startsWith('sensor '));
+      if (sTitles.length) sensorTitles[cell] = sTitles;
 
       // The track layer's rotation group — the one wrapping the tile's paths.
       const rotated = g.querySelector(':scope > g[transform^="rotate"]');
@@ -316,7 +358,7 @@ async function readDiagram(page: Page) {
       transform: t.getAttribute('transform') ?? '',
     }));
 
-    return { routeCells: [...new Set(routeCells)].sort(), baseOpacity, labels };
+    return { routeCells: [...new Set(routeCells)].sort(), baseOpacity, labels, sensorTitles };
   });
 }
 
@@ -417,4 +459,24 @@ test('a block label lies along diagonal track', async ({ page }) => {
   // Engine Shed 1 is a horizontal run, and stays upright.
   const es1 = labels.find((l) => l.text.startsWith('Engine Shed 1'));
   expect(es1?.transform).toBe('');
+});
+
+/**
+ * #76: the sensor layer is a diagnostic overlay an operator reaches for, not
+ * one competing with derived occupancy for attention by default — and once
+ * on, it reads the beam's own state, not the block's.
+ */
+test('the sensor layer is off by default; toggling it reveals the beam state as a title', async ({
+  page,
+}) => {
+  await openMonitor(page);
+
+  const before = await readDiagram(page);
+  expect(Object.keys(before.sensorTitles)).toEqual([]);
+
+  await page.getByRole('checkbox', { name: 'Sensors' }).check();
+
+  const after = await readDiagram(page);
+  const titles = Object.values(after.sensorTitles).flat();
+  expect(titles).toContain('sensor Beam 1: occupied');
 });

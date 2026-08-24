@@ -98,6 +98,32 @@ export interface SensorFaultView {
   armed: boolean;
 }
 
+/**
+ * Wire projection of the backend's `SensorObservation` (#76,
+ * `domain/types.ts`). Per-sensor readings used to be kept off `StateSnapshot`
+ * entirely (DD10, superseded — `docs/sensor-fault-recovery.md` D10); this is
+ * that projection, one per sensor, keyed by id on `StateSnapshot.sensors` and
+ * pushed as a delta on `SENSOR_STATE`.
+ *
+ * Deliberately does not assume `lastReading` is the only shape an observation
+ * can take: it stays the union the backend already sends, so an
+ * identity-observing reader (#39, RFID) is a new case for a future issue, not
+ * a contract change to this one. `source` is `null` when no reading has ever
+ * arrived.
+ */
+export interface SensorObservationView {
+  sensorId: string;
+  blockId: string | null;
+  type: 'block_detection' | 'ir_position';
+  lastReading: 'occupied' | 'clear' | null;
+  /** #28: whether this reading may currently be believed. Sent even when `false` (D-d, #76) — a dead sensor and a clear beam must not look identical. */
+  trusted: boolean;
+  inService: boolean;
+  faulted: boolean;
+  lastReadingAt: string | null;
+  source: 'live' | 'retained' | null;
+}
+
 // ─── Sensor Simulation (#65, see docs/sensor-simulation.md) ───────────────────
 
 export type MalformedVariant = 'bad-enum' | 'missing-field' | 'not-an-object';
@@ -725,6 +751,12 @@ export interface StateSnapshot {
   points: Record<string, PointState>;
   locos: Record<number, LocoState>;
   routes: Record<string, RouteReservation>;
+  /**
+   * #76: every registered sensor's current observation, keyed by id — the
+   * live counterpart to `sensorFaults` below, which carries only the derived
+   * fault set. `SENSOR_STATE` is the delta once connected.
+   */
+  sensors: Record<string, SensorObservationView>;
   /** #34: current per-sensor faults, always the complete set, never a delta. */
   sensorFaults: SensorFaultView[];
   /** #25: current latched point faults, likewise always the complete set. See docs/point-feedback.md D4. */
@@ -761,6 +793,8 @@ export type ServerMessage =
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
   | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } }
   | { type: 'AUTOMATION_STATE'; payload: { runs: AutomationRunView[] } }
+  /** #76: one sensor's observation, pushed only when its contributed value (or `faulted`/`inService`) changed. */
+  | { type: 'SENSOR_STATE'; payload: SensorObservationView }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } }
   /**
    * #82 D5 (docs/liveness.md): an application-level message, not a

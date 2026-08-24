@@ -29,6 +29,7 @@ const INITIAL_SNAPSHOT: StateSnapshot = {
   points: {},
   locos: {},
   routes: {},
+  sensors: {},
   sensorFaults: [],
   pointFaults: [],
   routeFaults: [],
@@ -173,13 +174,18 @@ export function useLayoutSocket() {
 function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
   switch (msg.type) {
     case 'STATE_SNAPSHOT':
-      // `automationRuns` is defaulted rather than trusted (#7 PR C). The type
-      // says it is always there and the *current* backend always sends it — but
-      // this is the one place a wire payload is adopted wholesale, so a browser
-      // holding a cached bundle against an older backend gets `undefined` for
-      // any field added since, and `RoutesPanel` would then crash mapping over
-      // it. A collection arriving absent must read as empty, never as a hole.
-      return { ...msg.payload, automationRuns: msg.payload.automationRuns ?? [] };
+      // `automationRuns`/`sensors` are defaulted rather than trusted (#7 PR C,
+      // #76). The type says they are always there and the *current* backend
+      // always sends them — but this is the one place a wire payload is
+      // adopted wholesale, so a browser holding a cached bundle against an
+      // older backend gets `undefined` for any field added since, and a
+      // consumer would then crash mapping/indexing over it. A collection
+      // arriving absent must read as empty, never as a hole.
+      return {
+        ...msg.payload,
+        automationRuns: msg.payload.automationRuns ?? [],
+        sensors: msg.payload.sensors ?? {},
+      };
 
     case 'BLOCK_STATE': {
       const b = msg.payload as BlockState;
@@ -199,6 +205,13 @@ function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
     case 'SYSTEM_STATUS': {
       const s = msg.payload as { status: SystemStatus; mode: SystemMode; reason: string | null };
       return { ...prev, systemStatus: s.status, systemMode: s.mode, safeStopReason: s.reason };
+    }
+
+    case 'SENSOR_STATE': {
+      // #76 D-b: a delta, mirroring BLOCK_STATE — merged by sensorId, unlike
+      // the fault lists below which are always the complete set.
+      const s = msg.payload;
+      return { ...prev, sensors: { ...prev.sensors, [s.sensorId]: s } };
     }
 
     case 'SENSOR_FAULTS':

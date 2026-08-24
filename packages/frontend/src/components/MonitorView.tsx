@@ -32,7 +32,7 @@
  * the canvas is covered, not badged — see `docs/liveness.md` M5.
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { TrackDiagram, RULER_SIZE } from './TrackDiagram';
 import { PointKeyPanel } from './PointKeyPanel';
 import { buildPointKey } from '../diagram/pointKey';
@@ -44,7 +44,16 @@ import { useDiagramModel } from '../diagram/diagramModel';
 import { useDiagramViewport } from '../hooks/useDiagramViewport';
 import { buildLiveDiagramState, Freshness } from '../diagram/liveState';
 import { TILE_SIZE } from '../diagram/tilePaths';
-import { FAULT, INK, LOCK, OCCUPANCY, ROUTE_LINE, SURFACE, routeStyle } from '../diagram/encoding';
+import {
+  FAULT,
+  INK,
+  LOCK,
+  OCCUPANCY,
+  ROUTE_LINE,
+  SENSOR_OBSERVATION,
+  SURFACE,
+  routeStyle,
+} from '../diagram/encoding';
 import {
   BlockEdgeRecord,
   BlockRecord,
@@ -95,9 +104,20 @@ export function MonitorView({
 
   const sensorNames = useMemo(() => new Map(sensors.map((s) => [s.id, s.name])), [sensors]);
 
+  /**
+   * #76: off by default. This is a diagnostic layer — the prompting case was
+   * diagnosing a flaky beam, not a thing every dispatcher needs staring back
+   * at them — and it stays that way for the same reason `docs/diagram-encoding.md`
+   * gives the beam its own channel rather than the block tint (D-c): raw
+   * sensor evidence and derived block occupancy can legitimately disagree,
+   * and defaulting the layer on would make that disagreement the first thing
+   * a new operator sees rather than something they reach for on purpose.
+   */
+  const [showSensors, setShowSensors] = useState(false);
+
   const live = useMemo(
-    () => buildLiveDiagramState(snapshot, locos, freshness),
-    [snapshot, locos, freshness],
+    () => buildLiveDiagramState(snapshot, locos, freshness, showSensors),
+    [snapshot, locos, freshness, showSensors],
   );
 
   /**
@@ -169,6 +189,23 @@ export function MonitorView({
           Point positions shown are <strong>trusted</strong>, per point — see the key
         </span>
 
+        {/*
+          #76: off by default (see the state's own comment) — a diagnostic
+          layer an operator reaches for, not one that competes with derived
+          occupancy for attention on every load.
+        */}
+        <label
+          style={st.caveat}
+          title="Raw sensor readings, subordinate to derived block occupancy above — the two can legitimately disagree (docs/diagram-encoding.md D-c)"
+        >
+          <input
+            type="checkbox"
+            checked={showSensors}
+            onChange={(e) => setShowSensors(e.target.checked)}
+          />{' '}
+          Sensors
+        </label>
+
         {loading && <span style={st.status}>Loading…</span>}
         {loadError && <span style={st.statusErr}>Could not load the drawing: {loadError}</span>}
 
@@ -179,6 +216,27 @@ export function MonitorView({
           <LegendItem glyph={LOCK.glyph} label="locked by a route" />
         </div>
       </div>
+
+      {/*
+        The sensor key (#76). Only mounted with the layer, on the same
+        "no permanent chrome for an absent feature" argument the route key
+        below gives for itself.
+      */}
+      {showSensors && (
+        <div style={st.strip} role="list" aria-label="Sensors">
+          <span style={st.caveat}>Sensors — raw readings, not derived occupancy</span>
+          <LegendItem glyph={SENSOR_OBSERVATION.occupied.glyph} label={SENSOR_OBSERVATION.occupied.label} />
+          <LegendItem glyph={SENSOR_OBSERVATION.clear.glyph} label={SENSOR_OBSERVATION.clear.label} />
+          <LegendItem
+            glyph={SENSOR_OBSERVATION['not-evidence'].glyph}
+            label={SENSOR_OBSERVATION['not-evidence'].label}
+          />
+          <LegendItem
+            glyph={SENSOR_OBSERVATION['no-reading'].glyph}
+            label={SENSOR_OBSERVATION['no-reading'].label}
+          />
+        </div>
+      )}
 
       {/*
         The route key (#129). Only mounted when something is set: an empty

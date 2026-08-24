@@ -29,6 +29,8 @@
  * why one-label-per-run (#68) matters beyond tidiness.
  */
 
+import { SensorObservationView } from '../types';
+
 /** The editor/monitor canvas colours the palette below was validated against. */
 export const SURFACE = {
   canvas: '#11111b',
@@ -267,3 +269,73 @@ export const INK = {
   secondary: '#a6adc8',
   muted: '#6c7086',
 } as const;
+
+/**
+ * Live sensor observation (#76). The annotation glyph #74 already draws a
+ * circle-and-line mark for every placed sensor — this is what drives its
+ * appearance from what the sensor currently reports, rather than the static
+ * ink colour it wore before.
+ *
+ * **Deliberately its own channel, never the block tint (D-c).**
+ * `deriveBlockOccupancy` clause 3 is precisely where a beam and its block
+ * legitimately disagree — an IR `clear` is a no-op, so a block can sit at
+ * `unknown` while the beam plainly reads `clear`. `docs/diagram-encoding.md`
+ * D1–D6 forbids a fifth block tint, so the beam is drawn subordinate to
+ * derived occupancy by construction: it gets a small mark of its own, never a
+ * share of `OCCUPANCY`'s fill.
+ *
+ * Four states, the minimum #76 asked for: `occupied` and `clear` are the
+ * sensor's own reading; `not-evidence` is untrusted, faulted OR
+ * out-of-service COLLAPSED TO ONE TREATMENT (D-d) — a dead sensor and a
+ * clear beam must read identically "do not trust this", never as though one
+ * were silent and the other spoke; `no-reading` is a registered sensor that
+ * has never reported at all. Colour is never the only distinction:
+ * `filled`/`dash` on the small circle-and-line mark are the non-colour
+ * carrier `TrackDiagram` draws, and `glyph`/`label` serve the legend and the
+ * tooltip.
+ */
+export type SensorGlyphState = 'occupied' | 'clear' | 'not-evidence' | 'no-reading';
+
+/** A tiny mark's own encoding — deliberately not `StateEncoding`: this is drawn as a 7px circle-and-line, not an area fill, so it needs a fill/outline treatment rather than an SVG `<pattern>` id that would not read at that scale. */
+export interface SensorObservationEncoding {
+  colour: string;
+  /** Whether the mark's circle is solid-filled (a positive assertion) or hollow. */
+  filled: boolean;
+  /** SVG `stroke-dasharray`, or null for a solid outline — the non-colour carrier at this scale. */
+  dash: string | null;
+  glyph: string;
+  label: string;
+}
+
+export const SENSOR_OBSERVATION: Record<SensorGlyphState, SensorObservationEncoding> = {
+  occupied: { colour: OCCUPANCY.occupied.colour, filled: true, dash: null, glyph: '●', label: 'occupied' },
+  clear: { colour: OCCUPANCY.clear.colour, filled: false, dash: null, glyph: '○', label: 'clear' },
+  'not-evidence': {
+    colour: INK.muted,
+    filled: false,
+    dash: '1.5 1',
+    glyph: '⊘',
+    label: 'not evidence',
+  },
+  'no-reading': { colour: INK.muted, filled: false, dash: '0.5 1.5', glyph: '·', label: 'no reading' },
+};
+
+/**
+ * Derives which of the four states above a wire observation renders as.
+ * Pure, and deliberately does not import from the backend — mirrors
+ * `isContributingSensor`'s ordering (`domain/occupancy.ts`) without being
+ * that predicate: this asks what the SENSOR itself is showing, not whether
+ * it currently contributes to a block's derived occupancy, so `type` never
+ * enters it.
+ *
+ * Order matters: `faulted`/out-of-service is checked before `lastReading`,
+ * because both null the reading server-side (DD6) — without this ordering a
+ * faulted sensor would read as merely `no-reading` and lose the "not
+ * evidence" treatment D-d requires.
+ */
+export function sensorGlyphStateOf(observation: SensorObservationView): SensorGlyphState {
+  if (observation.faulted || !observation.inService) return 'not-evidence';
+  if (observation.lastReading === null) return 'no-reading';
+  if (!observation.trusted) return 'not-evidence';
+  return observation.lastReading === 'occupied' ? 'occupied' : 'clear';
+}

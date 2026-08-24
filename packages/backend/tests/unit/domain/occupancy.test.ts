@@ -4,6 +4,7 @@ import {
   isContributingSensor,
   isSensorFaultArmed,
   toSensorFaultView,
+  toSensorObservationView,
 } from '../../../src/domain/occupancy';
 import { SensorFault, SensorObservation } from '../../../src/domain/types';
 
@@ -22,6 +23,8 @@ function obs(overrides: Partial<SensorObservation> = {}): SensorObservation {
     lastReading: null,
     lastReadingAt: null,
     lastLiveReadingAt: null,
+    position: null,
+    lastRisingEdgeAt: null,
     ...overrides,
   };
 }
@@ -220,5 +223,62 @@ describe('toSensorFaultView', () => {
   it('armed is false when not yet at the threshold', () => {
     const view = toSensorFaultView(fault({ consecutiveValidReadings: 1 }), 3);
     expect(view.armed).toBe(false);
+  });
+});
+
+describe('toSensorObservationView (#76, formerly excluded by DD10)', () => {
+  it('projects every field, including a live reading as source: "live"', () => {
+    const at = new Date('2026-01-01T00:00:00.000Z');
+    const view = toSensorObservationView(
+      obs({ lastReading: 'occupied', lastReadingAt: at, lastLiveReadingAt: at }),
+    );
+    expect(view).toEqual({
+      sensorId: 's1',
+      blockId: 'b1',
+      type: 'block_detection',
+      lastReading: 'occupied',
+      trusted: true,
+      inService: true,
+      faulted: false,
+      lastReadingAt: '2026-01-01T00:00:00.000Z',
+      source: 'live',
+    });
+  });
+
+  it('a retained-only reading (#28 D7) projects as source: "retained"', () => {
+    // `lastLiveReadingAt` stays null on a retained delivery — see
+    // `recordSensorReading`'s own comment — which is exactly the pair this
+    // projection reads.
+    const at = new Date('2026-01-01T00:00:00.000Z');
+    const view = toSensorObservationView(
+      obs({ lastReading: 'clear', trusted: false, lastReadingAt: at, lastLiveReadingAt: null }),
+    );
+    expect(view.source).toBe('retained');
+    expect(view.trusted).toBe(false);
+  });
+
+  it('a live reading superseded by a later retained replay is still "retained" — the pair, not just presence', () => {
+    // Same case #28 D7's comment on `SensorObservation.lastLiveReadingAt`
+    // warns about: the two timestamps can disagree, and disagreement means
+    // retained even though a live reading happened at some point.
+    const liveAt = new Date('2026-01-01T00:00:00.000Z');
+    const retainedAt = new Date('2026-01-01T01:00:00.000Z');
+    const view = toSensorObservationView(
+      obs({ lastReading: 'clear', lastReadingAt: retainedAt, lastLiveReadingAt: liveAt }),
+    );
+    expect(view.source).toBe('retained');
+  });
+
+  it('a sensor that has never reported projects source: null and lastReadingAt: null', () => {
+    const view = toSensorObservationView(obs({ lastReading: null }));
+    expect(view.source).toBeNull();
+    expect(view.lastReadingAt).toBeNull();
+  });
+
+  it('an untrusted or faulted observation is projected, never omitted (D-d) — the caller decides what to do with it', () => {
+    const view = toSensorObservationView(obs({ faulted: true, inService: false, trusted: false }));
+    expect(view.faulted).toBe(true);
+    expect(view.inService).toBe(false);
+    expect(view.trusted).toBe(false);
   });
 });

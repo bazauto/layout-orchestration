@@ -55,6 +55,8 @@ import {
   SensorFault,
   SensorFaultView,
   SensorId,
+  SensorObservation,
+  SensorObservationView,
   SensorPosition,
   SensorType,
   SetModeCommand,
@@ -80,7 +82,13 @@ import {
   isBrakingOverrun,
   toBrakingFaultView,
 } from '../domain/braking';
-import { deriveBlockOccupancy, isSensorFaultArmed, toSensorFaultView } from '../domain/occupancy';
+import {
+  deriveBlockOccupancy,
+  isContributingSensor,
+  isSensorFaultArmed,
+  toSensorFaultView,
+  toSensorObservationView,
+} from '../domain/occupancy';
 import { DEFAULT_SENSOR_FRESHNESS_TIMEOUT_MS, isSensorFresh } from '../domain/sensorTrust';
 import { isEmptySensorPayload } from '../domain/sensorPayload';
 import { sensorPositionOf } from '../domain/sensorPosition';
@@ -1103,6 +1111,11 @@ export class LayoutService extends EventEmitter {
     return this.stateManager.getState();
   }
 
+  /** #76: every registered sensor's current observation, projected for the wire — the `sensors` field on `STATE_SNAPSHOT`. No particular order, mirroring `listSensorObservations`. */
+  getSensorObservations(): SensorObservationView[] {
+    return this.stateManager.listSensorObservations().map(toSensorObservationView);
+  }
+
   getTrackGraph(): TrackGraph | null {
     return this.graph;
   }
@@ -1480,6 +1493,9 @@ export class LayoutService extends EventEmitter {
       );
     }
     await this.recomputeBlock(obs.blockId);
+    // #76 D-b: `obs` is the observation as it stood before this reading was
+    // recorded above — exactly the "before" `emitSensorStateIfChanged` wants.
+    this.emitSensorStateIfChanged(sensorId, obs);
   }
 
   // ─── Sensor trust sweep (see docs/sensor-trust.md D8) ─────────────────────────
@@ -1514,6 +1530,9 @@ export class LayoutService extends EventEmitter {
       if (fresh === observation.trusted) continue;
 
       this.stateManager.setSensorTrusted(observation.sensorId, fresh);
+      // #76 D-b: `observation` is this loop's own pre-mutation snapshot — the
+      // trust flip above is exactly a change `isContributingSensor` can see.
+      this.emitSensorStateIfChanged(observation.sensorId, observation);
       if (observation.blockId) staleBlockIds.add(observation.blockId);
 
       // Only the false transition is worth a log line. The true one is
@@ -1598,6 +1617,9 @@ export class LayoutService extends EventEmitter {
     await this.recomputeBlock(obs?.blockId ?? null);
     await this.evaluateAndApplySafeStop();
     this.emitSensorFaults();
+    // #76 D-b: `faulted` just flipped true, which de-contributes the sensor
+    // regardless of what its reading was — `obs` is the pre-trip snapshot.
+    this.emitSensorStateIfChanged(sensorId, obs);
   }
 
   /**
@@ -1694,6 +1716,42 @@ export class LayoutService extends EventEmitter {
     this.emit('event', {
       type: 'SENSOR_FAULTS',
       payload: { faults: this.getSensorFaults() },
+    } satisfies LayoutEvent);
+  }
+
+  /**
+   * #76 D-b: emits `SENSOR_STATE` only when what the observation asserts
+   * moved — the CONTRIBUTED pair `(isContributingSensor(o), o.lastReading)`
+   * — or when `faulted`/`inService` changed, both of which feed that
+   * predicate. Mirrors `recomputeBlock`'s own change-gating (DD2) one level
+   * down: a healthy sensor re-asserting the same reading inside #28's
+   * freshness window pushes nothing, and an oscillating beam pushes on every
+   * transition, which is the signal being chased.
+   *
+   * `before` is the observation as it stood immediately before the caller's
+   * mutation — `undefined` only if the sensor was somehow unregistered at
+   * that point, which always counts as a change. Reads the CURRENT
+   * observation itself, so callers do not have to re-fetch it after mutating
+   * `stateManager`.
+   */
+  private emitSensorStateIfChanged(
+    sensorId: SensorId,
+    before: SensorObservation | undefined,
+  ): void {
+    const after = this.stateManager.getSensorObservation(sensorId);
+    if (!after) return;
+
+    const changed =
+      !before ||
+      isContributingSensor(before) !== isContributingSensor(after) ||
+      before.lastReading !== after.lastReading ||
+      before.faulted !== after.faulted ||
+      before.inService !== after.inService;
+    if (!changed) return;
+
+    this.emit('event', {
+      type: 'SENSOR_STATE',
+      payload: toSensorObservationView(after),
     } satisfies LayoutEvent);
   }
 
@@ -2153,6 +2211,10 @@ export class LayoutService extends EventEmitter {
     const existingSensors = await this.repo.listSensors(layoutId);
     const existing = existingSensors.find((s) => s.id === sensorId);
     if (!existing) throw new SensorNotFoundError(sensorId, sensorLabel(sensorId, this.names.get()));
+    // #76 D-b: captured before any of this method's mutations, for
+    // `emitSensorStateIfChanged` below — the in/out-of-service transition is
+    // one of the two non-ingestion places `faulted`/`inService` can move.
+    const beforeObs = this.stateManager.getSensorObservation(sensorId);
 
     // #77 D4/D5, checked against the MERGED row rather than the patch: setting
     // only a position on an existing `block_detection` sensor, and flipping an
@@ -2234,6 +2296,7 @@ export class LayoutService extends EventEmitter {
     }
     await this.evaluateAndApplySafeStop();
     this.emitSensorFaults();
+    this.emitSensorStateIfChanged(sensorId, beforeObs);
 
     this.log.info('[LayoutService] Sensor config updated', {
       layoutId,

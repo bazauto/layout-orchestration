@@ -253,6 +253,49 @@ on this, and does it change?
 
 ---
 
+## D8 — Sensor observation is its own channel, never the block tint (#76)
+
+**Decision.** #74's placed-sensor glyph — a static-ink circle-and-line mark — now
+draws what a sensor currently reports (`diagram/encoding.ts#SENSOR_OBSERVATION`,
+`sensorGlyphStateOf`), on a channel of its own: `filled`/`dash` on that small mark,
+never a share of `BLOCK_TINTS` or `OCCUPANCY`'s fill.
+
+**Why it cannot be a fifth block tint.** D4 already fixes the count at four,
+validator-checked, and re-running that validator against a candidate fifth is not
+this decision's to make. But the deeper reason is D1: state and identity are
+deliberately separate colour systems, and where live state is drawn (the monitor)
+state wins the colour channel outright. A sensor observation is a THIRD thing
+layered on a tile that can already carry an occupancy fill and a lock outline — it
+was never a candidate for the tint slot, which identity gave up to state before this
+decision existed.
+
+**The real hazard, and why the answer is "subordinate", not "hidden" or "merged".**
+`deriveBlockOccupancy` clause 3 (`docs/sensor-fault-recovery.md`) is precisely where
+a beam and its block are allowed to disagree: an IR `clear` is a no-op, so a block
+can sit at `unknown` while its own beam plainly reads `clear`. Merging the two
+readings onto one channel would either lie about the block (drawing it clear because
+a beam says so) or lie about the beam (suppressing its reading to match the block) —
+both are the "guess a train's position" failure CLAUDE.md's fail-safe rule forbids,
+approached from the display side rather than the derivation side. So the two stay
+two marks: `OCCUPANCY`'s fill is the derived, trusted answer; the sensor mark beside
+it is the raw evidence, visibly smaller and visibly a different kind of mark.
+
+**Four states, matching D1–D6's non-colour rule exactly.** `occupied`/`clear` are
+the sensor's own reading; `not-evidence` collapses untrusted, faulted and
+out-of-service into ONE treatment — a dashed outline plus a diagonal slash — because
+all three mean the same thing to an operator ("do not read this as live evidence")
+and #28's own rule is that an untrusted reading is shown, never hidden, or a dead
+sensor and a clear beam become indistinguishable; `no-reading` is a placed sensor
+that has never reported. `occupied` alone is filled — a positive assertion gets ink,
+the other three are outlines — and the dash pattern differs again between
+`not-evidence` and `no-reading`, so no two states share both colour and shape.
+
+**Reaffirming the rule this does not touch.** `BLOCK_TINTS` stays four colours,
+validated, unchanged. This decision adds a consumer of the existing rule — a new
+channel obeying D1–D6 — not an exception to it.
+
+---
+
 ## Still open, deliberately
 
 - **Signal aspects (#79)** are the hard case, and this document does not settle

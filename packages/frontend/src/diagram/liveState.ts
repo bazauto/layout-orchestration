@@ -50,6 +50,7 @@ import {
   LocoRecord,
   Occupancy,
   PointState,
+  SensorObservationView,
   StateSnapshot,
   SystemStatus,
   TilePointRoad,
@@ -90,6 +91,14 @@ export interface LiveBlock {
 export interface LiveDiagramState {
   blocks: ReadonlyMap<string, LiveBlock>;
   points: ReadonlyMap<string, PointState>;
+  /**
+   * #76: every registered sensor's current observation, keyed by id — the
+   * annotation glyph's own channel (`diagram/encoding.ts#sensorGlyphStateOf`),
+   * never the block tint (D-c, `docs/diagram-encoding.md`). Empty when the
+   * sensor layer is toggled off — `MonitorView` controls visibility by
+   * choosing what it builds this from, not by a flag `TrackDiagram` reads.
+   */
+  sensors: ReadonlyMap<string, SensorObservationView>;
   freshness: Freshness;
   systemStatus: SystemStatus;
   safeStopReason: string | null;
@@ -139,15 +148,26 @@ export function buildLiveBlocks(
   return out;
 }
 
-/** Assembles the whole live layer from a snapshot. Pure; the freshness comes from the caller. */
+/**
+ * Assembles the whole live layer from a snapshot. Pure; the freshness comes
+ * from the caller.
+ *
+ * `showSensors` (#76) gates `sensors` at the SOURCE rather than leaving
+ * `TrackDiagram` to decide whether to draw what it is given — an empty map
+ * when the layer is off is indistinguishable from "no sensors are placed",
+ * which is exactly the behaviour a caller that never passes `live.sensors`
+ * (the Track Editor) already gets.
+ */
 export function buildLiveDiagramState(
   snapshot: StateSnapshot,
   locoRecords: readonly LocoRecord[],
   freshness: Freshness,
+  showSensors = false,
 ): LiveDiagramState {
   return {
     blocks: buildLiveBlocks(snapshot.blocks, locoRecords),
     points: new Map(Object.entries(snapshot.points)),
+    sensors: showSensors ? new Map(Object.entries(snapshot.sensors)) : new Map(),
     freshness,
     systemStatus: snapshot.systemStatus,
     safeStopReason: snapshot.safeStopReason,

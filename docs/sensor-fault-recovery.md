@@ -329,6 +329,58 @@ stores a zero-length message as a retained value — publishing one is what
 deletes from its `retained` map rather than storing `''` there. So step 2b
 has no `retained` branch to speak of, and none should be added speculatively.
 
+## D10 — Superseded: per-sensor readings are now on the WebSocket snapshot (#76)
+
+**This document never actually contained "DD10".** For as long as the exclusion stood,
+the only place it was written down was a code comment at
+`transport/websocket/index.ts` (and mirrored ones on `LayoutRuntimeState.sensors` in
+`domain/types.ts` and on `toSensorFaultView` in `domain/occupancy.ts`):
+
+> DD10: only the derived fault set is surfaced here. `state.sensors` (per-sensor
+> last-reading) is deliberately NOT included — it is diagnostic runtime state nothing
+> renders. Do not "complete" this snapshot with it later.
+
+Three other places cited it to this file as though the reasoning lived here —
+`docs/sensor-trust.md` D14 and `docs/sensor-simulation.md` D8, plus the issue that
+became #76 — and it did not. The decision existed only as the comment above.
+
+**Decided.** The stated reason was *"diagnostic runtime state nothing renders"* — no
+consumer. #76 built one: a mimic diagram whose sensor-placement layer (#74) needs to
+show what a sensor currently reads, not just where it is. Once a consumer exists, the
+premise the exclusion rested on is false, and the exclusion has nothing left holding it
+up — there was no second, unstated safety argument in this record to weigh against
+that. So it is superseded, not merely revisited: `StateSnapshot.sensors` carries every
+registered sensor's current `SensorObservationView`
+(`domain/occupancy.ts#toSensorObservationView`), and a `SENSOR_STATE` server message
+carries the delta.
+
+**Why this did not simply become "push every reading" and reopen the volume
+question the original comment was implicitly guarding against.** `SENSOR_STATE` is
+pushed only when a sensor's CONTRIBUTED value changes — the pair
+`(isContributingSensor(o), o.lastReading)` from `domain/occupancy.ts` — or when
+`faulted`/`inService` change, both of which feed that same predicate. A healthy sensor
+re-asserting the same reading every 30 s inside #28's freshness window therefore pushes
+nothing at all, which collapses the volume concern before it needs measuring. It
+deliberately does the opposite for a sensor that will not settle: an oscillating beam
+changes its contributed value on every transition, so it pushes on every one — that
+flap being visible is the entire point of doing this (see #76's prompting case: a
+flaky beam nobody could see from the UI at all).
+
+**The real hazard this raises, and how it is contained.** A raw sensor reading and
+derived block occupancy can legitimately disagree — `deriveBlockOccupancy` clause 3 is
+exactly where that happens, an IR `clear` is a no-op, so a block can sit at `unknown`
+while its beam plainly reads `clear`. Showing the beam risks an operator reading
+occupancy off it instead of off the block. The presentation is what answers this, not
+this document: `docs/diagram-encoding.md` records the beam as its own channel — never
+a fifth block tint, never colour alone — so it stays visibly subordinate to derived
+occupancy. An untrusted or faulted observation is still sent, never omitted: hiding it
+would make a dead sensor and a clear beam look identical, which is the exact failure
+#28 exists to prevent.
+
+**No MQTT contract change, no schema change.** This is a WebSocket-only addition — a
+field on `StateSnapshot` and one more `ServerMessage`/`LayoutEvent` variant — and
+`SensorObservation` already carried everything the projection needs.
+
 ## Deferred, and stated so nobody has to ask
 
 - **Per-sensor `clearAfterValidReadings` override** — layout-wide config only

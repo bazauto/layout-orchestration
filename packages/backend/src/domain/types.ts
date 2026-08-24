@@ -508,7 +508,7 @@ export interface SensorFault {
   consecutiveValidReadings: number;
 }
 
-/** Wire projection of `SensorFault` (DD10). Dates as ISO 8601; `armed`/`requiredValidReadings` precomputed by `toSensorFaultView`. */
+/** Wire projection of `SensorFault`. Dates as ISO 8601; `armed`/`requiredValidReadings` precomputed by `toSensorFaultView`. */
 export interface SensorFaultView {
   sensorId: SensorId;
   reason: string;
@@ -517,6 +517,35 @@ export interface SensorFaultView {
   consecutiveValidReadings: number;
   requiredValidReadings: number;
   armed: boolean;
+}
+
+/**
+ * Wire projection of `SensorObservation` (#76). Per-sensor readings used to be
+ * kept off `STATE_SNAPSHOT` entirely (DD10 — see `docs/sensor-fault-recovery.md`
+ * D10 for the superseded decision and why it flipped); this is that projection,
+ * pure and dateless like `toSensorFaultView` beside it in `domain/occupancy.ts`.
+ *
+ * Deliberately does not assume `occupied`/`clear` is the only shape an
+ * observation can take (#39): `lastReading` stays the union it already was
+ * rather than being widened here, so an identity-observing reader (RFID) is a
+ * new case for a future issue, not a contract change to this one.
+ *
+ * `source` is derived from the `lastReadingAt`/`lastLiveReadingAt` pair
+ * (`toSensorObservationView`) rather than adding a third provenance field to
+ * the runtime `SensorObservation` itself — see that pair's own comment for why
+ * a third enum was rejected there. `null` means no reading has ever arrived.
+ */
+export interface SensorObservationView {
+  sensorId: SensorId;
+  blockId: BlockId | null;
+  type: SensorType;
+  lastReading: 'occupied' | 'clear' | null;
+  /** #28: whether this reading may currently be believed — see `SensorObservation.trusted`. An untrusted observation is sent, never omitted (D-d, #76): hiding it would make a dead sensor and a clear beam look identical. */
+  trusted: boolean;
+  inService: boolean;
+  faulted: boolean;
+  lastReadingAt: string | null;
+  source: 'live' | 'retained' | null;
 }
 
 // ─── Sensor Simulation (see docs/sensor-simulation.md, #65) ───────────────────
@@ -694,7 +723,13 @@ export interface LayoutRuntimeState {
   points: Map<PointId, PointState>;
   locos: Map<LocoAddress, LocoState>;
   routes: Map<RouteId, RouteReservation>;
-  /** Per-sensor observations feeding block occupancy derivation (D3). Diagnostic runtime state — deliberately not part of the WebSocket snapshot (DD10). */
+  /**
+   * Per-sensor observations feeding block occupancy derivation (D3). Also the
+   * source of the `sensors` field on `StateSnapshot` and of `SENSOR_STATE`
+   * (#76, `toSensorObservationView`) — it stopped being snapshot-exempt
+   * diagnostic-only state once the monitor grew a consumer for it (DD10,
+   * superseded — `docs/sensor-fault-recovery.md` D10).
+   */
   sensors: Map<SensorId, SensorObservation>;
 }
 
@@ -1258,7 +1293,16 @@ export type LayoutEvent =
   | { type: 'POINT_FAULTS'; payload: { faults: PointFaultView[] } }
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
   | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } }
-  | { type: 'AUTOMATION_STATE'; payload: { runs: AutomationRunView[] } };
+  | { type: 'AUTOMATION_STATE'; payload: { runs: AutomationRunView[] } }
+  /**
+   * #76: one sensor's observation, pushed only when its CONTRIBUTED value
+   * moved — the pair `(isContributingSensor(o), o.lastReading)` — or when
+   * `faulted`/`inService` changed, both of which feed that predicate. A
+   * healthy sensor re-asserting the same reading inside #28's freshness
+   * window pushes nothing; an oscillating beam pushes on every transition,
+   * which is the point (see `docs/sensor-trust.md` D14, closed by this).
+   */
+  | { type: 'SENSOR_STATE'; payload: SensorObservationView };
 
 // ─── WebSocket Message Shapes ─────────────────────────────────────────────────
 
@@ -1277,6 +1321,13 @@ export interface StateSnapshot {
   points: Record<PointId, PointState>;
   locos: Record<LocoAddress, LocoState>;
   routes: Record<RouteId, RouteReservation>;
+  /**
+   * #76: every registered sensor's current observation, keyed by id — the
+   * live counterpart to `sensorFaults` below, which carries only the derived
+   * fault set. `SENSOR_STATE` is the delta once connected (D-b,
+   * `docs/sensor-fault-recovery.md` D10).
+   */
+  sensors: Record<SensorId, SensorObservationView>;
   sensorFaults: SensorFaultView[];
   pointFaults: PointFaultView[];
   routeFaults: RouteFaultView[];
@@ -1314,6 +1365,8 @@ export type ServerMessage =
   | { type: 'ROUTE_STATE'; payload: RouteReservation }
   | { type: 'ROUTE_FAULTS'; payload: { faults: RouteFaultView[] } }
   | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } }
+  /** #76: mirrors the `LayoutEvent` member of the same name exactly. */
+  | { type: 'SENSOR_STATE'; payload: SensorObservationView }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } }
   /**
    * D5, docs/liveness.md: an application-level message, not a protocol-level
