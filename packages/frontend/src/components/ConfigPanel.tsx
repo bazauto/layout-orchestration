@@ -410,6 +410,19 @@ function SensorsTab({ sensors, blocks, edges, ops, layoutId }: {
 
 // ─── Points tab ───────────────────────────────────────────────────────────────
 
+/**
+ * The DCC accessory address space (#152). Mirrored from the backend's
+ * `dccAccessoryAddressSchema`, which is the authority — this is affordance, so
+ * that a typo is named here rather than coming back as a generic 400.
+ */
+const DCC_ACCESSORY_ADDRESS_MIN = 1;
+const DCC_ACCESSORY_ADDRESS_MAX = 2044;
+
+const dccAddressError = (n: number): string | null =>
+  Number.isInteger(n) && n >= DCC_ACCESSORY_ADDRESS_MIN && n <= DCC_ACCESSORY_ADDRESS_MAX
+    ? null
+    : `DCC address must be ${DCC_ACCESSORY_ADDRESS_MIN}–${DCC_ACCESSORY_ADDRESS_MAX}`;
+
 function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: BlockRecord[]; ops: Ops }) {
   const [name, setName] = useState('');
   const [addr, setAddr] = useState('');
@@ -419,6 +432,11 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
   const submit = async () => {
     const dcc = parseInt(addr, 10);
     if (!name.trim() || isNaN(dcc)) return;
+    const rangeError = dccAddressError(dcc);
+    if (rangeError) {
+      setFeedback(rangeError);
+      return;
+    }
     const result = await ops.createPoint(name.trim(), dcc, blockId || null);
     if (result.ok) {
       setName(''); setAddr(''); setBlockId('');
@@ -442,7 +460,8 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
       <div style={s.addRow}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Point name" style={s.input} />
         <input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="DCC addr"
-          style={{ ...s.input, flex: '0 0 80px' }} type="number" min={1} />
+          style={{ ...s.input, flex: '0 0 80px' }} type="number"
+          min={DCC_ACCESSORY_ADDRESS_MIN} max={DCC_ACCESSORY_ADDRESS_MAX} />
         <select value={blockId} onChange={(e) => setBlockId(e.target.value)} style={s.select}>
           <option value="">— no block —</option>
           {blocks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
@@ -467,6 +486,8 @@ function PointsTab({ points, blocks, ops }: { points: PointRecord[]; blocks: Blo
                   onSave={(v) => {
                     const n = parseInt(v, 10);
                     if (isNaN(n)) return Promise.resolve({ ok: false, message: 'Not a number' });
+                    const rangeError = dccAddressError(n);
+                    if (rangeError) return Promise.resolve({ ok: false, message: rangeError });
                     return ops.updatePoint(p.id, { dccAddress: n });
                   }}
                 />

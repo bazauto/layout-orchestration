@@ -360,6 +360,22 @@ describe('parsePointRow (#25, docs/point-feedback.md D10)', () => {
     expect(() => parsePointRow({ ...validPointRow, dccAddress: 0 })).toThrow(PointRowInvalidError);
   });
 
+  // #152: the read path carries the accessory-address bound too, and that is
+  // deliberately where the work is done — `points.dcc_address` has no CHECK
+  // constraint (DD9), so a row written before this bound existed, or edited
+  // outside the app, must fail on the way out of the database rather than
+  // reaching `setPoint` and vanishing into an `<X>`.
+  it.each([2045, 20450])(
+    'throws PointRowInvalidError for the out-of-range dccAddress %i (#152)',
+    (dccAddress) => {
+      expect(() => parsePointRow({ ...validPointRow, dccAddress })).toThrow(PointRowInvalidError);
+    },
+  );
+
+  it.each([1, 2044])('parses the boundary dccAddress %i (#152)', (dccAddress) => {
+    expect(parsePointRow({ ...validPointRow, dccAddress }).dccAddress).toBe(dccAddress);
+  });
+
   it('never coerces — a row missing a required column throws rather than defaulting', () => {
     const rowWithoutPositionFeedback: Record<string, unknown> = { ...validPointRow };
     delete rowWithoutPositionFeedback.positionFeedback;
@@ -388,9 +404,28 @@ describe('pointCreateSchema', () => {
       pointCreateSchema.parse({ name: 'Point 1', dccAddress: 3, positionFeedback: 'always' }),
     ).toThrow();
   });
+
+  // #152. Note 9999 — a valid *loco* address, and an invalid accessory one.
+  // The two spaces are both numeric and are not the same, which is how
+  // `.positive()` passed for a decoder address the station cannot transmit.
+  it.each([0, -1, 2045, 9999, 1.5])('rejects the dccAddress %s (#152)', (dccAddress) => {
+    expect(() => pointCreateSchema.parse({ name: 'Point 1', dccAddress })).toThrow();
+  });
+
+  it.each([1, 2044])('accepts the boundary dccAddress %i (#152)', (dccAddress) => {
+    expect(pointCreateSchema.parse({ name: 'Point 1', dccAddress }).dccAddress).toBe(dccAddress);
+  });
 });
 
 describe('pointUpdateSchema', () => {
+  it.each([0, 2045])('rejects the out-of-range dccAddress %i (#152)', (dccAddress) => {
+    expect(() => pointUpdateSchema.parse({ dccAddress })).toThrow();
+  });
+
+  it('accepts an in-range dccAddress update (#152)', () => {
+    expect(pointUpdateSchema.parse({ dccAddress: 2044 })).toEqual({ dccAddress: 2044 });
+  });
+
   it('accepts a positionFeedback-only update, leaving other fields alone', () => {
     expect(pointUpdateSchema.parse({ positionFeedback: 'required' })).toEqual({
       positionFeedback: 'required',

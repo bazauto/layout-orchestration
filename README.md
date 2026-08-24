@@ -762,11 +762,11 @@ preamble in `docs/sensor-simulation.md`.
    *both* `sensor/*/reading` (#28) and `point/*/reading` (#167), which is roughly ten lines
    and without which every sensor-backed block reads `unknown`. The point-side node is
    `bazauto/layout-feedback#15`, whose publish behaviour #167 unblocked
-3. **The rest of the command-station work** (#153 is the index). #147, #148 and #149 have
-   landed, #150's guard with them, and the firmware half of the feedback path closed with
-   `bazauto/PicoDCC#4` and `#42`. What is left is #152 (validate `points.dcc_address`, and act
-   on the `<X>` a bad one now draws) and #151 (per-loco 128/28-step mode, which needs #148's
-   read path to survive a station restart, and pairs with `bazauto/PicoDCC#8`). **Do not
+3. **The rest of the command-station work** (#153 is the index). #147, #148, #149 and #152
+   have landed, #150's guard with them, and the firmware half of the feedback path closed
+   with `bazauto/PicoDCC#4` and `#42`. What is left is #151 (per-loco 128/28-step mode, which
+   needs #148's read path to survive a station restart, and pairs with
+   `bazauto/PicoDCC#8`). **Do not
    calibrate braking until `bazauto/PicoDCC#48` lands** — speed 0 currently encodes as an
    emergency stop, so every stopping-distance sample would be measuring the wrong curve
 4. Order and scheduling systems — #7's automation engine has landed; what it deliberately

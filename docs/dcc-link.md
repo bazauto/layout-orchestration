@@ -361,6 +361,49 @@ the address it decoded — not ours for the loco we meant. Pairing an address wi
 the service layer's job, and this line is deliberately a record of the wire. Correlating the
 reply to the command that caused it is still D8's, in `domain/dccLink.ts`.
 
+## D16 — A point's DCC address is bounded where it is typed, not discovered as an `<X>` (#152)
+
+`points.dcc_address` is an accessory address, valid on `[1, 2044]`. PicoDCC enforces exactly
+that bound at its parser's single validation choke point: an address outside it means the
+packet is never transmitted, and — since `bazauto/PicoDCC#47` — the station answers `<X>`.
+
+The bound now lives in `services/validation.ts` as `dccAccessoryAddressSchema`, on
+`pointCreateSchema`, `pointUpdateSchema` **and** `pointRowSchema`. `.positive()` was the old
+check, and it passed 9999: a perfectly good *loco* address, and an accessory address the
+station cannot send. Two numeric spaces that are not the same one.
+
+**Why the boundary and not the reply.** D5 already turns that `<X>` into a
+`point-command-rejected` fault against the route that issued the command, and that machinery
+is right — it is what catches a station rejecting a command we had every reason to think was
+good. But it catches this one late and at the worst moment: `setPoint` resolves on the serial
+write regardless, the route holds the point lock believing the point moved, and with
+`positionFeedback: 'none'` on every live point (`docs/point-feedback.md`) there is no
+confirmation channel to say otherwise. A route fault raised while a train is running is an
+expensive way to learn that somebody typed 20450 into a config form last Tuesday. Both halves
+stand; this one refuses the value where it was entered.
+
+**Why the read path carries the bound too, and why there is no CHECK constraint.** Refused
+alternatives, in order:
+
+- *A CHECK constraint on `points.dcc_address`.* Refused, following DD9's call on
+  `sensors.in_service` and B9's on `blocks.length_mm`. A CHECK on an existing SQLite table
+  forces drizzle-kit to emit a table rebuild — `DROP TABLE points` — against a database
+  deployed to a live layout that cannot be reset. The live rows are 11–16 and always have
+  been, so the constraint would guard against a writer that does not exist.
+- *Validating only the two write paths.* Refused: that is the half the issue called
+  "so existing rows are caught too", and it is the half a CHECK would have covered. Putting
+  the bound on `pointRowSchema` covers it without touching the schema — a row written before
+  this bound existed, or edited outside the app, throws `PointRowInvalidError` on the way
+  **out** of the database rather than reaching `setPoint`. That is `parsePointRow`'s stated
+  posture already: a row in the database is either valid or it is corruption.
+- *Validating in `formatSetPoint` or `SerialDccAdapter.setPoint`.* Refused.
+  `domain/dccWireFormat.ts` formats and never validates (#147), and by the time an address
+  reaches it the configuration error is already several layers deep.
+
+The frontend mirrors the bound on the Configure → Points form — `min`/`max` and a named
+message rather than a generic 400. Affordance, not authorisation: the backend is the
+authority, exactly as with role (`docs/auth.md`).
+
 ---
 
 ## What lands where

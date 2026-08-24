@@ -339,6 +339,13 @@ IS worth having, and lands with this column, is the full-row Zod validation
 `points` currently lacks (`parsePointRow`, modelled exactly on
 `parseSensorRow`/`parseBlockEdgeRow`).
 
+`dcc_address` reaches the same conclusion by the same route (#152,
+`docs/dcc-link.md` D16): the accessory-address bound `[1, 2044]` sits on
+`pointRowSchema` and both write schemas, and not in a CHECK constraint. That
+is `parsePointRow` earning the deviation twice — a row schema that carries
+every bound a CHECK would is what makes "no CHECK on this table" a position
+rather than a gap.
+
 Default `'none'` means every point on the live layout behaves identically,
 the instant after the migration runs, to how it behaved the instant before —
 no point silently starts demanding confirmation it was never configured to

@@ -353,6 +353,38 @@ describe('Point routes', () => {
     expect(repo.createPoint).not.toHaveBeenCalled();
   });
 
+  // #152: the accessory address space is [1, 2044]. PicoDCC drops anything
+  // outside it and answers `<X>`, but `setPoint` still resolves on the serial
+  // write and the route goes on holding the point lock believing the point
+  // moved — so a typo is refused where it is typed, not under a train.
+  it.each([0, -1, 2045, 20450])(
+    'POST /api/layouts/:layoutId/points returns 400 for the out-of-range dccAddress %i',
+    async (dccAddress) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/layouts/layout-1/points',
+        payload: { name: 'Point A', dccAddress },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(repo.createPoint).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([1, 2044])(
+    'POST /api/layouts/:layoutId/points accepts the boundary dccAddress %i',
+    async (dccAddress) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/layouts/layout-1/points',
+        payload: { name: 'Point A', dccAddress },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(repo.createPoint).toHaveBeenCalledWith(
+        expect.objectContaining({ dccAddress }),
+      );
+    },
+  );
+
   it('POST /api/layouts/:layoutId/points returns 400 for an unknown field', async () => {
     const res = await app.inject({
       method: 'POST',
@@ -390,6 +422,18 @@ describe('Point routes', () => {
       url: '/api/layouts/layout-1/points/pt1',
       // .strict() — `id` is path/server-owned, never a client-supplied field.
       payload: { name: 'Renamed Point', id: 'sneaky' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repo.updatePoint).not.toHaveBeenCalled();
+  });
+
+  // #152: the update path is the one an operator uses to fix a typo, so it
+  // gets the same bound as create rather than only guarding the create form.
+  it('PUT /api/layouts/:layoutId/points/:id returns 400 for an out-of-range dccAddress', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/layouts/layout-1/points/pt1',
+      payload: { dccAddress: 2045 },
     });
     expect(res.statusCode).toBe(400);
     expect(repo.updatePoint).not.toHaveBeenCalled();

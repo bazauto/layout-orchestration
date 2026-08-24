@@ -117,7 +117,22 @@ export const points = sqliteTable('points', {
     .notNull()
     .references(() => layouts.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
-  /** DCC accessory address used to switch this point */
+  /**
+   * DCC accessory address used to switch this point. Valid on `[1, 2044]`
+   * (#152) — the accessory address space, which PicoDCC enforces on receipt:
+   * an address outside it is never transmitted, and the station answers `<X>`.
+   *
+   * Deliberately no CHECK constraint, following DD9's call on
+   * `sensors.in_service` and B9's on `blocks.length_mm` — the same table
+   * rebuild on the same live database, for a column now range-checked on
+   * **both write paths and the read path**. `pointRowSchema` carrying the
+   * bound is what does the work a CHECK would: a row written before the check
+   * existed, or edited outside the app, fails `parsePointRow` on the way out
+   * of the database rather than being handed to `setPoint`. Nothing here has
+   * ever held an out-of-range value — the live layout runs 11–16 — so the
+   * constraint would be guarding against a writer that does not exist, at the
+   * cost of a `DROP TABLE points` against the layout.
+   */
   dccAddress: integer('dcc_address').notNull(),
   blockId: text('block_id').references(() => blocks.id, { onDelete: 'set null' }),
   /**
