@@ -13,14 +13,12 @@
 
 import {
   GridTileMetadata,
-  SensorObservationView,
   TileAnnotation,
   TileEdge,
   TileType,
   classifyTile,
 } from '../types';
 import { DiagnosticNames } from './diagnostics';
-import { sensorGlyphStateOf, SENSOR_OBSERVATION } from './encoding';
 
 /**
  * Readable names for every tile type the editor can draw, including the
@@ -83,18 +81,17 @@ export interface CursorTile {
  * absence of an announcement, so it still gets a sentence rather than
  * nothing.
  *
- * `sensorState` (#76) is optional and keyed like `LiveDiagramState.sensors` —
- * omitted by every caller today (the Track Editor draws no live state at
- * all, `docs/liveness.md` M2), so a sensor annotation still names itself and
- * nothing else. It exists so the same one-sentence-for-two-audiences
- * discipline this module holds extends to sensor state the moment a live
- * cursor readout wants it, rather than that surface inventing its own prose.
+ * Deliberately says nothing about live sensor state, though the tiles it
+ * describes may carry sensor annotations. Its only caller is the Track
+ * Editor, which draws no live state at all (`docs/liveness.md` M2), and the
+ * monitor — where #76's observations do render — has no keyboard cursor to
+ * announce. The glyph's own `<title>` carries the state there. Add the
+ * parameter when a live cursor readout actually exists, not before.
  */
 export function describeCursor(
   cursor: { x: number; y: number },
   tile: CursorTile | null,
   names: DiagnosticNames,
-  sensorState?: ReadonlyMap<string, SensorObservationView>,
 ): string {
   const where = `Column ${cursor.x}, row ${cursor.y}.`;
   if (!tile) return `${where} Empty.`;
@@ -119,7 +116,7 @@ export function describeCursor(
   }
 
   if (tile.metadata.annotations?.length) {
-    parts.push(describeAnnotations(tile.metadata.annotations, names, sensorState));
+    parts.push(describeAnnotations(tile.metadata.annotations, names));
   }
 
   for (const opening of tile.openings) {
@@ -129,24 +126,11 @@ export function describeCursor(
   return `${where} ${parts.join(', ')}.`;
 }
 
-function describeAnnotations(
-  annotations: TileAnnotation[],
-  names: DiagnosticNames,
-  sensorState?: ReadonlyMap<string, SensorObservationView>,
-): string {
+function describeAnnotations(annotations: TileAnnotation[], names: DiagnosticNames): string {
   return annotations
     .map((a) => {
       if (a.entityType !== 'sensor') return `${a.entityType} ${a.entityId}`;
-      const name = names.sensors.get(a.entityId) ?? a.entityId;
-      const observation = sensorState?.get(a.entityId);
-      // #76: the state is a parenthetical on the same sentence, not a
-      // separate announcement — matching how `<title>`/tooltip carries it on
-      // the canvas (D-c: subordinate to, and never confused with, derived
-      // block occupancy, which `classifyTile`'s block/decorative/not
-      // classified split above already covers).
-      if (!observation) return `sensor ${name}`;
-      const label = SENSOR_OBSERVATION[sensorGlyphStateOf(observation)].label;
-      return `sensor ${name} (${label})`;
+      return `sensor ${names.sensors.get(a.entityId) ?? a.entityId}`;
     })
     .join(', ');
 }
