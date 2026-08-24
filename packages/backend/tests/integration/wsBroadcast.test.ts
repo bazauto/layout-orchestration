@@ -140,6 +140,35 @@ describe('WebSocket broadcast', () => {
     ws.close();
   });
 
+  // #76: SENSOR_STATE mirrors BLOCK_STATE's own delta path — no separate
+  // broadcast mechanism, just another `LayoutEvent` variant on the same
+  // fan-out this describe block exists to pin.
+  it('delivers a SENSOR_STATE event emitted after connect to a connected client', async () => {
+    const { ws, frames } = await openCollectingClient(harness.app);
+
+    harness.service.emit('event', {
+      type: 'SENSOR_STATE',
+      payload: {
+        sensorId: 'sensor-1',
+        blockId: 'block-1',
+        type: 'block_detection',
+        lastReading: 'occupied',
+        trusted: true,
+        inService: true,
+        faulted: false,
+        lastReadingAt: new Date().toISOString(),
+        source: 'live',
+      },
+    });
+    await settle();
+
+    const sensorState = frames.map((f) => JSON.parse(f)).find((m) => m.type === 'SENSOR_STATE');
+    expect(sensorState).toBeDefined();
+    expect(sensorState.payload).toMatchObject({ sensorId: 'sensor-1', lastReading: 'occupied' });
+
+    ws.close();
+  });
+
   it('broadcasts SYSTEM_STATUS when a client sends SET_MODE, rather than erroring', async () => {
     const { ws, frames } = await openCollectingClient(harness.app);
 

@@ -689,6 +689,118 @@ describe('LayoutService — recomputeBlock occupancy-change logging (#161)', () 
   });
 });
 
+describe('LayoutService — SENSOR_STATE (#76 D-b: pushed on a CONTRIBUTED-value change, never on every reading)', () => {
+  function reading(state: 'occupied' | 'clear') {
+    return { state, updatedAt: new Date().toISOString() };
+  }
+
+  it('emits SENSOR_STATE the first time a sensor reports', async () => {
+    const { service, mqtt } = await buildStartedService();
+    const events: unknown[] = [];
+    service.on('event', (e) => events.push(e));
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', reading('occupied'));
+    await new Promise((r) => setImmediate(r));
+
+    const sensorStates = (events as Array<{ type: string; payload: unknown }>).filter(
+      (e) => e.type === 'SENSOR_STATE',
+    );
+    expect(sensorStates).toHaveLength(1);
+    expect(sensorStates[0].payload).toMatchObject({
+      sensorId: 's1',
+      lastReading: 'occupied',
+      trusted: true,
+      faulted: false,
+      inService: true,
+    });
+
+    await service.stop();
+  });
+
+  it('does NOT emit SENSOR_STATE on a re-assert at the same value — the whole point of D-b', async () => {
+    const { service, mqtt } = await buildStartedService();
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', reading('occupied'));
+    await new Promise((r) => setImmediate(r));
+
+    const events: unknown[] = [];
+    service.on('event', (e) => events.push(e));
+
+    // A healthy sensor re-asserting the identical reading, exactly what #28
+    // obliges hardware to do every 30s inside the freshness window.
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', reading('occupied'));
+    await new Promise((r) => setImmediate(r));
+
+    expect((events as Array<{ type: string }>).filter((e) => e.type === 'SENSOR_STATE')).toEqual([]);
+
+    await service.stop();
+  });
+
+  it('emits SENSOR_STATE on a transition (occupied -> clear) — the flap stays visible', async () => {
+    const { service, mqtt } = await buildStartedService();
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', reading('occupied'));
+    await new Promise((r) => setImmediate(r));
+
+    const events: unknown[] = [];
+    service.on('event', (e) => events.push(e));
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', reading('clear'));
+    await new Promise((r) => setImmediate(r));
+
+    const sensorStates = (events as Array<{ type: string; payload: unknown }>).filter(
+      (e) => e.type === 'SENSOR_STATE',
+    );
+    expect(sensorStates).toHaveLength(1);
+    expect(sensorStates[0].payload).toMatchObject({ lastReading: 'clear' });
+
+    await service.stop();
+  });
+
+  it('emits SENSOR_STATE when a malformed payload faults the sensor — faulted flips even though lastReading is nulled', async () => {
+    const { service, mqtt } = await buildStartedService();
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', reading('occupied'));
+    await new Promise((r) => setImmediate(r));
+
+    const events: unknown[] = [];
+    service.on('event', (e) => events.push(e));
+
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', { badField: 'nonsense' });
+    await new Promise((r) => setImmediate(r));
+
+    const sensorStates = (events as Array<{ type: string; payload: unknown }>).filter(
+      (e) => e.type === 'SENSOR_STATE',
+    );
+    expect(sensorStates).toHaveLength(1);
+    expect(sensorStates[0].payload).toMatchObject({ faulted: true, lastReading: null });
+
+    await service.stop();
+  });
+
+  it('an untrusted (retained-only) observation is still projected — never omitted (D-d)', async () => {
+    const { service, mqtt } = await buildStartedService();
+    const events: unknown[] = [];
+    service.on('event', (e) => events.push(e));
+
+    // A retained delivery from a controller nobody has heard from live —
+    // recorded but never trusted (#28 D7). Still a real contributed-value
+    // change (null -> a reading), so it still emits.
+    mqtt.simulateIncoming('layout/test/sensor/s1/reading', reading('clear'), true);
+    await new Promise((r) => setImmediate(r));
+
+    const sensorStates = (events as Array<{ type: string; payload: unknown }>).filter(
+      (e) => e.type === 'SENSOR_STATE',
+    );
+    expect(sensorStates).toHaveLength(1);
+    expect(sensorStates[0].payload).toMatchObject({
+      lastReading: 'clear',
+      trusted: false,
+      source: 'retained',
+    });
+
+    await service.stop();
+  });
+});
+
 describe('LayoutService — empty sensor payload is a retained-clear, not a fault (#65 D7, docs/sensor-fault-recovery.md D9)', () => {
   // `silentLogger` is a module-level singleton shared by every test in this
   // file with no reset — cleared here (scoped to this describe only, same

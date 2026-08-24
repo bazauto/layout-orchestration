@@ -103,10 +103,16 @@ export async function registerWebSocket(
         points: Object.fromEntries(state.points),
         locos: Object.fromEntries(state.locos),
         routes: Object.fromEntries(state.routes),
-        // DD10 (docs/sensor-fault-recovery.md): only the derived fault set is
-        // surfaced here. `state.sensors` (per-sensor last-reading) is
-        // deliberately NOT included — it is diagnostic runtime state nothing
-        // renders. Do not "complete" this snapshot with it later.
+        /**
+         * #76: every registered sensor's current observation, projected for
+         * the wire (`toSensorObservationView`). DD10 used to keep this off
+         * the snapshot entirely — see `docs/sensor-fault-recovery.md` D10 for
+         * the superseded reasoning and why it flipped once the monitor grew
+         * a consumer.
+         */
+        sensors: Object.fromEntries(
+          layoutService.getSensorObservations().map((v) => [v.sensorId, v]),
+        ),
         sensorFaults: layoutService.getSensorFaults(),
         /** #25: latched point faults, same posture as `sensorFaults` above — the derived view, never the raw health object. */
         pointFaults: layoutService.getPointFaults(),

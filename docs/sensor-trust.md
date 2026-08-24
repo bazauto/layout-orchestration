@@ -309,18 +309,24 @@ in-memory per-sensor runtime state keyed by the existing `sensors.id`, rebuilt f
 nothing on every start — which is precisely what liveness is. Nothing here touches
 `schema.ts`, so nothing here can go wrong on a live layout that cannot be reset.
 
-### D14 — Observations still do not go on the WebSocket snapshot
+### D14 — Closed by #76: observations are now on the WebSocket snapshot
 
-DD10 (`docs/sensor-fault-recovery.md`) keeps per-sensor observations off
-`STATE_SNAPSHOT`, and **#28 does not change that** — it would pre-empt #76, which
-is the issue that owns the question and has its own volume argument to settle.
+At the time #28 landed, DD10 (`docs/sensor-fault-recovery.md`, since superseded —
+see that document's D10) kept per-sensor observations off `STATE_SNAPSHOT`, and #28
+deliberately did not change that — it would have pre-empted #76, which owned the
+question and had its own volume argument to settle.
 
-So the operator sees the *consequence* (a block turning `unknown`, with its
-existing yellow rendering and its `BLOCK_STATE` event) and not yet the *cause*.
-That is a real ergonomic gap and it is the strongest new argument for #76:
-"unknown because nothing has reported in 90 s" and "unknown because two detectors
-disagree" are indistinguishable from outside, and only one of them is fixed with a
-screwdriver. Recorded there rather than solved here.
+That gap is closed. #76 supersedes DD10 and adds `StateSnapshot.sensors` plus a
+`SENSOR_STATE` delta, pushed only when a sensor's contributed value moves — so a
+healthy sensor re-asserting every 30 s inside this document's own freshness window
+pushes nothing, and the volume argument collapses rather than needing measurement.
+
+The ergonomic gap this closes was real: before #76 the operator saw the
+*consequence* of staleness (a block turning `unknown`, with its existing yellow
+rendering and its `BLOCK_STATE` event) and not the *cause*. "Unknown because nothing
+has reported in 90 s" and "unknown because two detectors disagree" are now
+distinguishable from the monitor — `SensorObservationView.trusted` carries exactly
+that distinction, and only the first of the two is fixed with a screwdriver.
 
 ---
 
@@ -331,7 +337,9 @@ screwdriver. Recorded there rather than solved here.
   question (who may assert it, does it expire, does it survive a restart) that
   belongs with the reservation semantics in `docs/route-locking.md`, not bolted
   onto sensor ingestion.
-- **Sensor health has no dedicated surface.** D14. Deferred to #76.
+- ~~**Sensor health has no dedicated surface.**~~ — **closed by #76** (D14):
+  `StateSnapshot.sensors` and `SENSOR_STATE` are the surface, on the monitor's
+  sensor layer.
 - **One global re-assert interval**, not per-sensor. It stays that way until a
   sensor exists that cannot meet it.
 - **Nothing on the layout re-asserts yet.** The firmware obligation is written

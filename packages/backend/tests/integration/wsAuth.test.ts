@@ -152,4 +152,27 @@ describe('WebSocket upgrade auth', () => {
 
     ws.close();
   });
+
+  // #76: the `sensors` field — per-sensor observations, formerly excluded by
+  // DD10 (`docs/sensor-fault-recovery.md` D10, superseded). Present and
+  // empty here for the same reason as `sensorFaults` above: this server's
+  // LayoutService registers no sensors.
+  it('the initial STATE_SNAPSHOT payload includes sensors: {}', async () => {
+    const cookie = await loginCookie(app, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD);
+    const messages: string[] = [];
+    const ws = await app.injectWS(
+      '/ws',
+      { headers: { cookie } },
+      { onOpen: (socket: { on: (event: string, cb: (data: Buffer) => void) => void }) =>
+          socket.on('message', (data: Buffer) => messages.push(data.toString())) },
+    );
+    await new Promise((r) => setImmediate(r));
+
+    expect(messages.length).toBeGreaterThan(0);
+    const snapshot = JSON.parse(messages[0]);
+    expect(snapshot.type).toBe('STATE_SNAPSHOT');
+    expect(snapshot.payload.sensors).toEqual({});
+
+    ws.close();
+  });
 });

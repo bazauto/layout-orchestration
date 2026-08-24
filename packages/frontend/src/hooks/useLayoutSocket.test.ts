@@ -12,7 +12,13 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installMockWebSocket, MockWebSocket, restoreWebSocket } from '../test/mockWebSocket';
 import { useLayoutSocket } from './useLayoutSocket';
-import { PointFaultView, RouteFaultView, RouteReservation, SensorFaultView } from '../types';
+import {
+  PointFaultView,
+  RouteFaultView,
+  RouteReservation,
+  SensorFaultView,
+  SensorObservationView,
+} from '../types';
 
 function currentSocket(): MockWebSocket {
   const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1];
@@ -65,6 +71,18 @@ const ROUTE_FAULT_2: RouteFaultView = {
   routeId: 'route-2',
 };
 
+const SENSOR_OBSERVATION: SensorObservationView = {
+  sensorId: 'sensor-1',
+  blockId: 'block-1',
+  type: 'ir_position',
+  lastReading: 'occupied',
+  trusted: true,
+  inService: true,
+  faulted: false,
+  lastReadingAt: '2026-08-08T00:00:00.000Z',
+  source: 'live',
+};
+
 const ROUTE: RouteReservation = {
   id: 'route-1',
   layoutId: 'layout-1',
@@ -100,6 +118,7 @@ describe('useLayoutSocket', () => {
       expect(result.current.snapshot.points).toEqual({});
       expect(result.current.snapshot.locos).toEqual({});
       expect(result.current.snapshot.routes).toEqual({});
+      expect(result.current.snapshot.sensors).toEqual({});
       expect(result.current.snapshot.sensorFaults).toEqual([]);
       expect(result.current.snapshot.pointFaults).toEqual([]);
       expect(result.current.snapshot.routeFaults).toEqual([]);
@@ -168,6 +187,10 @@ describe('useLayoutSocket', () => {
       expect(result.current.snapshot.systemStatus).toBe('online');
       expect(result.current.snapshot.systemMode).toBe('auto');
       expect(result.current.snapshot.blocks).toHaveProperty('block-1');
+      // Absent from this fixture on purpose, like `automationRuns` above it —
+      // a browser holding a cached bundle against an older backend must not
+      // crash indexing into `sensors` (#76).
+      expect(result.current.snapshot.sensors).toEqual({});
       expect(result.current.snapshot.sensorFaults).toEqual([SENSOR_FAULT]);
       expect(result.current.snapshot.pointFaults).toEqual([POINT_FAULT]);
       expect(result.current.snapshot.routeFaults).toEqual([ROUTE_FAULT]);
@@ -321,6 +344,29 @@ describe('useLayoutSocket', () => {
       expect(result.current.snapshot.systemStatus).toBe('safe-stop');
       expect(result.current.snapshot.systemMode).toBe('manual');
       expect(result.current.snapshot.safeStopReason).toBe('MQTT disconnected');
+    });
+
+    it('SENSOR_STATE merges one entry by sensorId and leaves the others intact — a delta, unlike the fault lists', () => {
+      const { result } = renderHook(() => useLayoutSocket());
+      const ws = currentSocket();
+
+      act(() => {
+        ws.open();
+        ws.emit({ type: 'SENSOR_STATE', payload: SENSOR_OBSERVATION });
+      });
+      act(() => {
+        ws.emit({
+          type: 'SENSOR_STATE',
+          payload: { ...SENSOR_OBSERVATION, sensorId: 'sensor-2', lastReading: 'clear' },
+        });
+      });
+
+      expect(result.current.snapshot.sensors['sensor-1']).toEqual(SENSOR_OBSERVATION);
+      expect(result.current.snapshot.sensors['sensor-2']).toEqual({
+        ...SENSOR_OBSERVATION,
+        sensorId: 'sensor-2',
+        lastReading: 'clear',
+      });
     });
 
     it('SENSOR_FAULTS replaces the list wholesale, not a merge', () => {

@@ -82,7 +82,9 @@ Implemented:
   its loco — several concurrent routes are told apart by hue and dash, not hue alone.
   A point key beside the canvas resolves the abbreviated point names and shows what
   each point is set to and who holds it. Connection health is always on screen, and a
-  stale or disconnected diagram is covered rather than badged — see `docs/liveness.md`
+  stale or disconnected diagram is covered rather than badged — see `docs/liveness.md`.
+  An off-by-default "Sensors" checkbox (#76) overlays each placed sensor's live reading
+  on its own mark, distinct from a block's occupancy fill — see `docs/diagram-encoding.md` D8
 - Per-loco braking (#6): a deceleration ramp planned from the loco's `brakingFactor` and
   the measured track ahead, run against an injected clock, with a `Brake` button beside
   each loco's `Stop` for the calibration procedure in `docs/braking.md` B8. An overrun —
@@ -106,6 +108,12 @@ Implemented:
   loco's configured line speed, braked on approach, crawled, and stopped on a **berthing
   beam** placed where the train should stand. Nothing is automated until an operator sets
   a loco's automation speeds and asks for an `auto` route
+- Live sensor observations on the wire (#76): `StateSnapshot.sensors` and a `SENSOR_STATE`
+  delta, pushed only when a sensor's contributed value (or `faulted`/`inService`) changes —
+  so a healthy sensor re-asserting inside the freshness window pushes nothing, and a
+  flapping beam is visible on every transition. Surfaced on the monitor as an off-by-default
+  "Sensors" layer, drawn on its own channel — never a block tint — so raw sensor evidence
+  stays visibly subordinate to derived block occupancy
 
 Planned next:
 - Automation engine / schedules — deciding *where* a train should go. Collision avoidance
@@ -625,6 +633,16 @@ Two things about that are deliberate and look like oversights:
 `unknown`.** That is the honest state rather than a regression — nothing could previously
 tell a live detector from a dead one. Manual driving is unaffected; route granting and
 automation over unobserved track are refused. The firmware side is #9 and #50.
+
+**A sensor's own reading is now on the monitor, not just its effect on a block** (#76).
+`StateSnapshot.sensors` and a `SENSOR_STATE` delta carry every registered sensor's current
+observation — pushed only when its contributed value, `faulted`, or `inService` changes, so
+a healthy sensor re-asserting inside the 30 s window above pushes nothing, and an
+oscillating beam is visible on every transition instead of being invisible entirely. It is
+an off-by-default layer on the monitor (a "Sensors" checkbox), and it is deliberately
+subordinate to derived occupancy on screen — the two can legitimately disagree
+(`deriveBlockOccupancy` clause 3), and the beam gets its own small mark, never a share of a
+block's fill. See `docs/diagram-encoding.md` D8 and `docs/sensor-fault-recovery.md` D10.
 
 **Parse failures on operator-facing requests are ordinary 4xx/`ERROR` responses**, not a
 Safe-Stop. The fail-safe rule in `docs/mqtt-contract.md` is scoped to sensor and control

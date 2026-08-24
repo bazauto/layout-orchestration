@@ -13,7 +13,13 @@
  * against a block each time any one of them changes.
  */
 
-import { Occupancy, SensorFault, SensorFaultView, SensorObservation } from './types';
+import {
+  Occupancy,
+  SensorFault,
+  SensorFaultView,
+  SensorObservation,
+  SensorObservationView,
+} from './types';
 
 /**
  * Whether an observation may contribute to a block's derived occupancy.
@@ -87,7 +93,7 @@ export function isSensorFaultArmed(fault: SensorFault, requiredValidReadings: nu
   return fault.consecutiveValidReadings >= requiredValidReadings;
 }
 
-/** Projection for the wire (DD10). Pure — takes the threshold, calls no clock. */
+/** Projection for the wire. Pure — takes the threshold, calls no clock. */
 export function toSensorFaultView(fault: SensorFault, requiredValidReadings: number): SensorFaultView {
   return {
     sensorId: fault.sensorId,
@@ -97,5 +103,38 @@ export function toSensorFaultView(fault: SensorFault, requiredValidReadings: num
     consecutiveValidReadings: fault.consecutiveValidReadings,
     requiredValidReadings,
     armed: isSensorFaultArmed(fault, requiredValidReadings),
+  };
+}
+
+/**
+ * Wire projection of a `SensorObservation` (#76, formerly excluded by DD10 —
+ * see `docs/sensor-fault-recovery.md` D10). Pure, no clock, mirroring
+ * `toSensorFaultView`'s posture exactly.
+ *
+ * `source` is derived from the `lastReadingAt`/`lastLiveReadingAt` pair rather
+ * than stored as a third field on the runtime observation — that pair's own
+ * comment on `SensorObservation` already rejects a provenance enum there, and
+ * a wire-only view is the right place to compute one FOR DISPLAY without
+ * carrying that decision back into runtime state.
+ */
+export function toSensorObservationView(observation: SensorObservation): SensorObservationView {
+  const source: SensorObservationView['source'] =
+    observation.lastReadingAt === null
+      ? null
+      : observation.lastLiveReadingAt !== null &&
+          observation.lastLiveReadingAt.getTime() === observation.lastReadingAt.getTime()
+        ? 'live'
+        : 'retained';
+
+  return {
+    sensorId: observation.sensorId,
+    blockId: observation.blockId,
+    type: observation.type,
+    lastReading: observation.lastReading,
+    trusted: observation.trusted,
+    inService: observation.inService,
+    faulted: observation.faulted,
+    lastReadingAt: observation.lastReadingAt?.toISOString() ?? null,
+    source,
   };
 }

@@ -59,6 +59,8 @@ import {
   OCCUPANCY,
   POINT_POSITION,
   ROUTE_LINE,
+  SENSOR_OBSERVATION,
+  sensorGlyphStateOf,
   SURFACE,
   routeStyle,
 } from '../diagram/encoding';
@@ -642,20 +644,57 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                 #74 — placed entities. Generic by construction: the glyph
                 is chosen from `entityType`, so signals (#79) and RFID
                 readers (#39) each get a case rather than a new mechanism.
+
+                #76 — a `sensor` annotation with a live observation drives the
+                mark's appearance from what the sensor currently reports,
+                driven by `SENSOR_OBSERVATION`/`sensorGlyphStateOf`
+                (`diagram/encoding.ts`): never the block tint (D-c), never
+                colour alone (D-c/#81) — `filled`/`dash` carry the state when
+                colour is removed, and `not-evidence` additionally crosses the
+                mark so it cannot be mistaken for a live `clear` at a glance.
+                With no live observation (the Track Editor, or the monitor
+                with the sensor layer off) the mark is exactly what it always
+                was: a static ink outline, no `<title>`.
               */}
-              {(meta.annotations ?? []).map((a, i) => (
-                <g key={`${a.entityType}:${a.entityId}`} transform={`translate(${4 + i * 9}, 4)`}>
-                  <circle
-                    cx={3.5}
-                    cy={3.5}
-                    r={3.5}
-                    fill="none"
-                    stroke={INK.primary}
-                    strokeWidth={1.2}
-                  />
-                  <line x1={3.5} y1={0} x2={3.5} y2={7} stroke={INK.primary} strokeWidth={1} />
-                </g>
-              ))}
+              {(meta.annotations ?? []).map((a, i) => {
+                const observation =
+                  a.entityType === 'sensor' ? live?.sensors.get(a.entityId) : undefined;
+                const glyphState = observation ? sensorGlyphStateOf(observation) : null;
+                const enc = glyphState ? SENSOR_OBSERVATION[glyphState] : null;
+                const colour = enc?.colour ?? INK.primary;
+
+                return (
+                  <g key={`${a.entityType}:${a.entityId}`} transform={`translate(${4 + i * 9}, 4)`}>
+                    {enc && (
+                      <title>
+                        {`sensor ${sensorNames.get(a.entityId) ?? a.entityId}: ${enc.label}`}
+                      </title>
+                    )}
+                    <circle
+                      cx={3.5}
+                      cy={3.5}
+                      r={3.5}
+                      fill={enc?.filled ? colour : 'none'}
+                      stroke={colour}
+                      strokeWidth={1.2}
+                      strokeDasharray={enc?.dash ?? undefined}
+                    />
+                    <line
+                      x1={3.5}
+                      y1={0}
+                      x2={3.5}
+                      y2={7}
+                      stroke={colour}
+                      strokeWidth={1}
+                      strokeDasharray={enc?.dash ?? undefined}
+                    />
+                    {/* `not-evidence` (D-d): a diagonal slash, so "do not trust this" survives colour being removed too. */}
+                    {glyphState === 'not-evidence' && (
+                      <line x1={0.5} y1={6.5} x2={6.5} y2={0.5} stroke={colour} strokeWidth={1} />
+                    )}
+                  </g>
+                );
+              })}
               {meta.annotations?.length && labelsVisible(tile.x, tile.y) ? (
                 <text
                   x={H}
