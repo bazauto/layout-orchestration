@@ -16,6 +16,7 @@ import {
   formatSetPoint,
   formatSetSpeed,
   formatStatusRequest,
+  formatTrackPower,
 } from '../../../src/domain/dccWireFormat';
 
 describe('formatSetSpeed', () => {
@@ -84,5 +85,20 @@ describe('formatEmergencyStop', () => {
 describe('formatStatusRequest', () => {
   it('emits the status request the link liveness probe rides on (#148)', () => {
     expect(formatStatusRequest()).toBe('<s>');
+  });
+});
+
+describe('formatTrackPower', () => {
+  it('emits the DCC-EX power commands (#149)', () => {
+    expect(formatTrackPower(true)).toBe('<1>');
+    expect(formatTrackPower(false)).toBe('<0>');
+  });
+
+  it('carries no track argument, so it means BOTH tracks', () => {
+    // A bare <1> is DCCEX_TRACK_ALL, and PicoDCC implements it that way. If a
+    // track name ever appears here, the station stops powering the programming
+    // track and nothing else in this system notices.
+    expect(formatTrackPower(true).slice(1, -1).split(' ')).toHaveLength(1);
+    expect(formatTrackPower(false).slice(1, -1).split(' ')).toHaveLength(1);
   });
 });

@@ -102,6 +102,28 @@ export class SimulatedDccAdapter implements IDccController {
     this.respond({ kind: 'power', track: 'prog', on: this.progPowerOn });
   }
 
+  /**
+   * #149. Both tracks, mirroring the bare `<1>` / `<0>` the wire format sends,
+   * and it answers with the power frames a real station answers with -- so the
+   * `<p1 MAIN>` that makes the command *evidence* rather than a hope is
+   * exercised in the simulator too.
+   *
+   * `mainPowerOn` / `progPowerOn` already defaulted to `true`, so every existing
+   * test keeps running on a live layout without opting in.
+   */
+  async setTrackPower(on: boolean): Promise<void> {
+    const data = { on };
+    this.log.debug?.('[SimDCC] SET_TRACK_POWER', data);
+    this.commandLog.push({ ts: new Date(), type: 'SET_TRACK_POWER', data });
+
+    if (this.consumeRejection()) return;
+
+    this.mainPowerOn = on;
+    this.progPowerOn = on;
+    this.respond({ kind: 'power', track: 'main', on });
+    this.respond({ kind: 'power', track: 'prog', on });
+  }
+
   async setSpeed(address: number, speed: number, direction: 'fwd' | 'rev' | 'stop'): Promise<void> {
     const data = { address, speed, direction };
     this.log.debug?.('[SimDCC] SET_SPEED', data);

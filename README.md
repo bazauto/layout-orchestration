@@ -102,7 +102,8 @@ Implemented:
   cards** — one per loco, several at once, dragged where the operator wants them and
   remembered per layout — carry a speed slider that commands as it moves (no *Set* press),
   forward/reverse, `Stop` and `Brake`. Each row of the point key gained `Normal` /
-  `Reverse` buttons. Three interlocks, all in `docs/liveness.md` M10–M16: **track is never
+  `Reverse` buttons, and track power on the status strip. Three interlocks, all in
+  `docs/liveness.md` M10–M17: **track is never
   a button** (a mis-tap on a wall display must not move a point under a train); a card for
   a loco under an **auto**-authority route opens *armed*, behind a `Take control` button
   naming the route it will cancel; and direction cannot change while the loco is commanded
@@ -701,11 +702,22 @@ encoding as an emergency stop) is open, and #151 will introduce a per-loco step 
 strict check today would halt a live layout over a firmware version skew. `docs/dcc-link.md`
 D6 carries the revisit condition.
 
-**Track power is observed, not acted on.** `<p0 MAIN>` is parsed and reported; nothing
-refuses a route over a dark layout yet, and nothing can turn power back on from the UI. That
-is #149. A station that cut power and still answers probes therefore reads *responsive and
-dark* — and because the firmware's cutoff paths are still silent on the wire
-(`bazauto/PicoDCC#4`, half done), it is seen at the next probe rather than pushed.
+**Track power is commanded, observed, and gated** (#149). `<1>` goes out when the link comes
+up — PicoDCC's tracks boot unpowered, so before this a cold start ran throttle commands into
+dead rails while reporting healthy. An operator or admin can switch it from the Control view,
+which is also the recovery path after a station cutoff; that previously needed a power cycle
+of the command station itself.
+
+While the main track is **observed** dark, new routes are refused (`track-power-off`) and
+automation is abandoned and gated. It is **not** a Safe-Stop and latches nothing: the layout
+is already stopped, and an operator who switched power off to re-rail a wagon should not come
+back to a system demanding an acknowledgement. `null` — never reported — is deliberately not
+treated as off; that case is already covered by the link being unresponsive.
+
+Power is never restored automatically. A decoder that loses the DCC signal falls back to DC,
+and DC on a powered main track is full speed, so `<1>` is only ever sent by a cold start or by
+an operator. Cutoffs are now **pushed** on the wire as of `bazauto/PicoDCC#59`, rather than
+discovered at the next probe.
 
 **Decoder functions are refused against real hardware** (#150). PicoDCC validates `<F>`,
 accepts it, and does nothing with it — `updateFunct()` is an empty body — so
@@ -750,14 +762,13 @@ preamble in `docs/sensor-simulation.md`.
    *both* `sensor/*/reading` (#28) and `point/*/reading` (#167), which is roughly ten lines
    and without which every sensor-backed block reads `unknown`. The point-side node is
    `bazauto/layout-feedback#15`, whose publish behaviour #167 unblocked
-3. **The rest of the command-station work** (#153 is the index). #147 and #148 have landed,
-   and #150's guard with them. Next is #149 — track power: `<1>` on connect, refusing routes
-   over a dark layout, and an operator control to turn power back on after a cutoff, which
-   today needs a power cycle of the station. Behind it sit #152 (validate `points.dcc_address`,
-   and act on the `<X>` a bad one now draws) and #151 (per-loco 128/28-step mode, which needs
-   #148's read path to survive a station restart). **Do not calibrate braking until
-   `bazauto/PicoDCC#48` lands** — speed 0 currently encodes as an emergency stop, so every
-   stopping-distance sample would be measuring the wrong curve
+3. **The rest of the command-station work** (#153 is the index). #147, #148 and #149 have
+   landed, #150's guard with them, and the firmware half of the feedback path closed with
+   `bazauto/PicoDCC#4` and `#42`. What is left is #152 (validate `points.dcc_address`, and act
+   on the `<X>` a bad one now draws) and #151 (per-loco 128/28-step mode, which needs #148's
+   read path to survive a station restart, and pairs with `bazauto/PicoDCC#8`). **Do not
+   calibrate braking until `bazauto/PicoDCC#48` lands** — speed 0 currently encodes as an
+   emergency stop, so every stopping-distance sample would be measuring the wrong curve
 4. Order and scheduling systems — #7's automation engine has landed; what it deliberately
    does not do is decide *where* a train should go, sequence two trains through a
    junction, or plan a timetable

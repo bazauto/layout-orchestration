@@ -101,7 +101,12 @@ import {
 import { pointReadingSchema } from '../domain/pointPayload';
 import { DccCommandContext, DCC_PROBE_INTERVAL_MS, toDccLinkView } from '../domain/dccLink';
 import { DccResponse } from '../domain/dccResponse';
-import { formatSetPoint, formatSetSpeed, formatStatusRequest } from '../domain/dccWireFormat';
+import {
+  formatSetPoint,
+  formatSetSpeed,
+  formatStatusRequest,
+  formatTrackPower,
+} from '../domain/dccWireFormat';
 import { TrackGraph } from '../domain/graph';
 import { toRouteFaultView } from '../domain/routeLocking';
 import {
@@ -908,6 +913,26 @@ export class LayoutService extends EventEmitter {
    */
   async requestRoute(request: GrantRequest): Promise<GrantOutcome> {
     if (!this.layoutId) throw new Error('[LayoutService] requestRoute called before start()');
+
+    // #149. Refused here rather than inside `ReservationService`, which has no
+    // `SystemHealth` access and must not gain any — the same boundary #25's
+    // resume precondition respects (`docs/route-locking.md`).
+    //
+    // The test is `=== false`, an *observed* dark layout. `null` means we have
+    // never been told, and that case is already covered from the other side:
+    // if the station has never answered, `dccLink.responsive` is false and the
+    // system is in Safe-Stop, which `grant` refuses on anyway. Refusing on
+    // `null` as well would turn every start-up race into a mysterious rejection.
+    if (this.health.dccLink.mainPowerOn === false) {
+      const rejections: RouteRejection[] = [{ kind: 'track-power-off' }];
+      this.log.warn('[LayoutService] Route request refused — track power is off', {
+        layoutId: this.layoutId,
+        locoAddress: request.locoAddress,
+        locoName: this.names.get().locos.get(request.locoAddress),
+      });
+      return { granted: false, rejections };
+    }
+
     const outcome = await this.reservations.grant(this.layoutId, request, this.graph);
 
     if (!outcome.granted) {
@@ -3286,7 +3311,23 @@ export class LayoutService extends EventEmitter {
     const actions = await this.automation.sweep({
       layoutId: this.layoutId,
       graph: this.graph,
-      permitted: canIssueAutoCommand(state.systemStatus, state.systemMode),
+      // #149: track power is ANDed in at the call site, not folded into
+      // `canIssueAutoCommand` — the same placement, and the same reasoning, as
+      // #103's compile-gap gate on `handleSetMode` just above. The predicate is
+      // a pure function of status and mode; power is a live observation off the
+      // DCC link, and threading it through the domain signature would make every
+      // caller carry a fact only this one needs.
+      //
+      // This is NOT what stops an abandoned run resuming — `AutomationService`'s
+      // `adopted` set already does that, for the same reason it holds after an
+      // emergency stop. What it stops is a route that automation has never taken
+      // *departing* into dead rails: a route granted while the layout was live
+      // and not yet under way when power went, and — the case `adopted` cannot
+      // cover, because it prunes on leaving `active` — a suspended route that an
+      // operator resumes while the layout is dark.
+      permitted:
+        canIssueAutoCommand(state.systemStatus, state.systemMode) &&
+        this.health.dccLink.mainPowerOn !== false,
       brakingRunsInFlight: new Set(this.brakingRuns.keys()),
       now: this.clock.now(),
     });
@@ -3664,8 +3705,16 @@ export class LayoutService extends EventEmitter {
 
     if (!effects.healthChanged) return;
 
+    const wasMainPowerOn = this.health.dccLink.mainPowerOn;
     const link = this.dccLink.getHealth();
     this.health = { ...this.health, dccLink: link };
+
+    // #149: the layout has gone dark, whether an operator asked for it or the
+    // station cut power on a fault. Both reach here the same way, through a
+    // `<p0 MAIN>` on the response channel, and both want the same answer.
+    if (wasMainPowerOn !== false && link.mainPowerOn === false) {
+      this.handleTrackPowerLost();
+    }
     if (link.fault) {
       this.log.error('[LayoutService] DCC link fault latched', {
         layoutId: this.layoutId,
@@ -3684,6 +3733,33 @@ export class LayoutService extends EventEmitter {
     this.evaluateAndApplySafeStop().catch((err: Error) =>
       this.log.error('[LayoutService] evaluateAndApplySafeStop failed', { error: err.message }),
     );
+  }
+
+  /**
+   * Track power went off (#149). Deliberately **not** a Safe-Stop: the layout is
+   * already stopped, and by the most complete means available — there is no
+   * current on the rails. Declaring an emergency over a state that is itself the
+   * emergency's remedy would mean an operator switching power off for two
+   * minutes to re-rail a wagon came back to a Safe-Stopped system needing
+   * acknowledgement.
+   *
+   * What it must do is stop anything that would resume movement the instant
+   * power returns. An automation run left in flight would keep issuing speed
+   * commands into dead rails, and the train would leap into motion the moment
+   * `<1>` was sent — the ghost-movement failure in a different costume. A
+   * braking ramp left running would do the same, one step at a time.
+   *
+   * Routes are left `active` with their locks held. The locks are what stop
+   * another train being routed over track this one is standing on, and that is
+   * as true in the dark as in the light. New routes are refused separately, in
+   * `requestRoute`.
+   */
+  private handleTrackPowerLost(): void {
+    this.log.warn('[LayoutService] Track power is off — automation abandoned, new routes refused', {
+      layoutId: this.layoutId,
+    });
+    this.abortAllBrakingRuns('track power off');
+    this.automation.abandonAll('track power off');
   }
 
   /** The DCC link as the wire sees it (#148). */
@@ -3738,6 +3814,57 @@ export class LayoutService extends EventEmitter {
     this.evaluateAndApplySafeStop().catch((err: Error) =>
       this.log.error('[LayoutService] evaluateAndApplySafeStop failed', { error: err.message }),
     );
+
+    // #149: PicoDCC's tracks come up UNPOWERED — `PicoDccTrack`'s constructor
+    // does `gpio_put(power_ctrl_pin, 0)`, and power turns on only in response
+    // to `<1>`. Nothing sent one, so a cold start left the orchestrator
+    // reporting healthy, accepting routes, and issuing throttle commands into
+    // dead rails.
+    //
+    // Sent from here rather than from inside `SerialDccAdapter.connect()`, as
+    // the issue originally suggested, for two reasons this codebase has since
+    // acquired: "the layout should be live" is a decision, and decisions do not
+    // belong in an adapter (safety rule 2); and every command must be recorded
+    // BEFORE it is written, or `domain/dccLink.ts` correlates its reply to the
+    // wrong command (D8). `setTrackPower` below does both in the right order.
+    if (connected) {
+      this.setTrackPower(true).catch((err: Error) =>
+        this.log.error('[LayoutService] Track power-on at connect failed', {
+          layoutId: this.layoutId,
+          error: err.message,
+        }),
+      );
+    }
+  }
+
+  /**
+   * Turns track power on or off, and asks the station to confirm it (#149).
+   *
+   * The `<s>` afterwards is not belt and braces: `setTrackPower` resolving means
+   * the bytes went out, and `docs/dcc-link.md` D12's whole point is that a
+   * command's success is not evidence of its effect. The `<p1 MAIN>` in the
+   * probe reply is what actually moves `dccLink.mainPowerOn`, so an operator
+   * sees the state the station reports rather than the state we asked for.
+   *
+   * Power **off** is a legitimate operating state — maintenance, handling stock
+   * — not a fault, so this raises nothing and Safe-Stops nothing. What it does
+   * do, on the way back through the response channel, is stop new routes being
+   * granted and abandon any automation run (see `handleTrackPowerLost`).
+   */
+  async setTrackPower(on: boolean): Promise<void> {
+    this.recordDccCommand({
+      kind: 'power',
+      command: formatTrackPower(on),
+      locoAddress: null,
+      speedStep: null,
+      direction: null,
+      pointId: null,
+      routeId: null,
+    });
+
+    this.log.info('[LayoutService] Track power commanded', { layoutId: this.layoutId, on });
+    await this.dcc.setTrackPower(on);
+    await this.probeDccStation();
   }
 
   private async evaluateAndApplySafeStop(): Promise<void> {

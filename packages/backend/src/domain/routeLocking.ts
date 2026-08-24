@@ -494,6 +494,11 @@ function describeRejection(rejection: RouteRejection, book?: NameBook): string {
       return `loco ${locoLabel(rejection.locoAddress, book)} is not in the roster`;
     case 'no-graph':
       return 'no track graph is currently loaded';
+    case 'track-power-off':
+      // Phrased as an instruction rather than a diagnosis (#149): unlike every
+      // other rejection here, this one has a remedy the operator can carry out
+      // from the screen they are already looking at.
+      return 'track power is off — switch it on before requesting a route';
     case 'unknown-block':
       return `block ${blockLabel(rejection.blockId, book)} does not exist in this layout`;
     case 'destination-is-start':

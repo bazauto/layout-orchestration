@@ -1,5 +1,15 @@
 import { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { DccLinkNotFaultedError, LayoutService } from '../../../services/LayoutService';
+import { requireNotMonitor } from '../auth/hook';
+
+/**
+ * The whole body. Deliberately explicit rather than a `/power/on` and
+ * `/power/off` pair: an operator UI sends the state it wants, and a toggle that
+ * derives "the other one" from a state that may read `unknown` is the same
+ * mistake the point key avoided (#165 M14).
+ */
+const trackPowerBody = z.object({ on: z.boolean() });
 
 /**
  * The command station link (#148, `docs/dcc-link.md`).
@@ -38,4 +48,34 @@ export async function dccLinkRoutes(
       throw err;
     }
   });
+
+  /**
+   * Track power on or off (#149) — `admin` or `operator`, never `monitor`.
+   *
+   * Not admin-only, because this is an *operating* control and not a config
+   * edit: powering down to re-rail a wagon or handle stock is ordinary driving,
+   * and after a station cutoff it is the only recovery path that does not
+   * involve reaching for the command station's power switch.
+   *
+   * A malformed body is an ordinary 400, per the standing convention that the
+   * fail-safe rule is scoped to sensor and control *topics* — an operator UI
+   * sending nonsense is a bug in the UI, not a reason to halt the layout.
+   *
+   * Answers with the link view rather than an acknowledgement, and that is the
+   * point: `setTrackPower` probes the station afterwards, so what comes back is
+   * the power state the **station reported**, not the one that was asked for.
+   */
+  fastify.post(
+    '/api/layouts/:layoutId/dcc-link/power',
+    { preHandler: requireNotMonitor },
+    async (req, reply) => {
+      const parsed = trackPowerBody.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'Body must be { on: boolean }' });
+      }
+
+      await layoutService.setTrackPower(parsed.data.on);
+      return reply.status(200).send(layoutService.getDccLink());
+    },
+  );
 }

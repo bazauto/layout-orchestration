@@ -20,6 +20,7 @@ import {
   formatSetPoint,
   formatSetSpeed,
   formatStatusRequest,
+  formatTrackPower,
 } from '../../domain/dccWireFormat';
 import { DccResponse, describeDccResponse, readResponses } from '../../domain/dccResponse';
 
@@ -137,6 +138,10 @@ export class SerialDccAdapter implements IDccController {
 
   async probeStatus(): Promise<void> {
     await this.write(formatStatusRequest());
+  }
+
+  async setTrackPower(on: boolean): Promise<void> {
+    await this.write(formatTrackPower(on));
   }
 
   /**

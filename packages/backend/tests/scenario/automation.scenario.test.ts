@@ -648,3 +648,64 @@ describe('leaving automation mid-crawl', () => {
     expect(speedCommands(h).at(-1)).toEqual({ speed: 0, direction: 'stop' });
   });
 });
+
+describe('track power going off during an automated movement (#149)', () => {
+  it('abandons a run already under way, and does not resume it when power returns', async () => {
+    const h = createScenarioHarness();
+    await routed(h);
+    await tick(h);
+
+    // The train is under way at its roster speed.
+    expect(speedCommands(h).at(-1)).toEqual({ speed: 60, direction: 'fwd' });
+
+    // The station cuts power, or an operator switches it off. Either way the
+    // train coasts to a stand, and the orchestrator learns of it through a
+    // `<p0 MAIN>` on the response channel.
+    h.dcc.setSimulatedPower('main', false);
+
+    const after = speedCommands(h).length;
+    await tick(h);
+    await tick(h);
+    await tick(h);
+    expect(speedCommands(h).length).toBe(after);
+    expect(h.service.getAutomationRuns()).toEqual([]);
+
+    // Not a Safe-Stop, and nothing latched: the layout is already stopped.
+    expect(h.service.getSystemStatus().status).toBe('online');
+    expect(h.service.getRouteFaults()).toEqual([]);
+
+    // Power comes back and the run does NOT resume. That is the `adopted` set
+    // doing the job it does after an emergency stop — a route is taken at most
+    // once while it stays `active`. It is the right answer here too: a train
+    // that coasted to a stand is no longer where its plan believes it is, and
+    // resuming automation over that is exactly the guess this system refuses to
+    // make. The operator requests a new route.
+    h.dcc.setSimulatedPower('main', true);
+    await tick(h);
+    await tick(h);
+    expect(speedCommands(h).length).toBe(after);
+    expect(h.service.getAutomationRuns()).toEqual([]);
+  });
+
+  it('never departs a route that was granted before the power went off', async () => {
+    // The case `adopted` cannot cover, and the reason the sweep is gated on
+    // power as well as on status and mode: this route has never been taken, so
+    // there is nothing to abandon and nothing marking it as already-run. A
+    // sweep that only asked `canIssueAutoCommand` would find an unowned active
+    // auto route and depart the train into dead rails — and the train would
+    // leap into motion the moment `<1>` was sent.
+    const h = createScenarioHarness();
+    await routed(h); // granted and in auto mode, but never ticked, so never departed
+    expect(speedCommands(h)).toEqual([]);
+
+    h.dcc.setSimulatedPower('main', false);
+
+    await tick(h);
+    await tick(h);
+    await tick(h);
+
+    expect(speedCommands(h)).toEqual([]);
+    expect(h.service.getAutomationRuns()).toEqual([]);
+    expect(h.service.getSystemStatus().status).toBe('online');
+  });
+});

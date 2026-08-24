@@ -38,6 +38,21 @@ export interface IDccController {
   probeStatus(): Promise<void>;
 
   /**
+   * Turns track power on or off — DCC-EX's `<1>` / `<0>`, both tracks (#149).
+   *
+   * PicoDCC's tracks come up **unpowered**: `PicoDccTrack`'s constructor does
+   * `gpio_put(power_ctrl_pin, 0)`, and power turns on only in response to `<1>`.
+   * A station that has cut power on a fault also stays off until something
+   * sends it. So this is not only an operating control, it is the sole recovery
+   * path back from a cutoff that does not involve power-cycling the hardware.
+   *
+   * Like every other command here, resolving means the bytes went out. Whether
+   * power actually came on is answered by `<p1 MAIN>` on the response channel,
+   * and nothing should assume the command took (`docs/dcc-link.md` D12).
+   */
+  setTrackPower(on: boolean): Promise<void>;
+
+  /**
    * Sets the speed and direction of a loco.
    *
    * The ranges are the command station's, not this interface's — it validates
