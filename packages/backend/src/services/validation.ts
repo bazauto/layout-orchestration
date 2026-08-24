@@ -217,6 +217,30 @@ export type BlockUpdateInput = z.infer<typeof blockUpdateSchema>;
 export const pointFeedbackModeSchema = z.enum(['none', 'required']);
 
 /**
+ * A DCC **accessory** address: an integer on `[1, 2044]` (#152). Deliberately
+ * not the loco address range — a different address space that happens to be
+ * numeric too, which is exactly why `.positive()` looked sufficient for so long.
+ *
+ * 2044 is where the DCC accessory address space ends, and PicoDCC enforces the
+ * same bound on receipt: an address outside it fails the parser's single
+ * validation choke point, so the packet is never transmitted. What that costs
+ * is specific — `setPoint` resolves on the serial write either way, the route
+ * goes on holding the point lock believing the point moved, and with
+ * `positionFeedback: 'none'` on every live point there is no confirmation
+ * channel to say otherwise. Since `bazauto/PicoDCC#47` the station answers
+ * `<X>`, and since #148 that `<X>` faults the route which issued the command
+ * (`point-command-rejected`, `docs/dcc-link.md` D5 and D16) — but that is a
+ * configuration error being discovered under a train. It belongs at the
+ * boundary where it was typed.
+ *
+ * Used on the **read** path as well as both write paths, and that is the half
+ * that catches a row predating this check. See `points.dcc_address` in
+ * `adapters/db/schema.ts` for why the row schema is the guard and not a CHECK
+ * constraint.
+ */
+const dccAccessoryAddressSchema = z.number().int().min(1).max(2044);
+
+/**
  * Full-row schema for a `points` DB row — every column, matching the
  * posture of `sensorRowSchema`/`blockEdgeRowSchema`. `listPoints` used to do
  * a bare cast with no validation at all, even though `positionFeedback` (#25)
@@ -226,7 +250,7 @@ export const pointRowSchema = z.object({
   id: z.string().min(1),
   layoutId: z.string().min(1),
   name: z.string().min(1),
-  dccAddress: z.number().int().positive(),
+  dccAddress: dccAccessoryAddressSchema,
   blockId: z.string().min(1).nullable(),
   positionFeedback: pointFeedbackModeSchema,
 });
@@ -261,14 +285,16 @@ export function parsePointRow(row: unknown): PointRecord {
  * Write schema for creating a point (`POST .../points`). `dccAddress` is the
  * reason this matters more than it looks: it is the accessory address a
  * physical point motor is thrown on, so the string `"3"` reaching Drizzle
- * unchecked is bad config driving real hardware. `positionFeedback` defaults
+ * unchecked is bad config driving real hardware — and so is an integer outside
+ * `[1, 2044]`, which the command station refuses to transmit (#152).
+ * `positionFeedback` defaults
  * to `'none'` (#25, D10) — the create form need not force an operator to
  * decide up front, and every existing point behaves unchanged if they never do.
  */
 export const pointCreateSchema = z
   .object({
     name: z.string().min(1),
-    dccAddress: z.number().int().positive(),
+    dccAddress: dccAccessoryAddressSchema,
     blockId: z.string().min(1).nullable().default(null),
     positionFeedback: pointFeedbackModeSchema.default('none'),
   })
@@ -290,7 +316,7 @@ export type PointCreateInput = z.infer<typeof pointCreateSchema>;
 export const pointUpdateSchema = z
   .object({
     name: z.string().min(1).optional(),
-    dccAddress: z.number().int().positive().optional(),
+    dccAddress: dccAccessoryAddressSchema.optional(),
     blockId: z.string().min(1).nullable().optional(),
     positionFeedback: pointFeedbackModeSchema.optional(),
   })

@@ -220,7 +220,7 @@ One line per area: enough to know whether it is what you are touching. The long 
 | **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) — publishes to the sensor's own `mqttTopic` so the broker echoes it back through ordinary ingestion, byte-identical to hardware. | `sensor-simulation.md` |
 | **DCC wire format** (#147) | `domain/dccWireFormat.ts` builds every DCC-EX command string; `SerialDccAdapter` only writes them. Throttle is the current **three-field** `<t CAB SPEED DIR>` — the legacy leading register shifts every field and moved the wrong train. Formats, never validates. | issue #153 (index) |
 | **Deployment** (#143) | Runs as a systemd unit on the bench box. `FRONTEND_DIST_PATH` makes the backend serve the built SPA on its own port, so a deployment is one process and every request is same-origin; the frontend addresses `window.location`, never a hardcoded host. Backups are `VACUUM INTO` on a timer, **never a file copy**. Everything lives in `deploy/`. | `deployment.md` |
-| **DCC link** (#148, #150, #149) | The station **answers**: `domain/dccResponse.ts` frames and parses, `domain/dccLink.ts` correlates replies to commands positionally, `DccLinkService` holds `SystemHealth.dccLink`. Silence Safe-Stops; `<X>` faults the route that issued the command; a wrong-cab `<l>` Safe-Stops. `setFunction` throws. **Track power is commanded on at connect and controllable by an operator**; observed dark refuses routes and automation and is **never** a Safe-Stop. | `dcc-link.md` |
+| **DCC link** (#148, #150, #149, #152) | The station **answers**: `domain/dccResponse.ts` frames and parses, `domain/dccLink.ts` correlates replies to commands positionally, `DccLinkService` holds `SystemHealth.dccLink`. Silence Safe-Stops; `<X>` faults the route that issued the command; a wrong-cab `<l>` Safe-Stops. `setFunction` throws. **Track power is commanded on at connect and controllable by an operator**; observed dark refuses routes and automation and is **never** a Safe-Stop. A point's `dccAddress` is bounded to the accessory space `[1, 2044]` at the boundary — on both write schemas *and* `pointRowSchema` — rather than discovered as an `<X>` under a train. | `dcc-link.md` |
 
 ### Traps
 
@@ -273,6 +273,9 @@ the id (`grep -n "^### D9" docs/sensor-trust.md`) before concluding any of these
 - **Safe-Stop goes through `SystemHealth`/`evaluateAndApplySafeStop`, never
   `stateManager.enterSafeStop` directly** — #4 fixed a live bug where the next unrelated
   health evaluation cleared a route violation (`topology.md`).
+- **#152 bounds `points.dcc_address` with no migration and no CHECK constraint, and the read
+  path carries the bound too** — a CHECK forces a rebuild of a live table to guard a writer
+  that does not exist, so `pointRowSchema` is the guard by design (`dcc-link.md` D16, DD9).
 - **`migrations/0006_users_last_admin_guard.sql` has no `schema.ts` change, and that is
   correct** — SQLite triggers are outside Drizzle's DSL, so it was generated with
   `drizzle-kit generate --custom` (`auth.md`).
