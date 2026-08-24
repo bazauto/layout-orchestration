@@ -21,9 +21,26 @@ import {
   PointState,
 } from './types';
 
-/** Confirmation-timeout policy (D5). `timeoutMs` defaults to 8000 in `LayoutService`'s config — this module knows nothing about the default. */
+/**
+ * The freshness window's default, in ms (#167, D11) — 3 x the contract's 30 s
+ * re-assert interval, the same tolerance and the same reasoning as
+ * `DEFAULT_SENSOR_FRESHNESS_TIMEOUT_MS`. Three intervals absorbs two
+ * consecutive lost messages, which is what stops ordinary WiFi packet loss
+ * flapping a confirmed point to `'stale'`.
+ *
+ * `config.points.freshnessTimeoutMs` is what production reads; this is the
+ * fallback and the number the tests are written against.
+ */
+export const DEFAULT_POINT_FRESHNESS_TIMEOUT_MS = 90_000;
+
+/**
+ * Confirmation policy. `timeoutMs` is D5's confirmation deadline (8000 in
+ * `LayoutService`'s config); `freshnessTimeoutMs` is D11's staleness window.
+ * This module knows neither default — both are supplied by the caller.
+ */
 export interface PointConfirmationPolicy {
   timeoutMs: number;
+  freshnessTimeoutMs: number;
 }
 
 /**
@@ -141,6 +158,59 @@ export function evaluateTimeout(p: PointState, now: Date, policy: PointConfirmat
   return {
     ...p,
     confirmation: 'timed-out',
+    confirmedPosition: 'unknown',
+    awaitingSince: null,
+    lastUpdated: now,
+  };
+}
+
+/**
+ * Applies D11's staleness predicate: a point whose controller has stopped
+ * re-asserting. `null` unless the point is `positionFeedback: 'required'`,
+ * currently `'confirmed'`, and has a `lastReadingAt` older than
+ * `policy.freshnessTimeoutMs` — in which case `'stale'` with
+ * `confirmedPosition: 'unknown'`.
+ *
+ * Returns `null` rather than `p` for a point with nothing to evaluate, for
+ * exactly the reason `evaluateTimeout` does: it is what lets the sweep tell a
+ * transition from a no-op without a reference-equality check, and what keeps
+ * a 250 ms tick from re-publishing every point on the layout.
+ *
+ * The three narrowings are each load-bearing, and D11 records why:
+ *
+ *  - **`'required'` only.** A `'none'` point has nothing reporting on it and
+ *    would go stale immediately and permanently. Every point on Westgate
+ *    Hollow is `'none'` today, so this predicate fires nowhere on the live
+ *    layout until feedback hardware is fitted and a point is opted in.
+ *  - **From `'confirmed'` only.** That is the one state where a reading is
+ *    actually being trusted. `'unreported'` is D6's boot case and must stay
+ *    itself; `'pending'` belongs to the 8 s deadline, which fires an order of
+ *    magnitude sooner; `'mismatch'`/`'indeterminate'`/`'timed-out'` are
+ *    already latched faults, and re-labelling one `'stale'` would replace a
+ *    sharp fact with a vaguer one.
+ *  - **Measured on `lastReadingAt`**, the backend's own receipt clock, never
+ *    on the payload's `reportedAt` — that timestamp comes from the very
+ *    device whose liveness is in question (the same rule `isSensorFresh`
+ *    states).
+ *
+ * The boundary matches `isSensorFresh` deliberately: an age strictly greater
+ * than the window is stale, and **exactly equal is fresh**. A negative age (a
+ * reading stamped in the future, which under `ManualClock` means a test moved
+ * the clock backwards) reads as fresh, so a clock skew cannot silently
+ * untrust a healthy point.
+ */
+export function evaluateStaleness(
+  p: PointState,
+  now: Date,
+  policy: PointConfirmationPolicy,
+): PointState | null {
+  if (p.positionFeedback !== 'required') return null;
+  if (p.confirmation !== 'confirmed') return null;
+  if (p.lastReadingAt === null) return null;
+  if (now.getTime() - p.lastReadingAt.getTime() <= policy.freshnessTimeoutMs) return null;
+  return {
+    ...p,
+    confirmation: 'stale',
     confirmedPosition: 'unknown',
     awaitingSince: null,
     lastUpdated: now,

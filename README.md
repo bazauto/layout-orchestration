@@ -54,12 +54,14 @@ Implemented:
 - Latched route faults (`SystemHealth.routeFaults`) with per-route operator acknowledge,
   covering an unexpected occupancy, a rejected point command, a reserved block whose
   occupancy stops being determinable mid-route, and a held point that fails to confirm
-- Point position confirmation (#25) — a point controller reports its observed position on
-  `point/{pointId}/reading` (never retained; restart recovery is a live `point/*/query`),
-  and the backend keeps *commanded* and *confirmed* position as separate fields. Opt in per
-  point: `positionFeedback: 'required'` means commanded position is no longer trusted on its
-  own, and a point that fails to confirm within 8 seconds latches a fault and Safe-Stops —
-  see `docs/point-feedback.md`
+- Point position confirmation (#25, #167) — a point controller reports its observed
+  position on `point/{pointId}/reading` (never retained; restart recovery is a live
+  `point/*/query`), and the backend keeps *commanded* and *confirmed* position as separate
+  fields. Opt in per point: `positionFeedback: 'required'` means commanded position is no
+  longer trusted on its own, and a point that fails to confirm within 8 seconds latches a
+  fault and Safe-Stops. The controller must also **re-assert every 30 s**; one that goes
+  quiet degrades the point to `stale`/`unknown` past a 90 s window, which refuses routes
+  over it without faulting anything — see `docs/point-feedback.md`
 - WebSocket state streaming to the frontend
 - Local username/password authentication with role-based access (`admin` /
   `operator` / `monitor`) — see `docs/auth.md` for the scheme and its threat model
@@ -586,7 +588,13 @@ feedback hardware is fitted yet. For those the old statement stands exactly: the
 promises no other software authority will command the point, not that the blades have
 moved, and the position drawn is commanded. The Layout panel and the point key say which
 kind each point is rather than the system claiming one uniform level of trust it does not
-have. The firmware side is not written yet — see `docs/project-plan.md`.
+have.
+
+A controller that dies quietly is caught too, as of #167: a `'required'` point whose
+controller stops re-asserting inside 90 s degrades to `stale`, its position becomes
+`unknown`, and routes over it are refused. That is a **degrade, not a fault** — nothing is
+latched and nothing Safe-Stops, because silence is a device dying rather than lying. The
+firmware side is designed and unblocked but not built — `bazauto/layout-feedback#15`.
 
 **A failed point names the route it invalidated, and that route cannot be resumed until the
 point is dealt with.** A held point that times out, reports the wrong position, or reports
@@ -737,10 +745,11 @@ preamble in `docs/sensor-simulation.md`.
 2. ESP firmware, as **one** flash-and-test cycle rather than three. Three obligations are
    now waiting on the same boards, and all three are specified against a stable contract:
    the WiThrottle→MQTT migration (#9); answering `point/*/query` for point position
-   feedback (#50 — #25 is complete in this repo, but nothing answers a query yet and no
-   point has a feedback switch wired); and #28's **30 s re-assert** on
-   `sensor/*/reading`, which is roughly ten lines and without which every sensor-backed
-   block reads `unknown`
+   feedback (#50 — #25 and #167 are complete in this repo, but nothing answers a query yet
+   and no point has a feedback switch wired); and the **30 s re-assert** now required on
+   *both* `sensor/*/reading` (#28) and `point/*/reading` (#167), which is roughly ten lines
+   and without which every sensor-backed block reads `unknown`. The point-side node is
+   `bazauto/layout-feedback#15`, whose publish behaviour #167 unblocked
 3. **The rest of the command-station work** (#153 is the index). #147 and #148 have landed,
    and #150's guard with them. Next is #149 — track power: `<1>` on connect, refusing routes
    over a dark layout, and an operator control to turn power back on after a cutoff, which

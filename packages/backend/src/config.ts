@@ -96,6 +96,13 @@ export const config = {
     /** D5: how often (ms) the confirmation sweep evaluates the timeout predicate. */
     sweepIntervalMs: parseInt(process.env.POINT_CONFIRM_SWEEP_MS ?? '250', 10),
     /**
+     * D11 (#167): how long (ms) a point configured `positionFeedback:
+     * "required"` may go without a reading before its confirmed position
+     * degrades to `"stale"`/`"unknown"`. 90 s = 3 x the contract's 30 s
+     * re-assert interval, matching `SENSOR_FRESHNESS_TIMEOUT_MS`.
+     */
+    freshnessTimeoutMs: parseInt(process.env.POINT_FRESHNESS_TIMEOUT_MS ?? '90000', 10),
+    /**
      * D4: consecutive confirming readings a latched `PointFault` needs before
      * an operator may acknowledge it. Layout-wide, not per-point — the
      * point-side twin of `sensors.clearAfterValidReadings`.

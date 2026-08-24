@@ -636,7 +636,9 @@ export interface BlockState {
  * commanded, `confirmedPosition` holding the reported value; `'indeterminate'`
  * — the last reading reported `'unknown'`, or was `'driver'`-sourced on a
  * `'required'` point; `'timed-out'` — the confirmation deadline elapsed with
- * no reading.
+ * no reading; `'stale'` (#167) — the point HAD confirmed and then its
+ * controller stopped re-asserting inside the freshness window, which is a
+ * degrade rather than a fault and latches nothing.
  */
 export type PointConfirmation =
   | 'unreported'
@@ -644,7 +646,8 @@ export type PointConfirmation =
   | 'confirmed'
   | 'mismatch'
   | 'indeterminate'
-  | 'timed-out';
+  | 'timed-out'
+  | 'stale';
 
 /**
  * Mirrors `PointFeedbackMode` — whether a point is configured to require a

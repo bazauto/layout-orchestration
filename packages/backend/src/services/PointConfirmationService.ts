@@ -14,6 +14,7 @@
 import {
   applyPointReading,
   confirmationArms,
+  evaluateStaleness,
   evaluateTimeout,
   onPointCommanded,
   onPointQueried,
@@ -109,15 +110,28 @@ export class PointConfirmationService {
   }
 
   /**
-   * Applies `evaluateTimeout` to every registered point, storing and
-   * returning only the ones that transitioned — never the whole layout,
-   * so a caller publishing `point/state` per entry does not re-publish
-   * every point on the layout on every 250ms tick (D5).
+   * Applies `evaluateTimeout` (D5) and then `evaluateStaleness` (D11) to every
+   * registered point, storing and returning only the ones that transitioned —
+   * never the whole layout, so a caller publishing `point/state` per entry does
+   * not re-publish every point on the layout on every 250ms tick.
+   *
+   * The two predicates cannot both fire on one point: a timeout needs
+   * `'pending'` and staleness needs `'confirmed'`. Evaluating the timeout first
+   * and the staleness against its result is therefore ordering for clarity
+   * rather than for correctness — but it is the ordering that stays correct if
+   * either predicate's precondition is ever widened, because a point that has
+   * just timed out is already `'timed-out'` and no longer a staleness
+   * candidate.
+   *
+   * The caller distinguishes the two outcomes by the returned
+   * `confirmation` — `'timed-out'` is a fault, `'stale'` is a degrade — which is
+   * the same discrimination `runConfirmationSweep` already did for the one kind.
    */
   sweep(now: Date): PointState[] {
     const transitioned: PointState[] = [];
     for (const point of this.stateManager.getState().points.values()) {
-      const next = evaluateTimeout(point, now, this.policy);
+      const timedOut = evaluateTimeout(point, now, this.policy);
+      const next = evaluateStaleness(timedOut ?? point, now, this.policy) ?? timedOut;
       if (next) {
         transitioned.push(this.stateManager.setPointState(point.pointId, next));
       }

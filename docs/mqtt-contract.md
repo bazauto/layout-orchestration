@@ -32,7 +32,7 @@ layout/{layoutId}/system/heartbeat
 | `sensor/{sensorId}/reading` | Sensor HW (or backend sim) → Backend | 1 | YES | Current sensor occupancy. Published on change **and** re-asserted at least every 30 s |
 | `point/{pointId}/command` | Backend → DCC | 1 | **NO** | Point position command |
 | `point/{pointId}/state` | Backend → Subscribers | 1 | YES | Broadcast current point state |
-| `point/{pointId}/reading` | Point Controller → Backend | 1 | **NO** | Physical position as observed by the point controller |
+| `point/{pointId}/reading` | Point Controller → Backend | 1 | **NO** | Physical position as observed by the point controller. Published on change, in answer to a `query`, **and** re-asserted at least every 30 s |
 | `point/{pointId}/query` | Backend → Point Controller | 1 | **NO** | Request an immediate `reading` for this point |
 | `block/{blockId}/state` | Backend → Subscribers | 1 | YES | Block occupancy broadcast |
 | `system/status` | Backend → Subscribers | 1 | YES | System status (also used as LWT) |
@@ -42,14 +42,17 @@ layout/{layoutId}/system/heartbeat
 > `loco/*/command` and `point/*/command` MUST NOT be retained. A retained throttle command would trigger a ghost movement immediately on any new subscriber connecting to the broker (e.g., after an ESP controller reboot). This is a safety requirement.
 >
 > **`point/*/reading` is also NOT retained**, for a different reason from the
-> control topics. Occupancy is continuously re-asserted by a live sensor and
-> self-corrects on the next movement, which is why `sensor/*/reading` **is**
-> retained. A point's position is re-asserted by nothing, and it can change while
+> control topics. Both `reading` topics now carry the same 30 s re-assert
+> obligation (#167), so re-assertion is no longer what separates them: retention
+> is decided by whether a stale copy can **mislead**, not by whether the publisher
+> repeats itself. A sensor's occupancy self-corrects on the next movement, which
+> is why `sensor/*/reading` **is** retained. A point's position can change while
 > its controller is offline — hand-thrown during a shutdown, power lost
-> mid-travel, a linkage dropped. A retained point reading is therefore a
-> confident assertion with no correction path, and believing a stale point
-> position is the direct cause of a wrong-route movement. Restart recovery is
-> provided instead by `point/*/query`, which recovers position **live**.
+> mid-travel, a linkage dropped — and nothing on the layout corrects it
+> afterwards. A retained point reading is therefore a confident assertion with no
+> correction path, and believing a stale point position is the direct cause of a
+> wrong-route movement. Restart recovery is provided instead by
+> `point/*/query`, which recovers position **live**.
 
 > **Critical — Retention Is Not Evidence of Liveness:**
 > A retained message tells a new subscriber what was last published. It says nothing
@@ -62,9 +65,12 @@ layout/{layoutId}/system/heartbeat
 >
 > `sensor/*/reading` is retained *and* its publisher MUST re-assert it at least every
 > 30 s (see its payload section below), so the retained copy is a bootstrap for a value
-> that is about to be reconfirmed. `point/*/reading` is **not** retained, because
-> nothing re-asserts a point: its position can change while its controller is offline,
-> so a retained position is an archived belief with nothing behind it.
+> that is about to be reconfirmed. `point/*/reading` carries the same 30 s obligation
+> (#167) but is **not** retained: re-assertion is **necessary** for retention and not
+> **sufficient** for it. A point's position can change while its controller is offline,
+> so a retained position is an archived belief with nothing behind it — a re-assert
+> says the controller is alive *now*, which is a different claim from the archived
+> value still being true.
 >
 > The backend distinguishes a message delivered because of a **new subscription**
 > (RETAIN flag set, [MQTT-3.3.1-8]) from one delivered on an **established
@@ -194,8 +200,25 @@ Sent by the backend to set a point position. NOT retained.
 ---
 
 ### `point/{pointId}/reading`
-Published by the point controller whenever its observed position changes, and in
-response to a `point/{pointId}/query`. NOT retained — see the retention callout.
+Published by the point controller whenever its observed position changes, in
+response to a `point/{pointId}/query`, **and** re-published unchanged at least every
+**30 seconds** as a liveness assertion. NOT retained — see the retention callout.
+
+The re-assertion is a hard requirement, not an optimisation (#167). Command and
+feedback are **two unrelated devices on two transports**: the point motors are
+commanded over DCC accessory addresses and have no feedback path of their own, while
+position is read from their changeover contacts by a separate MQTT node. Nothing about
+a command succeeding tells you the reporting device is still alive — there is no
+shared component whose failure would show up in both — so a fire-and-forget accessory
+command goes on succeeding long after the feedback node has stopped.
+
+A point configured `positionFeedback: "required"` from which the backend has received
+no reading inside its freshness window (`POINT_FRESHNESS_TIMEOUT_MS`, default 90 s =
+3 × the re-assert interval) degrades to `confirmation: "stale"` with
+`confirmedPosition: "unknown"`, and every edge through it becomes untraversable. That
+is a **degradation, not a fault**: it latches no `PointFault` and does not Safe-Stop.
+A point configured `positionFeedback: "none"` has nothing reporting on it at all and
+never goes stale.
 
 ```json
 {
@@ -313,6 +336,7 @@ Published by the backend on startup and on any status change. Also configured as
 | Backend restarts, sensor alive | Retained readings arrive with the RETAIN flag set and are provisional. Those blocks read `unknown` until the first re-assert, i.e. within 30 s. |
 | Backend restarts, sensor dead | The same retained readings arrive, but no re-assert ever follows, so those blocks stay `unknown` indefinitely. Retention alone got this case wrong — it reported a dead sensor's last `clear` as live track (#28). |
 | Point controller restarts | The backend receives NO retained point reading. Every point configured `positionFeedback: "required"` remains or becomes `"unknown"` until it answers a live `point/*/query`. |
+| Point controller dies mid-session | No further reading arrives. Every `positionFeedback: "required"` point it reports degrades to `"stale"`/`"unknown"` inside the freshness window, and a route holding one is suspended. Before #167 no clock anywhere expected to hear from a point controller again, so its last reading stood indefinitely. |
 | New frontend client connects | Receives all retained `block/*/state`, `point/*/state`, `loco/*/state`, and `system/status` immediately without needing a REST poll. |
 
 ---
@@ -332,23 +356,33 @@ The following MQTT conditions MUST trigger a Safe-Stop in the backend:
 
 ## Degradation Triggers
 
-The following conditions degrade **specific track** to `"unknown"` — which the domain
-layer already treats as occupied, so routes over it cannot be granted and a live route
-holding it is suspended — rather than triggering a system-wide Safe-Stop. The failure is
-scoped to the track the failing device actually observes, so a layout that is otherwise
-fully observed keeps running.
+The following conditions degrade **specific track** — a block, or a point — to
+`"unknown"`, which the domain layer already treats as unusable, so routes over it cannot
+be granted and a live route holding it is suspended. None of them triggers a system-wide
+Safe-Stop. The failure is scoped to what the failing device actually observes, so a
+layout that is otherwise fully observed keeps running.
 
 1. No **live** sensor reading received inside the sensor freshness window
    (`SENSOR_FRESHNESS_TIMEOUT_MS`, default 90 s = 3 × the 30 s re-assert interval).
 2. A sensor reading known only from a **retained** message, with no live reading since
    the backend connected.
+3. No `point/*/reading` received inside the point freshness window
+   (`POINT_FRESHNESS_TIMEOUT_MS`, default 90 s = 3 × the 30 s re-assert interval), for
+   a point configured `positionFeedback: "required"` that had previously confirmed
+   (#167).
 
-Both set every affected block to `"unknown"` and emit a `BLOCK_STATE` event, so the
-condition is visible to the operator rather than silent.
+1 and 2 set every affected block to `"unknown"` and emit a `BLOCK_STATE` event; 3 sets
+the point to `confirmation: "stale"` with `confirmedPosition: "unknown"` and emits a
+`POINT_STATE` event. Every one of them is visible to the operator rather than silent,
+and none of them latches a fault.
 
-> **A malformed sensor payload is NOT in this list.** It remains Fail-Safe Trigger 3
-> above — a system-wide Safe-Stop, on the first message, with no tolerance. The two
-> failures are different and are answered differently: a malformed payload is a device
-> **lying**, which is immediate and sharp; an unrefreshed reading is a device **dying**,
-> which is a freshness window and a scoped degrade. Do not merge them into one rule.
-> See `docs/sensor-trust.md` and `docs/sensor-fault-recovery.md`.
+> **A malformed payload is NOT in this list**, on either `reading` topic. It remains
+> Fail-Safe Trigger 3 above — a system-wide Safe-Stop, on the first message, with no
+> tolerance. The two failures are different and are answered differently: a malformed
+> payload is a device **lying**, which is immediate and sharp; an unrefreshed reading is
+> a device **dying**, which is a freshness window and a scoped degrade. Do not merge
+> them into one rule.
+>
+> The same split governs the point side, which is why a stale point degrades while every
+> *fault* kind Safe-Stops (`docs/point-feedback.md` D4, D11). See `docs/sensor-trust.md`,
+> `docs/sensor-fault-recovery.md` and `docs/point-feedback.md`.

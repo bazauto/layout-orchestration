@@ -30,7 +30,9 @@ interface Props {
  * from the position itself, because the fact worth surfacing at a glance is
  * how far the position can be trusted — `mismatch`, `indeterminate` and
  * `timed-out` all read as fault-coloured but carry distinct glyphs and words,
- * never colour alone.
+ * never colour alone. `stale` (#167) reads untrusted-yellow rather than
+ * fault-red on purpose: its controller went quiet, which degrades the position
+ * without latching anything.
  */
 const UNSET = '#6c7086';
 
