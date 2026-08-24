@@ -748,3 +748,52 @@ preamble in `docs/sensor-simulation.md`.
    left these alone — they span a CommonJS backend and an ESM frontend, which is a different
    problem. `EDGE_OFFSET`'s mirror is closed, having gone with the opening marks
 6. Hardware validation and operator workflows
+
+## Licence
+
+Released under the MIT Licence — see [`LICENSE`](LICENSE).
+
+That covers the first-party code in `packages/`, `deploy/`, `tests/` and the documentation.
+The two workspace packages are marked `"private": true` so they are never accidentally
+published to npm; the MIT grant applies to the source in this repository regardless.
+
+### Third-party dependencies
+
+No third-party code is vendored here — everything arrives through npm and is resolved from
+`package-lock.json`, so each package ships under its own licence with its own notice inside
+`node_modules/`.
+
+The production dependency tree (169 packages behind Fastify, React, Drizzle, `better-sqlite3`,
+`mqtt` and `serialport`) is entirely permissive:
+
+| Licence | Packages |
+|---|---|
+| MIT | 149 |
+| ISC | 8 |
+| BlueOak-1.0.0 | 5 |
+| BSD-3-Clause | 4 |
+| BSD-2-Clause | 1 |
+| Apache-2.0 | 1 |
+| 0BSD | 1 |
+
+There is no copyleft anywhere in the tree, production or development, and nothing unlicensed.
+The one non-software licence present is `caniuse-lite` (CC-BY-4.0), a build-time browser-support
+dataset used by the Vite/Babel toolchain that is not included in the built bundle.
+
+To re-check after a dependency change, print the licence of every production package:
+
+```bash
+npm ls --omit=dev --all --parseable | tail -n +2 | tr '\\' '/' | while read -r d; do
+  node -p "require('$d/package.json').license || 'NONE'" 2>/dev/null
+done | sort | uniq -c | sort -rn
+```
+
+The `tr` is needed on Windows, where `npm ls` prints backslash paths that `require` will not
+resolve. Two `NONE` entries are expected — they are this repo's own two workspace packages.
+Anything else that is not MIT / ISC / BSD / Apache-2.0 / 0BSD / BlueOak wants a second look
+before it lands.
+
+**If a built artefact is ever distributed** — a tarball or container image rather than this
+source tree — the frontend bundle will contain React and its dependencies, and MIT requires
+their copyright notices travel with it. Generate a `THIRD_PARTY_NOTICES` file into the build
+output at that point. Distributing the source repository, as today, needs nothing further.
