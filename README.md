@@ -2,6 +2,15 @@
 
 Model railway layout orchestration for the Westgate Hollow project.
 
+Part of a four-repo control stack:
+[PicoDCC](https://github.com/bazauto/PicoDCC) (DCC command station),
+[layout-feedback](https://github.com/bazauto/layout-feedback) (MicroPython sensor nodes),
+[esp-layout-controller](https://github.com/bazauto/esp-layout-controller) (touchscreen
+throttle), and this — the backend and operator UI.
+
+This repository owns [`docs/mqtt-contract.md`](docs/mqtt-contract.md), which is **binding** on
+what the sensor nodes publish.
+
 This repository contains a local-first control stack for a DCC-based layout:
 - A Node.js backend for layout state, MQTT integration, DCC control, SQLite persistence, REST APIs, and WebSocket updates
 - A React frontend for operating the layout, editing topology, and configuring blocks, sensors, points, locos, and track tiles
