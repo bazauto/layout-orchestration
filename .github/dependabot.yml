@@ -1,0 +1,42 @@
+version: 2
+
+updates:
+  # GitHub Actions used by .github/workflows/ci.yml.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # npm, covering both workspaces from the root lockfile.
+  #
+  # Grouped and monthly on purpose. This tree is ~370 packages; ungrouped weekly
+  # updates would bury real security PRs under routine patch bumps, which is the
+  # opposite of the point. Security advisories are separate from this schedule and
+  # still arrive immediately.
+  #
+  # Majors are excluded: a Fastify, React or Drizzle major is a migration with its
+  # own testing, not something to review as a dependency bump.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+    groups:
+      production:
+        dependency-type: production
+        update-types: ["minor", "patch"]
+      development:
+        dependency-type: development
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
