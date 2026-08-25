@@ -487,23 +487,18 @@ test('a block label lies along diagonal track', async ({ page }) => {
 });
 
 /**
- * #76: the sensor layer is a diagnostic overlay an operator reaches for, not
- * one competing with derived occupancy for attention by default — and once
- * on, it reads the beam's own state, not the block's.
+ * #76, and its reversal: the sensor layer is drawn on load, with no control to
+ * find first — and what it draws is the beam's own state, not the block's.
  */
-test('the sensor layer is off by default; toggling it reveals the beam state as a title', async ({
-  page,
-}) => {
+test('the sensor layer is drawn on load, showing the beam state as a title', async ({ page }) => {
   await openControl(page);
 
-  const before = await readDiagram(page);
-  expect(Object.keys(before.sensorTitles)).toEqual([]);
-
-  await page.getByRole('checkbox', { name: 'Sensors' }).check();
-
-  const after = await readDiagram(page);
-  const titles = Object.values(after.sensorTitles).flat();
+  const { sensorTitles } = await readDiagram(page);
+  const titles = Object.values(sensorTitles).flat();
   expect(titles).toContain('sensor Beam 1: occupied');
+
+  // The layer that was once gated by it is now unconditional; the control is gone.
+  await expect(page.getByRole('checkbox', { name: 'Sensors' })).toHaveCount(0);
 });
 
 /**

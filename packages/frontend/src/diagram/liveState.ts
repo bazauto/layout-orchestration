@@ -94,9 +94,9 @@ export interface LiveDiagramState {
   /**
    * #76: every registered sensor's current observation, keyed by id — the
    * annotation glyph's own channel (`diagram/encoding.ts#sensorGlyphStateOf`),
-   * never the block tint (D-c, `docs/diagram-encoding.md`). Empty when the
-   * sensor layer is toggled off — `ControlView` controls visibility by
-   * choosing what it builds this from, not by a flag `TrackDiagram` reads.
+   * never the block tint (D-c, `docs/diagram-encoding.md`). Empty for a caller
+   * that draws no live sensor evidence at all (the Track Editor), which is the
+   * same thing as "no sensors are placed" and draws the same.
    */
   sensors: ReadonlyMap<string, SensorObservationView>;
   freshness: Freshness;
@@ -152,22 +152,20 @@ export function buildLiveBlocks(
  * Assembles the whole live layer from a snapshot. Pure; the freshness comes
  * from the caller.
  *
- * `showSensors` (#76) gates `sensors` at the SOURCE rather than leaving
- * `TrackDiagram` to decide whether to draw what it is given — an empty map
- * when the layer is off is indistinguishable from "no sensors are placed",
- * which is exactly the behaviour a caller that never passes `live.sensors`
- * (the Track Editor) already gets.
+ * Every sensor in the snapshot is included. #76 built this behind a
+ * `showSensors` flag; `docs/diagram-encoding.md` D9 withdrew it — the layer is
+ * not optional. A caller that wants no live sensor evidence drawn (the Track
+ * Editor) does not build a `LiveDiagramState` from a snapshot at all.
  */
 export function buildLiveDiagramState(
   snapshot: StateSnapshot,
   locoRecords: readonly LocoRecord[],
   freshness: Freshness,
-  showSensors = false,
 ): LiveDiagramState {
   return {
     blocks: buildLiveBlocks(snapshot.blocks, locoRecords),
     points: new Map(Object.entries(snapshot.points)),
-    sensors: showSensors ? new Map(Object.entries(snapshot.sensors)) : new Map(),
+    sensors: new Map(Object.entries(snapshot.sensors)),
     freshness,
     systemStatus: snapshot.systemStatus,
     safeStopReason: snapshot.safeStopReason,
