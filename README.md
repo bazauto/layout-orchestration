@@ -96,8 +96,8 @@ Implemented:
   A point key floating over the canvas — dragged where the operator wants it — resolves
   the abbreviated point names and shows what each point is set to and who holds it. Connection health is always on screen, and a
   stale or disconnected diagram is covered rather than badged — see `docs/liveness.md`.
-  An off-by-default "Sensors" checkbox (#76) overlays each placed sensor's live reading
-  on its own mark, distinct from a block's occupancy fill — see `docs/diagram-encoding.md` D8
+  Each placed sensor's live reading (#76) is drawn on its own mark, always on and distinct
+  from a block's occupancy fill — see `docs/diagram-encoding.md` D8, D9
 - The control plane (#165): the mimic is also where the layout is driven from. **Throttle
   cards** — one per loco, several at once, dragged where the operator wants them and
   remembered per layout — carry a speed slider that commands as it moves (no *Set* press),
@@ -136,8 +136,8 @@ Implemented:
 - Live sensor observations on the wire (#76): `StateSnapshot.sensors` and a `SENSOR_STATE`
   delta, pushed only when a sensor's contributed value (or `faulted`/`inService`) changes —
   so a healthy sensor re-asserting inside the freshness window pushes nothing, and a
-  flapping beam is visible on every transition. Surfaced on the control view as an off-by-default
-  "Sensors" layer, drawn on its own channel — never a block tint — so raw sensor evidence
+  flapping beam is visible on every transition. Surfaced on the control view as an
+  always-drawn sensor layer on its own channel — never a block tint — so raw sensor evidence
   stays visibly subordinate to derived block occupancy
 
 Planned next:
@@ -671,10 +671,11 @@ automation over unobserved track are refused. The firmware side is #9 and #50.
 observation — pushed only when its contributed value, `faulted`, or `inService` changes, so
 a healthy sensor re-asserting inside the 30 s window above pushes nothing, and an
 oscillating beam is visible on every transition instead of being invisible entirely. It is
-an off-by-default layer on the control view (a "Sensors" checkbox), and it is deliberately
-subordinate to derived occupancy on screen — the two can legitimately disagree
-(`deriveBlockOccupancy` clause 3), and the beam gets its own small mark, never a share of a
-block's fill. See `docs/diagram-encoding.md` D8 and `docs/sensor-fault-recovery.md` D10.
+drawn on the control view whenever the view is open — the checkbox that once gated it is
+withdrawn (D9) — and it is deliberately subordinate to derived occupancy on screen: the two
+can legitimately disagree (`deriveBlockOccupancy` clause 3), and the beam gets its own small
+mark, never a share of a block's fill. See `docs/diagram-encoding.md` D8, D9 and
+`docs/sensor-fault-recovery.md` D10.
 
 **Parse failures on operator-facing requests are ordinary 4xx/`ERROR` responses**, not a
 Safe-Stop. The fail-safe rule in `docs/mqtt-contract.md` is scoped to sensor and control

@@ -167,20 +167,9 @@ export function ControlView({
 
   const sensorNames = useMemo(() => new Map(sensors.map((s) => [s.id, s.name])), [sensors]);
 
-  /**
-   * #76: off by default. This is a diagnostic layer — the prompting case was
-   * diagnosing a flaky beam, not a thing every dispatcher needs staring back
-   * at them — and it stays that way for the same reason `docs/diagram-encoding.md`
-   * gives the beam its own channel rather than the block tint (D-c): raw
-   * sensor evidence and derived block occupancy can legitimately disagree,
-   * and defaulting the layer on would make that disagreement the first thing
-   * a new operator sees rather than something they reach for on purpose.
-   */
-  const [showSensors, setShowSensors] = useState(false);
-
   const live = useMemo(
-    () => buildLiveDiagramState(snapshot, locos, freshness, showSensors),
-    [snapshot, locos, freshness, showSensors],
+    () => buildLiveDiagramState(snapshot, locos, freshness),
+    [snapshot, locos, freshness],
   );
 
   /**
@@ -318,23 +307,6 @@ export function ControlView({
         </span>
 
         {/*
-          #76: off by default (see the state's own comment) — a diagnostic
-          layer an operator reaches for, not one that competes with derived
-          occupancy for attention on every load.
-        */}
-        <label
-          style={st.caveat}
-          title="Raw sensor readings, subordinate to derived block occupancy above — the two can legitimately disagree (docs/diagram-encoding.md D-c)"
-        >
-          <input
-            type="checkbox"
-            checked={showSensors}
-            onChange={(e) => setShowSensors(e.target.checked)}
-          />{' '}
-          Sensors
-        </label>
-
-        {/*
           #165: adding a throttle is one interaction, not a picker plus an
           "Add" button — the list only ever offers locos that do not already
           have a card, so choosing one has exactly one meaning. It resets to
@@ -406,31 +378,28 @@ export function ControlView({
       )}
 
       {/*
-        The sensor key (#76). Only mounted with the layer, on the same
-        "no permanent chrome for an absent feature" argument the route key
-        below gives for itself.
+        The sensor key (#76; `docs/diagram-encoding.md` D9). Always mounted, because the layer it
+        explains is now always drawn: the glyphs carry four states that are
+        not self-describing, and a permanent layer with no key is worse chrome
+        than a permanent key. The route key below still mounts conditionally —
+        it explains something that is genuinely absent on a quiet layout.
       */}
-      {showSensors && (
-        <div style={st.strip} role="list" aria-label="Sensors">
-          <span style={st.caveat}>Sensors — raw readings, not derived occupancy</span>
-          <LegendItem
-            glyph={SENSOR_OBSERVATION.occupied.glyph}
-            label={SENSOR_OBSERVATION.occupied.label}
-          />
-          <LegendItem
-            glyph={SENSOR_OBSERVATION.clear.glyph}
-            label={SENSOR_OBSERVATION.clear.label}
-          />
-          <LegendItem
-            glyph={SENSOR_OBSERVATION['not-evidence'].glyph}
-            label={SENSOR_OBSERVATION['not-evidence'].label}
-          />
-          <LegendItem
-            glyph={SENSOR_OBSERVATION['no-reading'].glyph}
-            label={SENSOR_OBSERVATION['no-reading'].label}
-          />
-        </div>
-      )}
+      <div style={st.strip} role="list" aria-label="Sensors">
+        <span style={st.caveat}>Sensors — raw readings, not derived occupancy</span>
+        <LegendItem
+          glyph={SENSOR_OBSERVATION.occupied.glyph}
+          label={SENSOR_OBSERVATION.occupied.label}
+        />
+        <LegendItem glyph={SENSOR_OBSERVATION.clear.glyph} label={SENSOR_OBSERVATION.clear.label} />
+        <LegendItem
+          glyph={SENSOR_OBSERVATION['not-evidence'].glyph}
+          label={SENSOR_OBSERVATION['not-evidence'].label}
+        />
+        <LegendItem
+          glyph={SENSOR_OBSERVATION['no-reading'].glyph}
+          label={SENSOR_OBSERVATION['no-reading'].label}
+        />
+      </div>
 
       {/*
         The route key (#129). Only mounted when something is set: an empty

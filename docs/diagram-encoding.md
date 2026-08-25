@@ -294,6 +294,48 @@ the other three are outlines — and the dash pattern differs again between
 validated, unchanged. This decision adds a consumer of the existing rule — a new
 channel obeying D1–D6 — not an exception to it.
 
+**Superseded in part by D9**: the channel is exactly as decided here; what changed is
+that it is no longer optional.
+
+---
+
+## D9 — The sensor layer is always drawn; the "Sensors" checkbox is withdrawn
+
+**Decision.** `ControlView` draws every sensor observation on load. The
+off-by-default checkbox D8 shipped behind, and `buildLiveDiagramState`'s
+`showSensors` parameter, are both gone. The sensor key is now mounted
+unconditionally alongside the layer it explains.
+
+**Why the original default did not survive contact with the layout.** D8 reasoned that
+raw sensor evidence and derived occupancy can legitimately disagree
+(`deriveBlockOccupancy` clause 3), and that defaulting the layer on would make that
+disagreement the first thing a new operator sees. That is a real property of the
+display, and it is still true — but it argues for the *subordinate mark*, which D8
+also decided and which stands. It does not argue for hiding the mark. In practice the
+operator wants the beams visible every time and has to remember to ask for them every
+time; a diagnostic that must be switched on before it can be read is a diagnostic that
+is off precisely when something unexpected happens.
+
+**Why hiding raw evidence is the weaker default on a safety display.** #28's rule is
+that an untrusted reading is *shown*, never hidden, or a dead sensor and a clear beam
+become indistinguishable. A layer that defaults to off applies the opposite rule to
+every reading at once. The disagreement D8 worried about is information: a block at
+`unknown` beside a beam plainly reading `clear` is the system telling the operator
+exactly which part of its evidence is missing — which, on the live layout today, is
+the *normal* state until the firmware re-asserts (#28 D12).
+
+**What this does not change.** The mark stays subordinate and stays its own channel:
+smaller, a different kind of mark, four states, never a share of `OCCUPANCY`'s fill or
+a fifth block tint. D4's four validated tints are untouched. The Track Editor still
+draws no sensor observation — it passes no live state at all, which is a different
+question from a control that hides one.
+
+**The key is now permanent chrome, deliberately.** It was mounted with the layer on a
+"no permanent chrome for an absent feature" argument. The feature is no longer absent,
+and four glyph states that are not self-describing need their key on screen. The route
+key keeps the conditional mount — what *it* explains is genuinely absent on a quiet
+layout.
+
 ---
 
 ## Still open, deliberately
