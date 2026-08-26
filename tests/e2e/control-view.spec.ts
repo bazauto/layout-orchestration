@@ -9,7 +9,7 @@
  * somewhere the train is not going.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { installMockAuth, installMockWebSocket } from './helpers';
+import { installMockAuth, installMockWebSocket, pushServerMessage } from './helpers';
 
 const BLOCKS = [
   { id: 'es1', layoutId: 'layout-1', name: 'Engine Shed 1' },
@@ -580,18 +580,20 @@ test('a monitor gets the same mimic with none of the controls', async ({ page })
   await expect(page.getByRole('button', { name: 'Switch track power on' })).toHaveCount(0);
 });
 
-test('an operator can switch track power off, and the state follows what the station reports (#149)', async ({
+test('an operator can switch track power off, and the badge follows the STATION, not the click (#149, #179)', async ({
   page,
 }) => {
   let requested: unknown = null;
   await page.route('**/api/layouts/layout-1/dcc-link/power', async (r) => {
     requested = JSON.parse(r.request().postData() ?? 'null');
-    // The station answers, and its answer is what the view believes — the reply
-    // is the link view, not an acknowledgement (`docs/dcc-link.md` D12).
+    // Deliberately answers "still on". The POST reply is written before the
+    // station has answered, so it is not evidence of anything (D12) and this
+    // component ignores it. If the badge ever moves on this body, that is the
+    // bug.
     await r.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ ...SNAPSHOT.dccLink, mainPowerOn: false, progPowerOn: false }),
+      body: JSON.stringify(SNAPSHOT.dccLink),
     });
   });
 
@@ -603,6 +605,21 @@ test('an operator can switch track power off, and the state follows what the sta
   await expect(page.getByRole('button', { name: 'Switch track power on' })).toBeDisabled();
 
   await page.getByRole('button', { name: 'Switch track power off' }).click();
-
   expect(requested).toEqual({ on: false });
+
+  // Still "on" — nothing has come back from the station yet.
+  await expect(page.getByText(/Track power on/)).toBeVisible();
+
+  // #179: the station's `<p0 MAIN>` arrives as a `DCC_LINK` push, and THAT is
+  // what moves the badge. Until this event existed the view was frozen at the
+  // opening snapshot, and an operator was shown "on" over dead rails and "off"
+  // over live ones.
+  await pushServerMessage(page, {
+    type: 'DCC_LINK',
+    payload: { ...SNAPSHOT.dccLink, mainPowerOn: false },
+  });
+
+  await expect(page.getByText(/Track power off/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Switch track power off' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Switch track power on' })).toBeEnabled();
 });

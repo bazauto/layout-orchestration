@@ -102,20 +102,26 @@ export function formatEmergencyStop(): string {
 }
 
 /**
- * `<1>` / `<0>` — track power on or off (#149).
+ * `<1 MAIN>` / `<0 MAIN>` — main track power on or off (#149, #180).
  *
- * No track argument, which means **both** tracks: DCC-EX reads a bare `<1>` as
- * `DCCEX_TRACK_ALL`, and PicoDCC implements it that way. Per-track control is
- * deliberately not offered here — the operator-facing concept is "the layout is
- * live" or "the layout is dead", and a UI that could power the main track
- * without the programming track invites a state nobody asked for.
+ * **The track argument is load-bearing.** #149 sent a bare `<1>`, which DCC-EX
+ * reads as `DCCEX_TRACK_ALL` and PicoDCC implements as both tracks, on the
+ * argument that the operator-facing concept is "the layout is live". It is — but
+ * the programming track is not part of that layout. It belongs to a service-mode
+ * process that does not exist here yet, and when it does it will want to own its
+ * own power rather than find it switched underneath by an operator turning the
+ * running lines on. Naming MAIN keeps the orchestrator out of it (#180).
  *
- * The reply is `<p1 MAIN>` / `<p1 PROG>` (or `p0`), which is why this command is
- * worth sending even when the station is believed to be in the desired state:
- * the answer is the only thing that makes the belief evidence.
+ * `progPowerOn` stays **observed**: the `<s>` probe still reports `<p? PROG>`
+ * every five seconds and `DccLinkService.notePower` still records it. What has
+ * gone is the orchestrator ever writing it.
+ *
+ * The reply is `<p1 MAIN>` (or `p0`), one frame per command, which is why this
+ * command is worth sending even when the station is believed to be in the
+ * desired state: the answer is the only thing that makes the belief evidence.
  */
 export function formatTrackPower(on: boolean): string {
-  return frame(on ? '1' : '0');
+  return frame(on ? '1 MAIN' : '0 MAIN');
 }
 
 /**

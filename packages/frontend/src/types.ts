@@ -798,6 +798,13 @@ export type ServerMessage =
   | { type: 'AUTOMATION_STATE'; payload: { runs: AutomationRunView[] } }
   /** #76: one sensor's observation, pushed only when its contributed value (or `faulted`/`inService`) changed. */
   | { type: 'SENSOR_STATE'; payload: SensorObservationView }
+  /**
+   * #179: the whole command-station link view, pushed whenever any field of it
+   * moves — track power, responsiveness, the latched fault, the identity. The
+   * snapshot carries the same projection, so this replaces `dccLink` wholesale
+   * rather than merging into it.
+   */
+  | { type: 'DCC_LINK'; payload: DccLinkView }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } }
   /**
    * #82 D5 (docs/liveness.md): an application-level message, not a

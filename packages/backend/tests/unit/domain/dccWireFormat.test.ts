@@ -89,16 +89,19 @@ describe('formatStatusRequest', () => {
 });
 
 describe('formatTrackPower', () => {
-  it('emits the DCC-EX power commands (#149)', () => {
-    expect(formatTrackPower(true)).toBe('<1>');
-    expect(formatTrackPower(false)).toBe('<0>');
+  it('emits the DCC-EX power commands (#149, #180)', () => {
+    expect(formatTrackPower(true)).toBe('<1 MAIN>');
+    expect(formatTrackPower(false)).toBe('<0 MAIN>');
   });
 
-  it('carries no track argument, so it means BOTH tracks', () => {
-    // A bare <1> is DCCEX_TRACK_ALL, and PicoDCC implements it that way. If a
-    // track name ever appears here, the station stops powering the programming
-    // track and nothing else in this system notices.
-    expect(formatTrackPower(true).slice(1, -1).split(' ')).toHaveLength(1);
-    expect(formatTrackPower(false).slice(1, -1).split(' ')).toHaveLength(1);
+  it('always names MAIN, so the programming track is never switched (#180)', () => {
+    // The regression this guards: a bare <1> is DCCEX_TRACK_ALL, and PicoDCC
+    // implements it as both tracks. The programming track belongs to a
+    // service-mode process that does not exist here yet, and an operator
+    // turning the running lines on must not switch it underneath that process.
+    for (const cmd of [formatTrackPower(true), formatTrackPower(false)]) {
+      expect(cmd.slice(1, -1).split(' ')[1]).toBe('MAIN');
+      expect(cmd).not.toContain('PROG');
+    }
   });
 });

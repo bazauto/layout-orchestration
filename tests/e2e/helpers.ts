@@ -56,6 +56,11 @@ export async function installMockWebSocket(
 
       constructor(url: string) {
         this.url = url;
+        // The live instance, so a spec can push a server frame with
+        // `pushServerMessage` below. Server-to-client only, which is the
+        // direction this mock already models with the opening snapshot — it
+        // still proves nothing about the backend, per the note on `send`.
+        (window as unknown as { __mockWs?: MockWebSocket }).__mockWs = this;
         // Simulate async open like a real browser WebSocket.
         queueMicrotask(() => {
           this.onopen?.(new Event('open'));
@@ -105,4 +110,22 @@ export async function installMockWebSocket(
       value: MockWebSocket,
     });
   }, options.snapshot);
+}
+
+/**
+ * Delivers one `ServerMessage` to the page as though the backend had pushed it.
+ *
+ * Needed because several things about the layout reach the browser **only** as a
+ * delta after the opening snapshot, and a spec that can only set the snapshot
+ * cannot tell a view that updates from one that is frozen. #179 was exactly that
+ * blind spot: the track-power badge never moved after page load, and the e2e
+ * suite could not see it because it never sent a second frame.
+ */
+export async function pushServerMessage(page: Page, message: Record<string, unknown>) {
+  await page.evaluate((msg) => {
+    const ws = (
+      window as unknown as { __mockWs?: { onmessage?: ((ev: MessageEvent) => void) | null } }
+    ).__mockWs;
+    ws?.onmessage?.(new MessageEvent('message', { data: JSON.stringify(msg) }));
+  }, message);
 }

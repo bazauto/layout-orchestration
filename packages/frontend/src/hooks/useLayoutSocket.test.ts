@@ -196,6 +196,56 @@ describe('useLayoutSocket', () => {
       expect(result.current.snapshot.routeFaults).toEqual([ROUTE_FAULT]);
     });
 
+    it('DCC_LINK replaces the whole link view — the frozen track-power badge (#179)', () => {
+      const { result } = renderHook(() => useLayoutSocket());
+      const ws = currentSocket();
+
+      // The opening snapshot is the only place `dccLink` used to come from, so
+      // an operator switching power off went on being shown "on", and after a
+      // reconnect picked up the off state they were shown "off" over live
+      // rails. Whatever the snapshot said, the delta must overrule it.
+      act(() => {
+        ws.open();
+        ws.emit({
+          type: 'DCC_LINK',
+          payload: {
+            responsive: true,
+            reason: null,
+            fault: null,
+            mainPowerOn: false,
+            progPowerOn: true,
+            identity: null,
+            restartCount: 0,
+            lastResponseAt: 't1',
+          },
+        });
+      });
+      expect(result.current.snapshot.dccLink.mainPowerOn).toBe(false);
+
+      act(() => {
+        ws.emit({
+          type: 'DCC_LINK',
+          payload: {
+            responsive: false,
+            reason: 'no reply for 15s',
+            fault: null,
+            mainPowerOn: true,
+            progPowerOn: true,
+            identity: null,
+            restartCount: 2,
+            lastResponseAt: 't2',
+          },
+        });
+      });
+
+      // Wholesale, not merged: every field follows, so a link fault or a lost
+      // station raised after page load is visible too.
+      expect(result.current.snapshot.dccLink.mainPowerOn).toBe(true);
+      expect(result.current.snapshot.dccLink.responsive).toBe(false);
+      expect(result.current.snapshot.dccLink.reason).toBe('no reply for 15s');
+      expect(result.current.snapshot.dccLink.restartCount).toBe(2);
+    });
+
     it('BLOCK_STATE merges one entry by blockId and leaves the others intact', () => {
       const { result } = renderHook(() => useLayoutSocket());
       const ws = currentSocket();

@@ -647,11 +647,17 @@ function FreshnessBadge({ freshness }: { freshness: Freshness }) {
  * The button for the current state is disabled rather than hidden, so the
  * control does not move under the pointer as state changes.
  *
- * The reply is the link view, and the badge follows what the STATION reported
- * rather than what was asked for — `setTrackPower` probes afterwards, so a
- * command that went out and did nothing leaves the badge where it was
- * (`docs/dcc-link.md` D12). The socket delivers the same fact a moment later;
- * this component holds only its own in-flight and error state.
+ * The badge follows what the STATION reported rather than what was asked for, so
+ * a command that went out and did nothing leaves the badge where it was
+ * (`docs/dcc-link.md` D12). That fact reaches this component down the socket, as
+ * a `DCC_LINK` event carrying the whole link view (#179) — **not** from the POST
+ * reply, which is written before the station has answered and is deliberately
+ * ignored here. This component holds only its own in-flight and error state.
+ *
+ * Until #179 nothing pushed that event and the badge froze at whatever the
+ * opening snapshot said. An operator switched power off and was still shown
+ * "on"; switched it back on and was shown "off" over live rails, pressing On
+ * five more times. `responsive` and the latched fault were equally frozen.
  */
 function TrackPowerControl({
   layoutId,

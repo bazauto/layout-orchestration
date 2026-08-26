@@ -61,9 +61,16 @@ export async function dccLinkRoutes(
    * fail-safe rule is scoped to sensor and control *topics* — an operator UI
    * sending nonsense is a bug in the UI, not a reason to halt the layout.
    *
-   * Answers with the link view rather than an acknowledgement, and that is the
-   * point: `setTrackPower` probes the station afterwards, so what comes back is
-   * the power state the **station reported**, not the one that was asked for.
+   * Answers with the link view rather than an acknowledgement — but read it as
+   * "the link as it stood when the bytes went out", **not** as the station's
+   * answer. `setTrackPower` writes `<1 MAIN>` and then `<s>`, and both resolve
+   * when the write flushes; the `<p1 MAIN>` that actually moves
+   * `dccLink.mainPowerOn` arrives on the response channel a round trip later.
+   * A caller that treated this body as the confirmed state would be doing
+   * exactly what D12 forbids.
+   *
+   * What tells a client the truth is the `DCC_LINK` event, pushed the moment
+   * that reply lands (#179). This body is a courtesy, not the mechanism.
    */
   fastify.post(
     '/api/layouts/:layoutId/dcc-link/power',

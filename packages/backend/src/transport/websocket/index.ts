@@ -121,10 +121,16 @@ export async function registerWebSocket(
         /** #6: latched braking faults, same posture again — one per loco (B10). */
         brakingFaults: layoutService.getBrakingFaults(),
         /**
-         * #148: the command-station link. In the snapshot rather than on an
-         * event of its own because it is state, not a transition — a browser
+         * #148: the command-station link. On the snapshot because a browser
          * opening onto a Safe-Stopped layout needs to be told the station is
-         * silent, and the event that said so may have fired an hour ago.
+         * silent, and the transition that said so may have fired an hour ago.
+         *
+         * #179: on the snapshot **as well as** its own `DCC_LINK` event, not
+         * instead of one. This used to be snapshot-only, argued as "state, not
+         * a transition"; that held while the only thing that moved the view was
+         * the station dying, and stopped holding when #149 gave an operator a
+         * button. A client that never hears the delta shows a frozen badge, and
+         * a frozen power badge is an operator reading "off" off live rails.
          */
         dccLink: layoutService.getDccLink(),
         automationRuns: layoutService.getAutomationRuns(),
