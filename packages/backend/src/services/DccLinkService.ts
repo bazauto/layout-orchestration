@@ -422,7 +422,25 @@ export class DccLinkService {
       raw: response.raw,
       observedAt: now,
     };
-    effects.healthChanged = true;
+
+    // Only a *changed* identity is a health change. `observedAt` moves on every
+    // probe, and this used to flag `healthChanged` unconditionally, which meant
+    // the routine `<s>` reply re-evaluated Safe-Stop every five seconds for as
+    // long as the layout was up. Harmless while nothing watched the flag; it
+    // stopped being harmless in #179, where it would have broadcast the whole
+    // link view to every browser on the same five-second tick — the noise every
+    // other delta in this system is written to avoid (`SENSOR_STATE` #76,
+    // `AUTOMATION_STATE` #7).
+    //
+    // The restart path below flags it separately, through `restartCount` and
+    // the latched fault, so a station that reboots is still announced at once.
+    const changed =
+      previous === null ||
+      previous.version !== response.version ||
+      previous.product !== response.product ||
+      previous.commit !== response.commit ||
+      previous.raw !== response.raw;
+    if (changed) effects.healthChanged = true;
 
     // A restart is an identity we did not ask for. The station sends its banner
     // unprompted exactly once — at boot — so an unsolicited one *is* the reboot,
@@ -431,6 +449,7 @@ export class DccLinkService {
     if (!isRestart) return;
 
     this.restartCount++;
+    effects.healthChanged = true;
     this.latchFault(
       {
         kind: 'station-restarted',

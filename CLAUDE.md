@@ -220,7 +220,7 @@ One line per area: enough to know whether it is what you are touching. The long 
 | **Sensor simulation** (#65) | Flag-gated (`SENSOR_SIMULATION`, off by default) — publishes to the sensor's own `mqttTopic` so the broker echoes it back through ordinary ingestion, byte-identical to hardware. | `sensor-simulation.md` |
 | **DCC wire format** (#147) | `domain/dccWireFormat.ts` builds every DCC-EX command string; `SerialDccAdapter` only writes them. Throttle is the current **three-field** `<t CAB SPEED DIR>` — the legacy leading register shifts every field and moved the wrong train. Formats, never validates. | issue #153 (index) |
 | **Deployment** (#143) | Runs as a systemd unit on the bench box. `FRONTEND_DIST_PATH` makes the backend serve the built SPA on its own port, so a deployment is one process and every request is same-origin; the frontend addresses `window.location`, never a hardcoded host. Backups are `VACUUM INTO` on a timer, **never a file copy**. Everything lives in `deploy/`. | `deployment.md` |
-| **DCC link** (#148, #150, #149, #152) | The station **answers**: `domain/dccResponse.ts` frames and parses, `domain/dccLink.ts` correlates replies to commands positionally, `DccLinkService` holds `SystemHealth.dccLink`. Silence Safe-Stops; `<X>` faults the route that issued the command; a wrong-cab `<l>` Safe-Stops. `setFunction` throws. **Track power is commanded on at connect and controllable by an operator**; observed dark refuses routes and automation and is **never** a Safe-Stop. A point's `dccAddress` is bounded to the accessory space `[1, 2044]` at the boundary — on both write schemas *and* `pointRowSchema` — rather than discovered as an `<X>` under a train. | `dcc-link.md` |
+| **DCC link** (#148, #150, #149, #152, #179, #180) | The station **answers**: `domain/dccResponse.ts` frames and parses, `domain/dccLink.ts` correlates replies to commands positionally, `DccLinkService` holds `SystemHealth.dccLink`. Silence Safe-Stops; `<X>` faults the route that issued the command; a wrong-cab `<l>` Safe-Stops. `setFunction` throws. **Nothing commands track power but an operator** — connect probes, it does not assert (#180) — and the command is `<1 MAIN>`, never the programming track; observed dark refuses routes and automation and is **never** a Safe-Stop. The whole link view is **pushed** on a `DCC_LINK` event whenever it moves (#179), not left frozen at the opening snapshot. A point's `dccAddress` is bounded to the accessory space `[1, 2044]` at the boundary — on both write schemas *and* `pointRowSchema` — rather than discovered as an `<X>` under a train. | `dcc-link.md` |
 
 ### Traps
 
@@ -282,6 +282,13 @@ the id (`grep -n "^### D9" docs/sensor-trust.md`) before concluding any of these
 - **A malformed sensor payload Safe-Stops on the first message; a malformed operator UI
   request is an ordinary 400.** The fail-safe rule is scoped to sensor/control topics
   (`sensor-trust.md`).
+- **`TrackPowerControl` throws away the POST reply, and that is not a missed optimisation** —
+  `setTrackPower` writes `<1 MAIN>` then `<s>` and both resolve when the write flushes, so the
+  body is the link as it stood *before* the station answered. The `DCC_LINK` push is the
+  mechanism (`dcc-link.md` D17).
+- **A routine `<s>` reply no longer sets `healthChanged`** — `noteIdentity` flags only a
+  *changed* identity or a restart. Unconditional was harmless while nothing watched the flag;
+  #179 made it a broadcast to every browser every 5 s (`dcc-link.md` D17).
 - **Track power off refuses routes but is not a Safe-Stop, and latches nothing** — the layout is
   already stopped, and an operator who switched it off to re-rail a wagon must not come back to a
   system needing acknowledgement. It refuses on an *observed* `false`, never on `null`
@@ -334,9 +341,13 @@ Recorded rather than closed — **none of these is a bug to fix in passing.** On
 - **Automation's coverage tracks where the beams are.** No trusted, measured `ir_position`
   beam at the destination — or no `crawl_speed_step` on the loco — means no berth: the run
   stops at the destination block's entry boundary and an operator finishes the move.
-- **A power cutoff is pushed on the wire** as of `bazauto/PicoDCC#59`, and #149 acts on it: `<1>` at
-  connect, an operator control, routes and automation refused while the layout is observed dark, and
-  **never** a Safe-Stop — the layout is already stopped (`dcc-link.md` D10, D12, D14, D15).
+- **A power cutoff is pushed on the wire** as of `bazauto/PicoDCC#59`, and #149 acts on it: an
+  operator control, routes and automation refused while the layout is observed dark, and **never**
+  a Safe-Stop — the layout is already stopped (`dcc-link.md` D10, D12, D14, D15).
+- **The layout comes up dark, and stays dark until an operator says otherwise** (#180). #149's
+  `<1>` at connect is withdrawn: the link comes up on every restart, and a deploy restarts the
+  unit, so it meant the rails went live because somebody pushed a build. Connect probes instead
+  (`dcc-link.md` D14).
 - **Backups are on the same disk as the database** (`deployment.md` D6). A single-disk bench
   box: the timer protects against corruption, a bad migration and an accidental delete, and
   not against the disk failing. Pulling a snapshot off the box is manual.

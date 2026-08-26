@@ -103,10 +103,15 @@ export class SimulatedDccAdapter implements IDccController {
   }
 
   /**
-   * #149. Both tracks, mirroring the bare `<1>` / `<0>` the wire format sends,
-   * and it answers with the power frames a real station answers with -- so the
-   * `<p1 MAIN>` that makes the command *evidence* rather than a hope is
-   * exercised in the simulator too.
+   * #149, #180. The **main** track only, mirroring the `<1 MAIN>` / `<0 MAIN>`
+   * the wire format sends, and it answers with the power frame a real station
+   * answers with — so the `<p1 MAIN>` that makes the command *evidence* rather
+   * than a hope is exercised in the simulator too.
+   *
+   * `progPowerOn` is deliberately left alone: the orchestrator never commands
+   * the programming track, only observes it in an `<s>` reply (#180). A test
+   * that asserts prog power is unmoved by an operator's power button is
+   * asserting something real.
    *
    * `mainPowerOn` / `progPowerOn` already defaulted to `true`, so every existing
    * test keeps running on a live layout without opting in.
@@ -119,9 +124,7 @@ export class SimulatedDccAdapter implements IDccController {
     if (this.consumeRejection()) return;
 
     this.mainPowerOn = on;
-    this.progPowerOn = on;
     this.respond({ kind: 'power', track: 'main', on });
-    this.respond({ kind: 'power', track: 'prog', on });
   }
 
   async setSpeed(address: number, speed: number, direction: 'fwd' | 'rev' | 'stop'): Promise<void> {

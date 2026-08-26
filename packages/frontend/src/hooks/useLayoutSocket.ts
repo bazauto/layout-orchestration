@@ -280,6 +280,18 @@ function applyMessage(prev: StateSnapshot, msg: ServerMessage): StateSnapshot {
       // the backend and sent as a list.
       return { ...prev, brakingFaults: msg.payload.faults };
 
+    case 'DCC_LINK':
+      // #179: the complete link view, replaced wholesale — the backend sends
+      // the same projection the snapshot carries, so there is nothing to merge.
+      //
+      // Without this case the snapshot's `dccLink` was the only one a client
+      // ever saw. An operator switched track power off, the badge went on
+      // saying "on", and after a reconnect happened to pick up the `p0` it went
+      // on saying "off" over live rails. The same staleness applied to
+      // `responsive` and to the latched fault, so a link fault raised after the
+      // page loaded was invisible.
+      return { ...prev, dccLink: msg.payload };
+
     case 'AUTOMATION_STATE':
       // #7 PR C: the complete set of runs, sent only when it changed. The
       // sweep ticks four times a second and is usually a no-op, so the backend

@@ -1316,7 +1316,17 @@ export type LayoutEvent =
    * window pushes nothing; an oscillating beam pushes on every transition,
    * which is the point (see `docs/sensor-trust.md` D14, closed by this).
    */
-  | { type: 'SENSOR_STATE'; payload: SensorObservationView };
+  | { type: 'SENSOR_STATE'; payload: SensorObservationView }
+  /**
+   * #179: the command-station link, whenever any field of it moved --
+   * responsiveness, the latched fault, either track power state, the station
+   * identity. #148 put this on the snapshot alone, arguing it was "state, not
+   * a transition"; that held while the view only moved if the station died,
+   * and stopped holding the moment #149 gave an operator a button that changes
+   * it. Without this event the badge freezes at whatever the snapshot said,
+   * and an operator reads "power off" off live rails.
+   */
+  | { type: 'DCC_LINK'; payload: DccLinkView };
 
 // ─── WebSocket Message Shapes ─────────────────────────────────────────────────
 
@@ -1381,6 +1391,8 @@ export type ServerMessage =
   | { type: 'BRAKING_FAULTS'; payload: { faults: BrakingFaultView[] } }
   /** #76: mirrors the `LayoutEvent` member of the same name exactly. */
   | { type: 'SENSOR_STATE'; payload: SensorObservationView }
+  /** #179: mirrors the `LayoutEvent` member of the same name exactly. */
+  | { type: 'DCC_LINK'; payload: DccLinkView }
   | { type: 'ERROR'; payload: { message: string; details?: unknown } }
   /**
    * D5, docs/liveness.md: an application-level message, not a protocol-level

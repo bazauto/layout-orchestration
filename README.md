@@ -703,11 +703,18 @@ encoding as an emergency stop) is open, and #151 will introduce a per-loco step 
 strict check today would halt a live layout over a firmware version skew. `docs/dcc-link.md`
 D6 carries the revisit condition.
 
-**Track power is commanded, observed, and gated** (#149). `<1>` goes out when the link comes
-up — PicoDCC's tracks boot unpowered, so before this a cold start ran throttle commands into
-dead rails while reporting healthy. An operator or admin can switch it from the Control view,
-which is also the recovery path after a station cutoff; that previously needed a power cycle
-of the command station itself.
+**Track power is observed and gated, and commanded only by an operator** (#149, #180). An
+operator or admin switches it from the Control view, which is also the recovery path after a
+station cutoff; that previously needed a power cycle of the command station itself. The
+command is `<1 MAIN>` / `<0 MAIN>` — the programming track is read and never written, because
+it belongs to a service-mode process that does not exist yet.
+
+**Starting the orchestrator does not energise the layout.** #149 sent `<1>` when the link came
+up, on the reasoning that PicoDCC's tracks boot unpowered and a cold start would otherwise run
+throttle commands into dead rails. In service that meant the rails went live on every deploy,
+since a deploy restarts the unit. Connect now probes with `<s>` instead: the layout comes up
+dark, the state is *known* rather than assumed, and the gating below refuses routes until
+somebody presses On.
 
 While the main track is **observed** dark, new routes are refused (`track-power-off`) and
 automation is abandoned and gated. It is **not** a Safe-Stop and latches nothing: the layout
@@ -716,9 +723,15 @@ back to a system demanding an acknowledgement. `null` — never reported — is 
 treated as off; that case is already covered by the link being unresponsive.
 
 Power is never restored automatically. A decoder that loses the DCC signal falls back to DC,
-and DC on a powered main track is full speed, so `<1>` is only ever sent by a cold start or by
-an operator. Cutoffs are now **pushed** on the wire as of `bazauto/PicoDCC#59`, rather than
-discovered at the next probe.
+and DC on a powered main track is full speed, so `<1 MAIN>` is only ever sent by an operator.
+Cutoffs are now **pushed** on the wire as of `bazauto/PicoDCC#59`, rather than discovered at
+the next probe.
+
+**The whole link view is pushed to the browser** (#179). It used to arrive only in the opening
+WebSocket snapshot, so the track-power badge — and `responsive`, the latched fault and the
+station identity with it — froze at whatever was true when the page loaded. On the live layout
+that showed an operator "power off" over live rails for half an hour. A `DCC_LINK` event now
+carries the view whenever it moves.
 
 **Decoder functions are refused against real hardware** (#150). PicoDCC validates `<F>`,
 accepts it, and does nothing with it — `updateFunct()` is an empty body — so

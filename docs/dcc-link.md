@@ -240,29 +240,55 @@ What it does do:
   system is already Safe-Stopped, and refusing on `null` too would turn every start-up race
   into a rejection nobody could explain.
 
-**Never auto-restore power after a fault.** A decoder that loses the DCC signal falls back to
-DC, and DC on a powered main track is full speed. `<1>` on connect is a cold start with an
-operator present; an automatic `<1>` in response to observing `<p0 MAIN>` is not, and nothing
-in #149 sends one.
+**Never restore power except when an operator asks.** A decoder that loses the DCC signal
+falls back to DC, and DC on a powered main track is full speed. #149 carved out one exception
+— `<1>` when the link came up, argued as "a cold start with an operator present" — and #180
+withdrew it: see D14. Today the only thing in this system that sends `<1 MAIN>` is
+`LayoutService.setTrackPower`, and the only thing that calls it is the operator's button.
 
-## D14 — `<1>` is sent by the service on connect, not by the adapter
+**Only the main track is ever commanded** (#180). `formatTrackPower` names `MAIN`, so the
+programming track is observed through the `<p? PROG>` in an `<s>` reply and never written.
+#149 sent a bare `<1>`, which DCC-EX reads as `DCCEX_TRACK_ALL` and PicoDCC implements as
+both tracks, on the argument that the operator-facing concept is "the layout is live". It is
+— but the programming track is not part of that layout. It belongs to a service-mode process
+that does not exist here yet, and when it does it will want to own its own power rather than
+find it switched underneath by an operator turning the running lines on. `progPowerOn` stays
+in `SystemHealth` and on the wire; it is a reading, not a control.
 
-The issue asked for `SerialDccAdapter.connect()` to send `<1>` after the port opens. It is
-sent from `LayoutService.handleDccConnectionChange` instead, for two reasons the codebase
-acquired after #149 was written:
+## D14 — Connect observes power. It does not assert it (#180 supersedes #149)
 
-- **"The layout should be live" is a decision**, and decisions do not live in adapters
-  (CLAUDE.md safety rule 2). The adapter opens a port and writes bytes.
-- **Every command must be recorded before it is written.** D8's correlation is positional, so
-  a command written from inside the adapter — invisible to `recordCommand` — would leave its
-  `<p1 MAIN>` reply to be attributed to whatever *was* outstanding. The write path that
-  records first is `LayoutService.setTrackPower`, and connect goes through it.
+#149 sent `<1>` from `LayoutService.handleDccConnectionChange` the moment the serial link came
+up. The argument was sound as far as it went: PicoDCC's tracks come up unpowered —
+`PicoDccTrack`'s constructor drives the power pin low — so a cold start otherwise connected,
+reported the DCC leg healthy, accepted routes and issued throttle commands into dead rails.
 
-`setTrackPower` also probes with `<s>` immediately afterwards, and that is the point rather
-than belt and braces: the command resolving means the bytes went out, and D12's whole
+**It was the wrong default in service.** The link comes up whenever the process starts, and
+this process is restarted on every deploy (`deploy/deploy.sh` restarts the unit). So the
+layout came to life because somebody pushed a build, with nobody necessarily standing at it.
+D10's own argument against automatic restoration — a decoder that loses the DCC signal falls
+back to DC, and DC on a powered main track is full speed — applies to a service restart just
+as it does to a fault. "A cold start with an operator present" described the bench in
+February, not a deployed system.
+
+**Connect now sends `<s>`, not `<1 MAIN>`.** The probe costs the same round trip and answers
+the question a reconnect actually raises: what the station's power state *is*. That was always
+where `dccLink.mainPowerOn` came from — #149's `<1>` was followed by an `<s>` for exactly this
+reason — so nothing about the observation path changes. What changes is that the answer is
+allowed to be "off".
+
+The layout comes up dark, `mainPowerOn` is `false`, and D10's gating refuses routes and
+automation until an operator presses **On**. That gating is the half of #149 that was doing
+the safety work; the `<1>` was the half that was making an assumption.
+
+**What #149 got right and #180 keeps.** `setTrackPower` still lives in the service, not the
+adapter, for the two reasons #149 gave: "the layout should be live" is a decision, and
+decisions do not live in adapters (CLAUDE.md safety rule 2); and every command must be
+recorded *before* it is written, or D8's positional correlation attributes the reply to the
+wrong command. It still probes with `<s>` immediately afterwards, and that is still the point
+rather than belt and braces — the command resolving means the bytes went out, and D12's whole
 argument is that a command's success is not evidence of its effect. What moves
-`dccLink.mainPowerOn` is the `<p1 MAIN>` in the reply, so the operator sees the state the
-**station reported**, never the state we asked for. A `<1>` that vanishes leaves the badge
+`dccLink.mainPowerOn` is the `<p1 MAIN>` that comes *back*, so the operator sees the state the
+**station reported**, never the state we asked for. A `<1 MAIN>` that vanishes leaves the badge
 where it was.
 
 ## D15 — Abandoning automation and gating the sweep are different jobs
@@ -270,7 +296,7 @@ where it was.
 A power loss does both, and they are not redundant.
 
 **Abandoning** stops the run that is in flight. Without it, automation would keep issuing
-speed commands into dead rails and the train would leap into motion the moment `<1>` was
+speed commands into dead rails and the train would leap into motion the moment `<1 MAIN>` was
 sent — the ghost-movement failure in a different costume. A braking ramp would do the same,
 one step at a time.
 
@@ -290,6 +316,51 @@ off this link.
 **An existing route keeps its locks in the dark.** The locks are what stop a second train
 being routed over track this one is standing on, and that is as true unpowered as powered —
 more so, since the train cannot be moved off it.
+
+## D17 — The link view is pushed, not only snapshotted (#179)
+
+`DccLinkView` reached the browser in the opening `STATE_SNAPSHOT` and nowhere else. The
+reasoning, recorded on the snapshot itself, was that the link is *state, not a transition*: a
+browser opening onto a Safe-Stopped layout must be told the station is silent, and the
+transition that said so may have fired an hour ago.
+
+That was true when the only thing that moved the view was the station dying. **#149 gave an
+operator a button that moves it**, and nothing was added to tell anybody. The result on the
+live layout, from the bench journal of 2026-08-25:
+
+| Time | Operator | Wire | What the badge said |
+|---|---|---|---|
+| 09:06:19 | pressed Off | `<0>` — `<p0 MAIN>` | still "on" |
+| 09:06:41 | pressed Off **again** | `<0>` — `<p0 MAIN>` | still "on" |
+| 09:06:52 | pressed On | `<1>` — `<p1 MAIN>` | "off" — over live rails |
+| 09:07:01 … 09:43:04 | pressed On five more times | acknowledged every time | "off" |
+
+Every command went out and every one was answered. The badge only ever moved when the socket
+reconnected and re-snapshotted, which is why it looked *intermittently* right.
+
+**A `DCC_LINK` event now carries the whole view**, emitted from
+`LayoutService.applyDccLinkEffects` whenever `effects.healthChanged` — the one place the
+link's health is applied, whatever moved it. Three consequences worth stating:
+
+- **It is the whole view, replaced wholesale**, not a power field. `responsive`, the latched
+  fault and the identity were equally frozen, so a link fault raised after the page loaded was
+  invisible. The projection is `toDccLinkView`, the same one the snapshot uses, so a client
+  that applied the delta and a client that just connected hold the identical object.
+- **The snapshot keeps carrying it.** The original argument for the snapshot was never wrong,
+  only incomplete: a browser opening onto a silent station still needs to be told.
+- **The POST reply is not the mechanism.** `POST .../dcc-link/power` answers with the link
+  view, and it is tempting to apply that in the UI for instant feedback. It would be wrong:
+  `setTrackPower` writes `<1 MAIN>` and then `<s>`, and both resolve when the write flushes —
+  the `<p1 MAIN>` arrives a round trip later. The body is the link as it stood *before* the
+  station answered. `TrackPowerControl` therefore ignores it, which is D12 applied to our own
+  API rather than to the station's.
+
+**A routine probe must not push.** `noteIdentity` used to set `healthChanged` unconditionally,
+so the 5 s `<s>` reply flagged a health change forever — harmless while nothing watched the
+flag, and a broadcast to every browser on a five-second tick once something did. It now flags
+only a *changed* identity (or a restart, which moves `restartCount`). `observedAt` moving is
+not a health change. This also stops Safe-Stop being re-evaluated every five seconds for as
+long as the layout is up.
 
 ## D11 — The simulator answers
 
@@ -413,11 +484,12 @@ authority, exactly as with role (`docs/auth.md`).
 | Framing, parsing, the speed-byte decode, the log projection | `domain/dccResponse.ts` (pure) |
 | Correlation, `<l>` verification, liveness, the view projection | `domain/dccLink.ts` (pure) |
 | The outstanding queue, the latch, power/identity bookkeeping | `services/DccLinkService.ts` |
-| The `<s>` probe timer, route faults, Safe-Stop, the acknowledge | `services/LayoutService.ts` |
+| The `<s>` probe timer, route faults, Safe-Stop, the acknowledge, the `DCC_LINK` push | `services/LayoutService.ts` |
 | `data` handler, framing buffer, `setFunction` guard | `adapters/dcc/SerialDccAdapter.ts` |
 | Synthetic replies and the failure switches | `adapters/dcc/SimulatedDccAdapter.ts` |
 | `GET`/`POST .../dcc-link` | `transport/http/routes/dccLink.ts` |
-| Failure-path coverage | `tests/scenario/dcc-link.scenario.test.ts` |
+| The `DCC_LINK` reducer case | `packages/frontend/src/hooks/useLayoutSocket.ts` |
+| Failure-path coverage | `tests/scenario/dcc-link.scenario.test.ts`, `tests/scenario/track-power.scenario.test.ts` |
 
 `SerialDccAdapter` stays excluded from coverage, and that is now a much smaller claim: it
 opens a port, writes bytes, buffers what comes back, and delegates. Every decision it used

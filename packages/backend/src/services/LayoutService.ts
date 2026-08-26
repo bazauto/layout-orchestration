@@ -3709,6 +3709,17 @@ export class LayoutService extends EventEmitter {
     const link = this.dccLink.getHealth();
     this.health = { ...this.health, dccLink: link };
 
+    // #179: tell every connected client, every time this view moves. It used
+    // to reach the browser only in the opening snapshot, on #148's reasoning
+    // that the link is state rather than a transition. That held while the only
+    // thing that moved it was the station dying; #149 gave an operator a button
+    // that changes it, and the badge then sat frozen at whatever the snapshot
+    // said -- reading "power off" off live rails, the exact inversion D12
+    // exists to prevent. Emitted from here rather than from each call site
+    // because this is the one place the link's health is applied, whether it
+    // moved because of a reply, a sweep, or an operator.
+    this.emitDccLink();
+
     // #149: the layout has gone dark, whether an operator asked for it or the
     // station cut power on a fault. Both reach here the same way, through a
     // `<p0 MAIN>` on the response channel, and both want the same answer.
@@ -3768,6 +3779,18 @@ export class LayoutService extends EventEmitter {
   }
 
   /**
+   * Pushes the link view to every connected client (#179).
+   *
+   * The projection is `toDccLinkView`, the same one the opening snapshot uses,
+   * so a client that has applied this event and a client that has just
+   * connected hold the identical object — which is what lets the frontend
+   * reducer replace `dccLink` wholesale rather than merge fields into it.
+   */
+  private emitDccLink(): void {
+    this.emit('event', { type: 'DCC_LINK', payload: this.getDccLink() } satisfies LayoutEvent);
+  }
+
+  /**
    * Clears the latched DCC-link fault. Any authenticated role, like the
    * route-fault acknowledge it mirrors.
    *
@@ -3786,6 +3809,7 @@ export class LayoutService extends EventEmitter {
       reason: cleared.reason,
     });
     this.health = { ...this.health, dccLink: this.dccLink.getHealth() };
+    this.emitDccLink();
     await this.evaluateAndApplySafeStop();
     return this.getDccLink();
   }
@@ -3815,21 +3839,23 @@ export class LayoutService extends EventEmitter {
       this.log.error('[LayoutService] evaluateAndApplySafeStop failed', { error: err.message }),
     );
 
-    // #149: PicoDCC's tracks come up UNPOWERED — `PicoDccTrack`'s constructor
-    // does `gpio_put(power_ctrl_pin, 0)`, and power turns on only in response
-    // to `<1>`. Nothing sent one, so a cold start left the orchestrator
-    // reporting healthy, accepting routes, and issuing throttle commands into
-    // dead rails.
+    // #180: connect OBSERVES power, it does not assert it. #149 sent `<1>`
+    // from here, on the reasoning that PicoDCC's tracks come up unpowered and a
+    // cold start would otherwise run into dead rails. In service that turned
+    // out to mean the layout comes to life whenever the unit restarts — and it
+    // restarts on every deploy, with nobody necessarily standing at the layout.
+    // D10's own argument against automatic restoration applies to a service
+    // restart as much as it does to a fault: a decoder that loses the DCC
+    // signal falls back to DC, and DC on a powered main track is full speed.
     //
-    // Sent from here rather than from inside `SerialDccAdapter.connect()`, as
-    // the issue originally suggested, for two reasons this codebase has since
-    // acquired: "the layout should be live" is a decision, and decisions do not
-    // belong in an adapter (safety rule 2); and every command must be recorded
-    // BEFORE it is written, or `domain/dccLink.ts` correlates its reply to the
-    // wrong command (D8). `setTrackPower` below does both in the right order.
+    // A probe instead. It costs the same round trip and answers the question a
+    // reconnect actually raises — what the station's power state IS — because
+    // `<p? MAIN>` is what feeds `dccLink.mainPowerOn` either way. The layout
+    // comes up dark, and #149's gating refuses routes and automation until an
+    // operator presses On.
     if (connected) {
-      this.setTrackPower(true).catch((err: Error) =>
-        this.log.error('[LayoutService] Track power-on at connect failed', {
+      this.probeDccStation().catch((err: Error) =>
+        this.log.error('[LayoutService] DCC probe at connect failed', {
           layoutId: this.layoutId,
           error: err.message,
         }),

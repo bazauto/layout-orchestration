@@ -606,6 +606,20 @@ badge where it was. A refusal is shown next to the buttons rather than only
 logged — M15's rule, which applied to a refused WebSocket command and applies
 just as well to a 403 on this one.
 
+**And it reaches the badge as a `DCC_LINK` push** (#179, `docs/dcc-link.md`
+D17). "Follows the station" was the intent from the start and was not true in
+service: the link view arrived in the opening `STATE_SNAPSHOT` and never again,
+so the badge froze at whatever was true when the page loaded. An operator
+switched power off and went on being shown "on", pressed Off a second time,
+switched it back on and was shown "off" over live rails for half an hour. The
+POST reply is deliberately **not** what fixes it: that body is written before
+the station has answered, so applying it would be the same mistake with a
+shorter fuse.
+
+The same freeze covered `responsive`, the latched link fault and the station
+identity, which is the argument for pushing the whole view rather than a power
+field — a link fault raised after the page loaded was invisible too.
+
 For the `monitor` role the badge is present and the buttons are not. That is not
 an exception to M16: "the rails are dead" is the most situational fact on the
 screen, and reading it is exactly what the role is for. Switching it is
