@@ -57,6 +57,7 @@ import {
   INK,
   LOCK,
   OCCUPANCY,
+  OCCUPANCY_WASH_OPACITY,
   POINT_POSITION,
   ROUTE_LINE,
   SENSOR_OBSERVATION,
@@ -375,15 +376,19 @@ export const TrackDiagram = forwardRef<SVGSVGElement, TrackDiagramProps>(functio
                       const enc = OCCUPANCY[state.occupancy];
                       return (
                         <>
+                          {/* Occupied is washed heavier than clear, and that
+                              weight is what survives colour being removed
+                              (#81, D10) — the two are otherwise flat fills
+                              separated only by hue, which deuteranopia does
+                              not separate at all. */}
                           <rect
                             width={T}
                             height={T}
                             fill={enc.colour}
-                            opacity={BLOCK_TINT_OPACITY}
+                            opacity={OCCUPANCY_WASH_OPACITY[state.occupancy]}
                           />
-                          {/* The pattern is what survives colour being removed
-                              (#81). `clear` has none, and that flatness is
-                              itself the distinction. */}
+                          {/* A hatch now marks a fault state and nothing else:
+                              `unknown` alone carries one (D10). */}
                           {enc.pattern && (
                             <rect
                               width={T}

@@ -99,9 +99,14 @@ drawn on a route cell like any other.
 
 **`unknown` is the most visually distinct of the three occupancy states**, not a
 neutral middle ground. It is a fail-safe state that refuses routes, so it gets
-the cross-hatch: obviously different from both a flat fill and a
-single-direction hatch, even in greyscale. A state that halts the railway
-should not look like a milder version of "clear".
+the cross-hatch. A state that halts the railway should not look like a milder
+version of "clear".
+
+**Amended (D10): it is now the *only* hatch.** `occupied` used to carry a
+single-direction one, which made this claim about `unknown` half true at best —
+the fail-safe state was competing with the ordinary one for the same channel.
+`occupied` and `clear` are both flat washes now, separated without colour by
+the opacity each is drawn at. D10 has the reasoning and the numbers.
 
 ---
 
@@ -335,6 +340,62 @@ question from a control that hides one.
 and four glyph states that are not self-describing need their key on screen. The route
 key keeps the conditional mount — what *it* explains is genuinely absent on a quiet
 layout.
+
+---
+
+## D10 — Texture marks a fault state, not an operational one
+
+**Decision.** `occupied` is a **flat red wash**, drawn heavier than the others;
+`clear` stays a flat green wash at the ordinary tint opacity; `unknown` keeps
+its cross-hatch. The `diag-occupied` hatch, and the `<pattern>` that drew it,
+are gone.
+
+Implementation: `OCCUPANCY` and `OCCUPANCY_WASH_OPACITY`
+(`packages/frontend/src/diagram/encoding.ts`), consumed by `TrackDiagram`'s
+wash layer.
+
+**Why the hatch went.** Operator feedback: *"the hashing stands out a bit too
+much."* It does, and D2's own reasoning is why that matters. A hatch is the
+loudest non-colour mark the diagram has, and `unknown` is meant to be the most
+visually assertive of the three states because it is the one that refuses
+routes. Spending a hatch on `occupied` — the state a working railway sits in
+most of the time — put the busiest texture on the ordinary case and left the
+fail-safe state shouting over it. The rule that replaces it: **texture
+separates a fault from an operational state, never one operational state from
+another.** `unknown` is the only hatch on the diagram, and #71's decorative
+track and #82's staleness will be measured against the same line.
+
+**What the hatch was carrying, and what carries it now.** #81's rule is not
+rhetorical for this pair. Composited over the `#1e1e2e` tile at the same
+opacity, `#f38ba8` and `#a6e3a1` land 6.9 apart in RGB under simulated
+deuteranopia — occupied and clear become *the same colour* for roughly 8% of
+men, which is exactly the failure the whole document exists to prevent. So the
+flat wash carries its own non-colour distinction: **occupied is washed at
+0.55, clear and unknown at `BLOCK_TINT_OPACITY` (0.26)**. That is a 1.57:1
+luminance step, and it takes the deuteranope separation to 34.8 and the
+protanope to 22.3. With colour removed entirely, occupied is the *heavier*
+block — which is the right direction, since it is also the one carrying a
+train.
+
+The run label's `OCCUPANCY[…].glyph` (`■ □ ?`) is unchanged and still says the
+state in a mark that is not a colour at all, as does the legend on the status
+strip. Weight is the second carrier, not the only one.
+
+**Why not a deeper, more saturated red.** Tried and rejected: `#e64553` and
+`#ff6b6b` both read as more emphatically red to normal vision and *worse* to
+everyone else — `#ff6b6b` at 0.55 falls to 6.7 under protanopia, essentially
+identical to clear. Red is intrinsically dark in luminance and green
+intrinsically light, so the only way a red wash outweighs a green one is to be
+a light red. `#f38ba8` was already the state palette's red (`FAULT`,
+`SENSOR_OBSERVATION.occupied`), and keeping it means no new colour enters the
+system.
+
+**What this does not change.** Occupancy remains a fill and a lock remains a
+line (D2). The four block tints are untouched (D4) — this changes the opacity
+of a *state* wash, and identity still gives up the colour channel wherever
+state is drawn (D1). The sensor observation mark keeps `OCCUPANCY.occupied`'s
+hue at its own scale (D8); it is a 7px circle, never an area, so wash opacity
+does not reach it.
 
 ---
 

@@ -558,7 +558,9 @@ upright.
 
 ## D18 — Every hatch is drawn corner to corner, and its period divides the tile
 
-The occupied hatch was a vertical line under `patternTransform="rotate(45)"`.
+The occupied hatch — since retired entirely by `docs/diagram-encoding.md` D10,
+which left `unknown`'s cross-hatch as the only one on the diagram — was a
+vertical line under `patternTransform="rotate(45)"`.
 `patternUnits="userSpaceOnUse"` anchors a pattern in the user space of the
 element referencing it, and every occupancy wash rect sits inside its own
 tile's `translate(x*40, y*40)` — so each tile re-anchors the pattern at its own
@@ -571,8 +573,9 @@ line corner to corner in a square cell, which tiles seamlessly under any
 translation that is a multiple of the pattern period, and the period divides
 `TILE_SIZE`. The `unknown` cross-hatch never had the bug because it was always
 drawn that way — so the fix was to draw the other two like that one, not to
-invent anything. `patterns.test.ts` asserts the divisibility rather than
-trusting the comment.
+invent anything, and the rule outlived two of the three: it now binds whatever
+is added next. `patterns.test.ts` asserts the divisibility rather than trusting
+the comment.
 
 ## D19 — A block label lies along diagonal track, and stays upright everywhere else
 
