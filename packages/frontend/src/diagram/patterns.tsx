@@ -9,16 +9,19 @@
  *
  * ## Why patterns at all
  *
- * #81's rule: colour is never the sole carrier of meaning. Occupancy's three
- * states are a flat fill (`clear`), a single-direction hatch (`occupied`) and
- * a cross-hatch (`unknown`), which stay distinguishable in greyscale, under
- * every common form of colour vision deficiency, and on the washed-out
- * projector a wall display often turns out to be.
+ * #81's rule: colour is never the sole carrier of meaning. A hatch is the
+ * loudest non-colour carrier available, and since D10 the diagram spends it on
+ * exactly one thing: **`unknown`**, the fail-safe state — no route may be
+ * granted over an `unknown` block and none may resume through one. Texture
+ * therefore separates a fault from an operational state, never one operational
+ * state from another.
  *
- * `unknown` is the cross-hatch on purpose. It is the fail-safe state — no
- * route may be granted over an `unknown` block and none may resume through one
- * — so it is the *most* visually assertive of the three rather than a neutral
- * middle ground between clear and occupied.
+ * `occupied` used to carry a single-direction hatch and no longer does
+ * (`docs/diagram-encoding.md` D10): a working railway sits occupied most of the
+ * time, so the hatch made the ordinary case the busiest thing on the mimic and
+ * left `unknown` shouting over it. `occupied` and `clear` are now both flat
+ * washes, separated without colour by the opacity they are drawn at
+ * (`OCCUPANCY_WASH_OPACITY`) and by the glyph on the run label.
  *
  * ## Alignment: why every hatch is drawn corner to corner
  *
@@ -29,17 +32,18 @@
  * `TILE_SIZE` in both axes survives that unharmed — the phase comes out
  * identical on every tile and the hatch runs unbroken across a whole block.
  *
- * A **rotated** one does not. `diag-occupied` used to be a vertical line under
- * `patternTransform="rotate(45)"`: shifting 40px along a 45° axis is 28.28,
- * and `28.28 mod 8` left every tile offset by a little over half a stripe. On
- * a multi-tile block that read as a ragged seam at every tile boundary — the
- * hatch looked like it had been drawn per cell, because it had been.
+ * A **rotated** one does not. The retired `diag-occupied` hatch used to be a
+ * vertical line under `patternTransform="rotate(45)"`: shifting 40px along a
+ * 45° axis is 28.28, and `28.28 mod 8` left every tile offset by a little over
+ * half a stripe. On a multi-tile block that read as a ragged seam at every
+ * tile boundary — the hatch looked like it had been drawn per cell, because it
+ * had been.
  *
  * So no pattern here carries a `patternTransform`. The 45° angle comes from
  * drawing the line corner to corner inside a square cell, which tiles
  * seamlessly under any translation that is a multiple of `PATTERN_SIZE`. The
  * `unknown` cross-hatch never had the bug because it was always drawn this
- * way; the fix is to draw the other two like that one.
+ * way, and the rule binds anything added here later.
  */
 
 import { OCCUPANCY, POINT_POSITION } from './encoding';
@@ -67,17 +71,7 @@ const P = PATTERN_SIZE;
 export function DiagramPatternDefs() {
   return (
     <defs>
-      {/* Occupied — single-direction hatch, corner to corner (see the header). */}
-      <pattern
-        id={OCCUPANCY.occupied.pattern!}
-        patternUnits="userSpaceOnUse"
-        width={P}
-        height={P}
-      >
-        <line x1={0} y1={P} x2={P} y2={0} stroke={OCCUPANCY.occupied.colour} strokeWidth={2.5} />
-      </pattern>
-
-      {/* Unknown — cross-hatch, deliberately the busiest of the three. */}
+      {/* Unknown — cross-hatch, and now the only hatch on the diagram. */}
       <pattern
         id={OCCUPANCY.unknown.pattern!}
         patternUnits="userSpaceOnUse"
@@ -90,11 +84,12 @@ export function DiagramPatternDefs() {
 
       {/*
         Reverse road — hatched against the plain fill a normal road gets, and
-        leaning the other way from `diag-occupied` so the two never read as the
-        same texture. Unreferenced today: the live overlay distinguishes a set
-        road by stroke weight rather than by fill. Fixed alongside its siblings
-        anyway — a latent pattern that would tile wrongly the day something
-        used it is worse than one that is merely unused.
+        leaning the other way from the `unknown` cross-hatch's leading stroke so
+        the two never read as the same texture. Unreferenced today: the live
+        overlay distinguishes a set road by stroke weight rather than by fill.
+        Kept in the corner-to-corner form anyway — a latent pattern that would
+        tile wrongly the day something used it is worse than one that is merely
+        unused.
       */}
       <pattern
         id={POINT_POSITION.reverse.pattern!}

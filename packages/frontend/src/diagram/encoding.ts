@@ -100,20 +100,34 @@ export interface StateEncoding {
 /**
  * Block occupancy.
  *
- * `unknown` is a fail-safe state that refuses routes, so it is the **most**
- * visually distinct of the three rather than a neutral middle ground: a
- * cross-hatch, which reads as obviously different from both a flat fill and a
- * single-direction hatch even in greyscale.
+ * **Texture now separates operational states from faults, not one operational
+ * state from another** (`docs/diagram-encoding.md` D10). `occupied` and
+ * `clear` are both flat washes; `unknown` keeps its cross-hatch. A hatch is a
+ * loud mark, and spending it on `occupied` — the state a working railway sits
+ * in most of the time — meant the busiest thing on the mimic was the ordinary
+ * case, while the fail-safe state it is meant to single out had to shout over
+ * it. `unknown` refuses routes; `occupied` is just where the trains are.
  *
- * Occupancy is carried as a **fill**; a lock is carried as an **outline**
- * (`LOCK` below). They are independent — a block can be locked and clear, or
- * occupied and unlocked — so they must compose rather than compete for the
- * same channel.
+ * **Two flat washes cannot be told apart by hue alone**, which is the whole
+ * of #81's rule and is not rhetorical here: red `#f38ba8` and green `#a6e3a1`
+ * washed at the same opacity over `#1e1e2e` come out 6.9 apart in RGB under
+ * simulated deuteranopia — the same colour, to roughly 8% of men. So the flat
+ * wash carries its own non-colour distinction: `occupied` is washed at
+ * `OCCUPANCY_WASH_OPACITY.occupied` and the other two at the ordinary tint
+ * opacity, which puts a 1.57:1 luminance step between occupied and clear and
+ * takes the deuteranope separation to 34.8. Occupied reads as the *heavier*
+ * block with colour removed entirely — and the run label carries the glyph
+ * on top of that.
+ *
+ * Occupancy is carried as a **fill**; a lock is carried as a **line along the
+ * road** (`LOCK` below, #129). They are independent — a block can be locked
+ * and clear, or occupied and unlocked — so they must compose rather than
+ * compete for the same channel.
  */
 export const OCCUPANCY: Record<'occupied' | 'clear' | 'unknown', StateEncoding> = {
   occupied: {
     colour: '#f38ba8',
-    pattern: 'diag-occupied',
+    pattern: null,
     glyph: '■', // ■
     label: 'occupied',
   },
@@ -129,6 +143,22 @@ export const OCCUPANCY: Record<'occupied' | 'clear' | 'unknown', StateEncoding> 
     glyph: '?',
     label: 'unknown',
   },
+};
+
+/**
+ * The opacity each occupancy state's wash is drawn at, and the non-colour
+ * carrier that separates the two flat ones (see `OCCUPANCY` above).
+ *
+ * `clear` and `unknown` sit at the ordinary `BLOCK_TINT_OPACITY`, so the
+ * resting layout looks exactly as it did. `occupied` is heavier — enough for
+ * a luminance step that survives greyscale and every common form of colour
+ * vision deficiency, and not so heavy that the wash competes with the track
+ * drawn over it (it stays a wash under the track, never a solid block).
+ */
+export const OCCUPANCY_WASH_OPACITY: Record<'occupied' | 'clear' | 'unknown', number> = {
+  occupied: 0.55,
+  clear: BLOCK_TINT_OPACITY,
+  unknown: BLOCK_TINT_OPACITY,
 };
 
 /**
@@ -246,7 +276,11 @@ export const POINT_CONFIRMATION: Record<
   unreported: { colour: '#6c7086', pattern: null, glyph: '–', label: 'unreported' },
   pending: { colour: '#89b4fa', pattern: null, glyph: '…', label: 'pending' },
   confirmed: { colour: '#a6e3a1', pattern: null, glyph: '✓', label: 'confirmed' },
-  mismatch: { colour: '#f38ba8', pattern: 'diag-occupied', glyph: '✗', label: 'mismatch' },
+  // `pattern: null` since D10 retired the `diag-occupied` hatch. Nothing drew
+  // it here — a confirmation is a badge, not an area, so the glyph has always
+  // been this record's non-colour carrier — and naming a pattern id that no
+  // longer exists is worse than naming none.
+  mismatch: { colour: '#f38ba8', pattern: null, glyph: '✗', label: 'mismatch' },
   indeterminate: { colour: '#f9e2af', pattern: 'cross-unknown', glyph: '?', label: 'indeterminate' },
   'timed-out': { colour: '#f38ba8', pattern: 'cross-unknown', glyph: '⏱', label: 'timed-out' },
   stale: { colour: '#f9e2af', pattern: 'cross-unknown', glyph: '⌛', label: 'stale' },

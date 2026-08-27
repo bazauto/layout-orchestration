@@ -209,7 +209,7 @@ monitor cannot drift:
 
 | Fact | Treatment | Why that channel |
 |---|---|---|
-| Block occupancy | Fill + hatch pattern | Areas; three states must survive greyscale (#81) |
+| Block occupancy | A wash: flat for `occupied` and `clear` (separated by the opacity each is drawn at), cross-hatched for `unknown` alone | Areas; three states must survive greyscale (#81). Texture marks the fail-safe state and nothing else — `docs/diagram-encoding.md` D10 |
 | Block lock | `LOCK.glyph` on the run label, and the route line below | The outline it used to be is gone — M8 |
 | Route | A coloured, dashed line **along the track**, under it and wider | The only mark that can say *which* route holds a road (M8) |
 | Commanded point road | Solid where set, dimmed where not, dashed where indeterminate — **and the tile's own roads drawn faint beneath**, or a point reverse still showed its normal road as connected track | `docs/diagram-encoding.md` D3 says a set/dimmed pair is already a non-colour encoding |

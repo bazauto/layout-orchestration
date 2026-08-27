@@ -10,7 +10,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { SENSOR_OBSERVATION, sensorGlyphStateOf } from './encoding';
+import {
+  BLOCK_TINT_OPACITY,
+  OCCUPANCY,
+  OCCUPANCY_WASH_OPACITY,
+  SENSOR_OBSERVATION,
+  sensorGlyphStateOf,
+} from './encoding';
 import { SensorObservationView } from '../types';
 
 function view(overrides: Partial<SensorObservationView> = {}): SensorObservationView {
@@ -62,6 +68,34 @@ describe('sensorGlyphStateOf', () => {
     // as live evidence, but it must not vanish either.
     const retained = view({ lastReading: 'clear', trusted: false, source: 'retained' });
     expect(sensorGlyphStateOf(retained)).toBe('not-evidence');
+  });
+});
+
+describe('OCCUPANCY — non-colour carriers (#81, D10)', () => {
+  it('only the fail-safe state carries a hatch — texture separates a fault from an operational state, never one operational state from another', () => {
+    expect(OCCUPANCY.unknown.pattern).not.toBeNull();
+    expect(OCCUPANCY.occupied.pattern).toBeNull();
+    expect(OCCUPANCY.clear.pattern).toBeNull();
+  });
+
+  it('occupied and clear are both flat, so the wash opacity must separate them — colour alone is exactly what #81 forbids', () => {
+    // Red #f38ba8 and green #a6e3a1 washed at the same opacity over the tile
+    // surface come out 6.9 apart in RGB under simulated deuteranopia. The
+    // heavier wash is what a deuteranope, a greyscale print and a washed-out
+    // projector all still read.
+    expect(OCCUPANCY_WASH_OPACITY.occupied).toBeGreaterThan(OCCUPANCY_WASH_OPACITY.clear);
+  });
+
+  it('leaves the resting layout at the ordinary tint opacity — only occupied is heavier', () => {
+    expect(OCCUPANCY_WASH_OPACITY.clear).toBe(BLOCK_TINT_OPACITY);
+    expect(OCCUPANCY_WASH_OPACITY.unknown).toBe(BLOCK_TINT_OPACITY);
+  });
+
+  it('every state still ships a distinct glyph and label', () => {
+    const glyphs = Object.values(OCCUPANCY).map((e) => e.glyph);
+    const labels = Object.values(OCCUPANCY).map((e) => e.label);
+    expect(new Set(glyphs).size).toBe(glyphs.length);
+    expect(new Set(labels).size).toBe(labels.length);
   });
 });
 
