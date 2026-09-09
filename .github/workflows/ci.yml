@@ -56,8 +56,22 @@ jobs:
       - name: Build frontend
         run: npm run build --workspace=packages/frontend
 
+      # `--with-deps` runs `apt-get update` before installing the system
+      # libraries Chromium needs, and `apt-get update` fails as a whole if any
+      # configured source is broken -- even one nothing here uses. The runner
+      # image ships Google's Chrome repo preconfigured, and on 2026-09-09 it
+      # served a `Release` file whose recorded SHA256 for `Packages.gz` did not
+      # match the `Packages.gz` it served alongside it, so every run failed on
+      # `Hash Sum mismatch` with exit 100. Nothing in this repo installs Google
+      # Chrome: Playwright downloads its own Chromium build, and only the
+      # distro packages behind it come from apt. So the source is removed
+      # rather than the failure retried -- a third party we do not depend on
+      # should not be able to fail this job, and a retry would not have helped,
+      # because their index stayed inconsistent across reruns.
       - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          npx playwright install --with-deps chromium
 
       - name: Run e2e tests
         run: npm run test:e2e
