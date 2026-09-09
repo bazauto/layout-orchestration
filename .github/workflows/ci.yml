@@ -56,8 +56,37 @@ jobs:
       - name: Build frontend
         run: npm run build --workspace=packages/frontend
 
+      # `--with-deps` runs `apt-get update` before installing the system
+      # libraries Chromium needs, and `apt-get update` fails as a whole if any
+      # configured source is broken -- even one nothing here uses. The runner
+      # image ships Google's Chrome repo preconfigured, and on 2026-09-09 it
+      # served a `Release` file whose recorded SHA256 for `Packages.gz` did not
+      # match the `Packages.gz` it served alongside it, so every run failed on
+      # `Hash Sum mismatch` with exit 100. Nothing in this repo installs Google
+      # Chrome: Playwright downloads its own Chromium build, and only the
+      # distro packages behind it come from apt. So the source is removed
+      # rather than the failure retried -- a third party we do not depend on
+      # should not be able to fail this job, and a retry would not have helped,
+      # because their index stayed inconsistent across reruns.
       - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+        run: |
+          # Match on content, not on filename: the source is a deb822
+          # `.sources` file on the current image and was a one-line `.list`
+          # on older ones, so removing a fixed path silently does nothing.
+          # Verified by the failure that removing google-chrome.list left
+          # apt still fetching dl.google.com.
+          for f in $(grep -rl "dl\.google\.com" /etc/apt/sources.list.d/ 2>/dev/null); do
+            echo "removing unused apt source: $f"
+            sudo rm -f "$f"
+          done
+          sudo sed -i "/dl\.google\.com/d" /etc/apt/sources.list 2>/dev/null || true
+          # Fail loudly here rather than 40 lines later inside apt, if a
+          # future image puts it somewhere this does not reach.
+          if grep -rq "dl\.google\.com" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+            echo "::error::Google apt source still configured; apt-get update will fail on it"
+            exit 1
+          fi
+          npx playwright install --with-deps chromium
 
       - name: Run e2e tests
         run: npm run test:e2e
