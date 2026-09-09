@@ -123,11 +123,12 @@ Migrations apply automatically on backend startup from `MIGRATIONS_PATH`. **Any 
 `src/adapters/db/schema.ts` requires a generated migration in the same commit** — this
 system is deployed to a live layout and cannot be reset.
 
-**Never run `npm audit fix --force` here.** Its only remaining suggestion is a major
-*downgrade* of `drizzle-kit`, the tool that generates migrations against the live
-database, and the four residual moderate advisories it offers to fix are one unreachable
-chain. Full reasoning in `docs/current-state.md` (Repo notes). Plain `npm audit fix` is
-fine and cleared the rest.
+**Never run `npm audit fix --force` here.** It offers two breaking changes and neither is
+wanted: a major *downgrade* of `drizzle-kit`, the tool that generates migrations against
+the live database, and a major bump of `vitest` to v5. Both chains are dev-only, and the
+seven residual moderate advisories behind them are unreachable from anything deployed.
+Full reasoning in `docs/current-state.md` (Repo notes). Plain `npm audit fix` is fine and
+cleared the rest, most recently the eight `fast-uri` highs and `js-yaml` (2026-09-09).
 
 Deployment to the bench box is `bash deploy/deploy.sh [ref]` from the repo root; `/deploy`
 wraps it with the host facts and the pre-flight check. `docs/deployment.md` is the why.
