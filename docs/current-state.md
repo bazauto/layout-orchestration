@@ -51,9 +51,12 @@ beneath the old one.**
 
 `CLAUDE.md` states the rule; this is the reasoning behind it.
 
-Its only remaining suggestion is `drizzle-kit@0.18.1` — a major **downgrade** of the tool
-that generates migrations against the live database. The four residual moderate advisories
-it is offering to "fix" are all one chain:
+It offers two breaking changes, and the seven residual moderate advisories behind them
+are two chains, both **dev-only** — neither package is a runtime dependency, and neither
+is present in what `deploy.sh` builds and runs on the bench box.
+
+**One: `drizzle-kit@0.18.1`** — a major **downgrade** of the tool that generates
+migrations against the live database. Four advisories, all one chain:
 
 ```
 drizzle-kit → @esbuild-kit/esm-loader → @esbuild-kit/core-utils → esbuild@0.18.20
@@ -64,5 +67,22 @@ deprecated loader. And it is **not reachable** — drizzle-kit's shipped JS cont
 reference to `@esbuild-kit` at all, and the advisory concerns esbuild's dev *server*,
 which `core-utils` never starts (it calls `transform`/`transformSync` only).
 
-Plain `npm audit fix` is fine, and is what cleared the rest.
+**Two: `vitest@5`** — a major bump of the test runner across both workspaces, to close
+GHSA-82fw-gwwq-j7x9 (`@vitest/mocker` path traversal via a redirect mock) in the
+`vitest` → `@vitest/mocker` / `@vitest/coverage-v8` chain. Both workspaces declare
+`^3.1.0`, and the advisory has no fix on the 3.x line. Exploiting it needs an attacker
+able to make requests at a running Vitest server, so it is reachable on a developer's
+machine while tests are running and never on the bench. Taking it means a major-version
+migration of the suite that guards a control system — worth doing deliberately, on its
+own branch, and not as a side effect of an audit.
+
+Plain `npm audit fix` is fine, and is what cleared the rest — most recently on
+2026-09-09, closing all eight open **high** Dependabot alerts in a lockfile-only
+change. Every one of them was `fast-uri`, on two version lines at once: 3.1.5 → 3.1.7
+and 4.1.2 → 4.1.4, both transitive under Fastify (`@fastify/ajv-compiler` → `ajv`, and
+`fast-json-stringify`). The advisories are SSRF and host-confusion in URI parsing —
+this stack parses no attacker-supplied URIs, but the fix was a patch bump with no
+`package.json` change, so reachability never had to be argued. The same run took
+`js-yaml` 4.3.1 → 4.3.2, a high that `npm audit` reports and Dependabot had not raised;
+it is dev-only, under `eslint` → `@eslint/eslintrc`.
 
