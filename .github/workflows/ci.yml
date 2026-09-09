@@ -70,7 +70,22 @@ jobs:
       # because their index stayed inconsistent across reruns.
       - name: Install Playwright browser
         run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          # Match on content, not on filename: the source is a deb822
+          # `.sources` file on the current image and was a one-line `.list`
+          # on older ones, so removing a fixed path silently does nothing.
+          # Verified by the failure that removing google-chrome.list left
+          # apt still fetching dl.google.com.
+          for f in $(grep -rl "dl\.google\.com" /etc/apt/sources.list.d/ 2>/dev/null); do
+            echo "removing unused apt source: $f"
+            sudo rm -f "$f"
+          done
+          sudo sed -i "/dl\.google\.com/d" /etc/apt/sources.list 2>/dev/null || true
+          # Fail loudly here rather than 40 lines later inside apt, if a
+          # future image puts it somewhere this does not reach.
+          if grep -rq "dl\.google\.com" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+            echo "::error::Google apt source still configured; apt-get update will fail on it"
+            exit 1
+          fi
           npx playwright install --with-deps chromium
 
       - name: Run e2e tests
